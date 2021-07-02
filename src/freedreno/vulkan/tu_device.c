@@ -150,7 +150,7 @@ get_device_extensions(const struct tu_physical_device *device,
       .KHR_variable_pointers = true,
       .KHR_vulkan_memory_model = true,
 #ifndef TU_USE_KGSL
-      .KHR_timeline_semaphore = true,
+      .KHR_timeline_semaphore = false,
 #endif
 #ifdef VK_USE_PLATFORM_DISPLAY_KHR
       .EXT_display_control = true,
