@@ -29,132 +29,18 @@
 
 /* Knockoff u_upload_mgr. Uploads whereever we left off, allocating new entries
  * when needed.
- *
- * In "owned" mode, a single parent owns the entire pool, and the pool owns all
- * created BOs. All BOs are tracked and addable as
- * panfrost_pool_get_bo_handles. Freeing occurs at the level of an entire pool.
- * This is useful for streaming uploads, where the batch owns the pool.
- *
- * In "unowned" mode, the pool is freestanding. It does not track created BOs
- * or hold references. Instead, the consumer must manage the created BOs. This
- * is more flexible, enabling non-transient CSO state or shader code to be
- * packed with conservative lifetime handling.
  */
 
-static struct panfrost_bo *
-panfrost_pool_alloc_backing(struct pan_pool *pool, size_t bo_sz)
+mali_ptr
+pan_pool_upload(struct pan_pool *pool, const void *data, size_t sz)
 {
-        /* We don't know what the BO will be used for, so let's flag it
-         * RW and attach it to both the fragment and vertex/tiler jobs.
-         * TODO: if we want fine grained BO assignment we should pass
-         * flags to this function and keep the read/write,
-         * fragment/vertex+tiler pools separate.
-         */
-        struct panfrost_bo *bo = panfrost_bo_create(pool->dev, bo_sz,
-                        pool->create_flags, pool->label);
-
-        if (pool->owned)
-                util_dynarray_append(&pool->bos, struct panfrost_bo *, bo);
-        else
-                panfrost_bo_unreference(pool->transient_bo);
-
-        pool->transient_bo = bo;
-        pool->transient_offset = 0;
-
-        return bo;
-}
-
-void
-panfrost_pool_init(struct pan_pool *pool, void *memctx,
-                   struct panfrost_device *dev,
-                   unsigned create_flags, size_t slab_size, const char *label,
-                   bool prealloc, bool owned)
-{
-        memset(pool, 0, sizeof(*pool));
-        pool->dev = dev;
-        pool->create_flags = create_flags;
-        pool->owned = owned;
-        pool->label = label;
-        pool->slab_size = slab_size;
-
-        if (owned)
-                util_dynarray_init(&pool->bos, memctx);
-
-        if (prealloc)
-                panfrost_pool_alloc_backing(pool, pool->slab_size);
-}
-
-void
-panfrost_pool_cleanup(struct pan_pool *pool)
-{
-        if (!pool->owned) {
-                panfrost_bo_unreference(pool->transient_bo);
-                return;
-        }
-
-        util_dynarray_foreach(&pool->bos, struct panfrost_bo *, bo)
-                panfrost_bo_unreference(*bo);
-
-        util_dynarray_fini(&pool->bos);
-}
-
-void
-panfrost_pool_get_bo_handles(struct pan_pool *pool, uint32_t *handles)
-{
-        assert(pool->owned && "pool does not track BOs in unowned mode");
-
-        unsigned idx = 0;
-        util_dynarray_foreach(&pool->bos, struct panfrost_bo *, bo) {
-                assert((*bo)->gem_handle > 0);
-                handles[idx++] = (*bo)->gem_handle;
-
-               /* Update the BO access flags so that panfrost_bo_wait() knows
-                * about all pending accesses.
-                * We only keep the READ/WRITE info since this is all the BO
-                * wait logic cares about.
-                * We also preserve existing flags as this batch might not
-                * be the first one to access the BO.
-                */
-                (*bo)->gpu_access |= PAN_BO_ACCESS_RW;
-        }
-}
-
-struct panfrost_ptr
-panfrost_pool_alloc_aligned(struct pan_pool *pool, size_t sz, unsigned alignment)
-{
-        assert(alignment == util_next_power_of_two(alignment));
-
-        /* Find or create a suitable BO */
-        struct panfrost_bo *bo = pool->transient_bo;
-        unsigned offset = ALIGN_POT(pool->transient_offset, alignment);
-
-        /* If we don't fit, allocate a new backing */
-        if (unlikely(bo == NULL || (offset + sz) >= pool->slab_size)) {
-                bo = panfrost_pool_alloc_backing(pool,
-                                ALIGN_POT(MAX2(pool->slab_size, sz), 4096));
-                offset = 0;
-        }
-
-        pool->transient_offset = offset + sz;
-
-        struct panfrost_ptr ret = {
-                .cpu = bo->ptr.cpu + offset,
-                .gpu = bo->ptr.gpu + offset,
-        };
-
-        return ret;
+        return pan_pool_upload_aligned(pool, data, sz, sz);
 }
 
 mali_ptr
-panfrost_pool_upload(struct pan_pool *pool, const void *data, size_t sz)
+pan_pool_upload_aligned(struct pan_pool *pool, const void *data, size_t sz, unsigned alignment)
 {
-        return panfrost_pool_upload_aligned(pool, data, sz, sz);
-}
-
-mali_ptr
-panfrost_pool_upload_aligned(struct pan_pool *pool, const void *data, size_t sz, unsigned alignment)
-{
-        struct panfrost_ptr transfer = panfrost_pool_alloc_aligned(pool, sz, alignment);
+        struct panfrost_ptr transfer = pan_pool_alloc_aligned(pool, sz, alignment);
         memcpy(transfer.cpu, data, sz);
         return transfer.gpu;
 }

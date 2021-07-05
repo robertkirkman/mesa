@@ -11,7 +11,6 @@ shaders@glsl-sin,Fail
 shaders@glsl-uniform-interstage-limits@520 vs- 1 fs,Fail
 shaders@glsl-uniform-interstage-limits@subdivide 5,Fail
 shaders@glsl-uniform-interstage-limits@subdivide 5- statechanges,Fail
-shaders@glsl-vs-point-size,Fail
 shaders@ssa@fs-if-def-else-break,Fail
 shaders@ssa@fs-lost-copy-problem,Fail
 shaders@ssa@fs-swap-problem,Fail
@@ -141,12 +140,6 @@ spec@!opengl 1.2@texwrap 3d proj@GL_RGBA8- NPOT- projected,Fail
 spec@!opengl 1.2@texwrap 3d proj bordercolor,Fail
 spec@!opengl 1.2@texwrap 3d proj bordercolor@GL_RGBA8- projected- border color only,Fail
 spec@!opengl 1.4@gl-1.4-polygon-offset,Fail
-
-# 1D textures are treated as 2D, but we don't force
-# the Y clamp to repeat or edge, so you get interpolation, and we get
-# different undefined values in the y coordinate in the new shader.
-spec@!opengl 1.4@gl-1.4-tex1d-2dborder,Fail
-
 spec@!opengl 1.4@tex-miplevel-selection,Fail
 spec@!opengl 1.4@tex-miplevel-selection-lod,Fail
 spec@!opengl 1.4@tex-miplevel-selection-lod-bias,Fail
@@ -277,7 +270,6 @@ spec@arb_pixel_buffer_object@texsubimage pbo,Fail
 spec@arb_point_parameters@arb_point_parameters-point-attenuation,Crash
 
 spec@arb_point_parameters@arb_point_parameters-point-attenuation@Aliased combinations,Fail
-spec@arb_point_parameters@arb_point_parameters-point-attenuation@Antialiased combinations,Fail
 spec@arb_provoking_vertex@arb-provoking-vertex-render,Fail
 spec@arb_sampler_objects@gl_ext_texture_srgb_decode,Fail
 spec@arb_shader_texture_lod@execution@glsl-fs-texturelod-01,Fail
@@ -743,6 +735,7 @@ spec@glsl-1.10@execution@loops@glsl-fs-unroll-side-effect,Fail
 spec@glsl-1.10@execution@samplers@glsl-fs-shadow1d,Fail
 spec@glsl-1.10@execution@samplers@glsl-fs-shadow1d-01,Fail
 spec@glsl-1.10@execution@samplers@glsl-fs-shadow1d-03,Fail
+spec@glsl-1.10@execution@samplers@glsl-fs-shadow1d-04,Fail
 spec@glsl-1.10@execution@samplers@glsl-fs-shadow1d-07,Fail
 spec@glsl-1.10@execution@samplers@glsl-fs-shadow1d-08,Fail
 spec@glsl-1.10@execution@samplers@glsl-fs-shadow1d-bias,Fail

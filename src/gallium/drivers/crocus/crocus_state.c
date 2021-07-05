@@ -1553,10 +1553,10 @@ set_blend_entry_bits(struct crocus_batch *batch, BLEND_ENTRY_GENXML *entry,
       if (idx == 0) {
          struct crocus_compiled_shader *shader = ice->shaders.prog[MESA_SHADER_FRAGMENT];
          struct brw_wm_prog_data *wm_prog_data = (void *) shader->prog_data;
-         entry->ColorBufferBlendEnable = rt->blend_enable &&
+         entry->ColorBufferBlendEnable =
             (!cso_blend->dual_color_blending || wm_prog_data->dual_src_blend);
       } else
-         entry->ColorBufferBlendEnable = rt->blend_enable;
+         entry->ColorBufferBlendEnable = 1;
 
       entry->ColorBlendFunction          = rt->rgb_func;
       entry->AlphaBlendFunction          = rt->alpha_func;
@@ -1565,6 +1565,23 @@ set_blend_entry_bits(struct crocus_batch *batch, BLEND_ENTRY_GENXML *entry,
       entry->DestinationBlendFactor      = (int) dst_rgb;
       entry->DestinationAlphaBlendFactor = (int) dst_alpha;
    }
+#if GFX_VER <= 5
+   /*
+    * Gen4/GM45/ILK can't handle have ColorBufferBlendEnable == 0
+    * when a dual src blend shader is in use. Setup dummy blending.
+    */
+   struct crocus_compiled_shader *shader = ice->shaders.prog[MESA_SHADER_FRAGMENT];
+   struct brw_wm_prog_data *wm_prog_data = (void *) shader->prog_data;
+   if (idx == 0 && !blend_enabled && wm_prog_data->dual_src_blend) {
+      entry->ColorBufferBlendEnable = 1;
+      entry->ColorBlendFunction = PIPE_BLEND_ADD;
+      entry->AlphaBlendFunction = PIPE_BLEND_ADD;
+      entry->SourceBlendFactor = PIPE_BLENDFACTOR_ONE;
+      entry->SourceAlphaBlendFactor = PIPE_BLENDFACTOR_ONE;
+      entry->DestinationBlendFactor = PIPE_BLENDFACTOR_ZERO;
+      entry->DestinationAlphaBlendFactor = PIPE_BLENDFACTOR_ZERO;
+   }
+#endif
    return independent_alpha_blend;
 }
 
@@ -5341,11 +5358,14 @@ crocus_populate_binding_table(struct crocus_context *ice,
 #if GFX_VER <= 5
             const struct pipe_rt_blend_state *rt =
                &ice->state.cso_blend->cso.rt[ice->state.cso_blend->cso.independent_blend_enable ? i : 0];
+            struct crocus_compiled_shader *shader = ice->shaders.prog[MESA_SHADER_FRAGMENT];
+            struct brw_wm_prog_data *wm_prog_data = (void *) shader->prog_data;
             write_disables |= (rt->colormask & PIPE_MASK_A) ? 0x0 : 0x8;
             write_disables |= (rt->colormask & PIPE_MASK_R) ? 0x0 : 0x4;
             write_disables |= (rt->colormask & PIPE_MASK_G) ? 0x0 : 0x2;
             write_disables |= (rt->colormask & PIPE_MASK_B) ? 0x0 : 0x1;
-            blend_enable = rt->blend_enable;
+            /* Gen4/5 can't handle blending off when a dual src blend wm is enabled. */
+            blend_enable = rt->blend_enable || wm_prog_data->dual_src_blend;
 #endif
             if (cso_fb->cbufs[i]) {
                surf_offsets[s] = emit_surface(batch,
@@ -6152,17 +6172,6 @@ crocus_upload_dirty_render_state(struct crocus_context *ice,
                       64, &cc_offset);
 #if GFX_VER <= 5
       dirty |= CROCUS_DIRTY_GEN5_PIPELINED_POINTERS;
-      int blend_idx = 0;
-
-      if (cso_blend->cso.independent_blend_enable) {
-         for (unsigned i = 0; i < PIPE_MAX_COLOR_BUFS; i++) {
-            if (cso_blend->cso.rt[i].blend_enable) {
-               blend_idx = i;
-               break;
-            }
-         }
-      }
-      const struct pipe_rt_blend_state *rt = &cso_blend->cso.rt[blend_idx];
 #endif
       _crocus_pack_state(batch, GENX(COLOR_CALC_STATE), cc_map, cc) {
          cc.AlphaTestFormat = ALPHATEST_FLOAT32;
@@ -6171,8 +6180,6 @@ crocus_upload_dirty_render_state(struct crocus_context *ice,
 #if GFX_VER <= 5
 
          set_depth_stencil_bits(ice, &cc);
-
-         cc.ColorBufferBlendEnable = rt->blend_enable;
 
          if (cso_blend->cso.logicop_enable) {
             if (can_emit_logic_op(ice)) {
@@ -7716,13 +7723,10 @@ crocus_upload_render_state(struct crocus_context *ice,
 #if GFX_VER >= 7
    bool use_predicate = ice->state.predicate == CROCUS_PREDICATE_STATE_USE_BIT;
 #endif
-   bool emit_index = false;
-   batch->no_wrap = true;
 
-   if (!batch->contains_draw) {
-      emit_index = true;
-      batch->contains_draw = true;
-   }
+   batch->no_wrap = true;
+   batch->contains_draw = true;
+
    crocus_update_surface_base_address(batch);
 
    crocus_upload_dirty_render_state(ice, batch, draw);
@@ -7731,6 +7735,7 @@ crocus_upload_render_state(struct crocus_context *ice,
    if (draw->index_size > 0) {
       unsigned offset;
       unsigned size;
+      bool emit_index = false;
 
       if (draw->has_user_indices) {
          unsigned start_offset = draw->index_size * sc->start;
@@ -7743,9 +7748,9 @@ crocus_upload_render_state(struct crocus_context *ice,
          emit_index = true;
       } else {
          struct crocus_resource *res = (void *) draw->index.resource;
-         res->bind_history |= PIPE_BIND_INDEX_BUFFER;
 
          if (ice->state.index_buffer.res != draw->index.resource) {
+            res->bind_history |= PIPE_BIND_INDEX_BUFFER;
             pipe_resource_reference(&ice->state.index_buffer.res,
                                     draw->index.resource);
             emit_index = true;
@@ -7756,8 +7761,12 @@ crocus_upload_render_state(struct crocus_context *ice,
 
       if (!emit_index &&
           (ice->state.index_buffer.size != size ||
-           ice->state.index_buffer.index_size != draw->index_size ||
-           ice->state.index_buffer.prim_restart != draw->primitive_restart))
+           ice->state.index_buffer.index_size != draw->index_size
+#if GFX_VERx10 < 75
+           || ice->state.index_buffer.prim_restart != draw->primitive_restart
+#endif
+	   )
+	  )
          emit_index = true;
 
       if (emit_index) {
@@ -7779,7 +7788,9 @@ crocus_upload_render_state(struct crocus_context *ice,
          ice->state.index_buffer.size = size;
          ice->state.index_buffer.offset = offset;
          ice->state.index_buffer.index_size = draw->index_size;
+#if GFX_VERx10 < 75
          ice->state.index_buffer.prim_restart = draw->primitive_restart;
+#endif
       }
    }
 
@@ -8266,7 +8277,8 @@ crocus_rebind_buffer(struct crocus_context *ice,
       }
    }
 
-   if (res->bind_history & PIPE_BIND_INDEX_BUFFER) {
+   if ((res->bind_history & PIPE_BIND_INDEX_BUFFER) &&
+       ice->state.index_buffer.res) {
       if (res->bo == crocus_resource_bo(ice->state.index_buffer.res))
          pipe_resource_reference(&ice->state.index_buffer.res, NULL);
    }
@@ -8982,6 +8994,9 @@ crocus_state_finish_batch(struct crocus_batch *batch)
 static void
 crocus_batch_reset_dirty(struct crocus_batch *batch)
 {
+   /* unreference any index buffer so it get reemitted. */
+   pipe_resource_reference(&batch->ice->state.index_buffer.res, NULL);
+
    /* for GEN4/5 need to reemit anything that ends up in the state batch that points to anything in the state batch
     * as the old state batch won't still be available.
     */

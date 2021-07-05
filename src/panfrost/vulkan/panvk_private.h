@@ -63,10 +63,11 @@
 #include "pan_blitter.h"
 #include "pan_cs.h"
 #include "pan_device.h"
-#include "pan_pool.h"
+#include "panvk_mempool.h"
 #include "pan_texture.h"
 #include "pan_scoreboard.h"
 #include "pan_shader.h"
+#include "vk_extensions.h"
 #include "panvk_varyings.h"
 
 /* Pre-declarations needed for WSI entrypoints */
@@ -133,8 +134,17 @@ panvk_logi_v(const char *format, va_list va);
 #define panvk_stub() assert(!"stub")
 
 struct panvk_meta {
-   struct pan_pool bin_pool;
-   struct pan_pool desc_pool;
+   struct panvk_pool bin_pool;
+   struct panvk_pool desc_pool;
+
+   /* Access to the blitter pools are protected by the blitter
+    * shader/rsd locks. They can't be merged with other binary/desc
+    * pools unless we patch pan_blitter.c to external pool locks.
+    */
+   struct {
+      struct panvk_pool bin_pool;
+      struct panvk_pool desc_pool;
+   } blitter;
 };
 
 struct panvk_physical_device {
@@ -592,7 +602,12 @@ struct panvk_cmd_state {
 struct panvk_cmd_pool {
    struct vk_object_base base;
    VkAllocationCallbacks alloc;
+   struct list_head active_cmd_buffers;
+   struct list_head free_cmd_buffers;
    uint32_t queue_family_index;
+   struct panvk_bo_pool desc_bo_pool;
+   struct panvk_bo_pool varying_bo_pool;
+   struct panvk_bo_pool tls_bo_pool;
 };
 
 enum panvk_cmd_buffer_status {
@@ -609,9 +624,10 @@ struct panvk_cmd_buffer {
    struct panvk_device *device;
 
    struct panvk_cmd_pool *pool;
-   struct pan_pool desc_pool;
-   struct pan_pool varying_pool;
-   struct pan_pool tls_pool;
+   struct list_head pool_link;
+   struct panvk_pool desc_pool;
+   struct panvk_pool varying_pool;
+   struct panvk_pool tls_pool;
    struct list_head batches;
 
    VkCommandBufferUsageFlags usage_flags;

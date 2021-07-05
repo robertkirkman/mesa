@@ -89,17 +89,9 @@ panfrost_u_blitter_blit(struct pipe_context *pipe,
 
 static void
 panfrost_blit_add_ctx_bos(struct panfrost_batch *batch,
-                          struct pan_blit_context *ctx)
+                          struct panfrost_pool *blit_pool)
 {
-        if (ctx->pool.transient_bo) {
-                panfrost_batch_add_bo(batch, ctx->pool.transient_bo,
-                                      PAN_BO_ACCESS_SHARED |
-                                      PAN_BO_ACCESS_READ |
-                                      PAN_BO_ACCESS_VERTEX_TILER |
-                                      PAN_BO_ACCESS_FRAGMENT);
-        }
-
-        util_dynarray_foreach(&ctx->pool.bos, struct panfrost_bo *, bo) {
+        util_dynarray_foreach(&blit_pool->bos, struct panfrost_bo *, bo) {
                 panfrost_batch_add_bo(batch, *bo,
                                       PAN_BO_ACCESS_SHARED |
                                       PAN_BO_ACCESS_READ |
@@ -249,8 +241,12 @@ panfrost_blit(struct pipe_context *pipe,
         }
 
         struct pan_blit_context bctx;
+        struct panfrost_pool blit_pool;
 
-        pan_blit_ctx_init(dev, &pinfo, &bctx);
+        panfrost_pool_init(&blit_pool, NULL, dev, 0, 4096, "Blitter pool",
+                           false, true);
+
+        pan_blit_ctx_init(dev, &pinfo, &blit_pool.base, &bctx);
         do {
                 if (bctx.dst.cur_layer < 0)
                         continue;
@@ -287,7 +283,7 @@ panfrost_blit(struct pipe_context *pipe,
                 }
 
                 panfrost_batch_add_fbo_bos(batch);
-                panfrost_blit_add_ctx_bos(batch, &bctx);
+                panfrost_blit_add_ctx_bos(batch, &blit_pool);
                 batch->draws = draw_flags;
                 batch->resolve = draw_flags;
                 batch->minx = minx;
@@ -297,7 +293,7 @@ panfrost_blit(struct pipe_context *pipe,
 
                 mali_ptr tiler = pan_is_bifrost(dev) ?
                                  panfrost_batch_get_bifrost_tiler(batch, ~0) : 0;
-                pan_blit(&bctx, &batch->pool, &batch->scoreboard,
+                pan_blit(&bctx, &batch->pool.base, &batch->scoreboard,
                                 batch->tls.gpu, tiler);
 
                 /* We don't want this batch to interfere with subsequent draw
@@ -309,5 +305,5 @@ panfrost_blit(struct pipe_context *pipe,
                 ctx->batch = NULL;
         } while (pan_blit_next_surface(&bctx));
 
-        pan_blit_ctx_cleanup(&bctx);
+        panfrost_pool_cleanup(&blit_pool);
 }
