@@ -34,7 +34,6 @@
 #include "pan_blend_cso.h"
 #include "pan_encoder.h"
 #include "pan_texture.h"
-#include "midgard_pack.h"
 
 #include "pipe/p_compiler.h"
 #include "pipe/p_config.h"
@@ -97,7 +96,7 @@ struct panfrost_query {
         };
 
         /* Memory for the GPU to writeback the value of the query */
-        struct panfrost_bo *bo;
+        struct pipe_resource *rsrc;
 
         /* Whether an occlusion query is for a MSAA framebuffer */
         bool msaa;
@@ -118,8 +117,6 @@ struct panfrost_streamout {
         struct pipe_stream_output_target *targets[PIPE_MAX_SO_BUFFERS];
         unsigned num_targets;
 };
-
-#define PAN_MAX_BATCHES 32
 
 struct panfrost_context {
         /* Gallium context */
@@ -147,9 +144,6 @@ struct panfrost_context {
 
         /* Bound job batch */
         struct panfrost_batch *batch;
-
-        /* panfrost_bo -> panfrost_bo_access */
-        struct hash_table *accessed_bos;
 
         /* Within a launch_grid call.. */
         const struct pipe_grid_info *compute_grid;
@@ -441,5 +435,8 @@ panfrost_clean_state_3d(struct panfrost_context *ctx)
                         ctx->dirty_shader[i] = 0;
         }
 }
+
+void
+panfrost_cmdstream_context_init(struct pipe_context *pipe);
 
 #endif

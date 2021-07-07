@@ -840,14 +840,11 @@ panfrost_ptr_map(struct pipe_context *pctx,
 
                 assert(transfer->staging.rsrc != NULL);
 
-                /* TODO: Eliminate this flush. It's only there to determine if
-                 * we're initialized or not, when the initialization could come
-                 * from a pending batch XXX */
-                panfrost_flush_batches_accessing_bo(ctx, rsrc->image.data.bo, true);
+                bool valid = BITSET_TEST(rsrc->valid.data, level);
 
-                if ((usage & PIPE_MAP_READ) && BITSET_TEST(rsrc->valid.data, level)) {
+                if ((usage & PIPE_MAP_READ) && (valid || rsrc->track.writer)) {
                         pan_blit_to_staging(pctx, transfer);
-                        panfrost_flush_batches_accessing_bo(ctx, staging->image.data.bo, true);
+                        panfrost_flush_writer(ctx, staging);
                         panfrost_bo_wait(staging->image.data.bo, INT64_MAX, false);
                 }
 
@@ -869,14 +866,14 @@ panfrost_ptr_map(struct pipe_context *pctx,
             (usage & PIPE_MAP_WRITE) &&
             !(resource->target == PIPE_BUFFER
               && !util_ranges_intersect(&rsrc->valid_buffer_range, box->x, box->x + box->width)) &&
-            panfrost_pending_batches_access_bo(ctx, bo)) {
+            BITSET_COUNT(rsrc->track.users) != 0) {
 
                 /* When a resource to be modified is already being used by a
                  * pending batch, it is often faster to copy the whole BO than
                  * to flush and split the frame in two.
                  */
 
-                panfrost_flush_batches_accessing_bo(ctx, bo, false);
+                panfrost_flush_writer(ctx, rsrc);
                 panfrost_bo_wait(bo, INT64_MAX, false);
 
                 create_new_bo = true;
@@ -888,7 +885,7 @@ panfrost_ptr_map(struct pipe_context *pctx,
                  * not ready yet (still accessed by one of the already flushed
                  * batches), we try to allocate a new one to avoid waiting.
                  */
-                if (panfrost_pending_batches_access_bo(ctx, bo) ||
+                if (BITSET_COUNT(rsrc->track.users) ||
                     !panfrost_bo_wait(bo, 0, true)) {
                         /* We want the BO to be MMAPed. */
                         uint32_t flags = bo->flags & ~PAN_BO_DELAY_MMAP;
@@ -919,7 +916,7 @@ panfrost_ptr_map(struct pipe_context *pctx,
                                 /* Allocation failed or was impossible, let's
                                  * fall back on a flush+wait.
                                  */
-                                panfrost_flush_batches_accessing_bo(ctx, bo, true);
+                                panfrost_flush_batches_accessing_rsrc(ctx, rsrc);
                                 panfrost_bo_wait(bo, INT64_MAX, true);
                         }
                 }
@@ -929,10 +926,10 @@ panfrost_ptr_map(struct pipe_context *pctx,
                 /* No flush for writes to uninitialized */
         } else if (!(usage & PIPE_MAP_UNSYNCHRONIZED)) {
                 if (usage & PIPE_MAP_WRITE) {
-                        panfrost_flush_batches_accessing_bo(ctx, bo, true);
+                        panfrost_flush_batches_accessing_rsrc(ctx, rsrc);
                         panfrost_bo_wait(bo, INT64_MAX, true);
                 } else if (usage & PIPE_MAP_READ) {
-                        panfrost_flush_batches_accessing_bo(ctx, bo, false);
+                        panfrost_flush_writer(ctx, rsrc);
                         panfrost_bo_wait(bo, INT64_MAX, false);
                 }
         }
@@ -1100,7 +1097,7 @@ panfrost_ptr_unmap(struct pipe_context *pctx,
                                 panfrost_bo_reference(prsrc->image.data.bo);
                         } else {
                                 pan_blit_from_staging(pctx, trans);
-                                panfrost_flush_batches_accessing_bo(pan_context(pctx), pan_resource(trans->staging.rsrc)->image.data.bo, true);
+                                panfrost_flush_batches_accessing_rsrc(pan_context(pctx), pan_resource(trans->staging.rsrc));
                         }
                 }
 

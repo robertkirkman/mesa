@@ -26,6 +26,7 @@
 
 #include "compiler/nir/nir.h"
 #include "util/u_dynarray.h"
+#include "asahi/lib/agx_pack.h"
 
 enum agx_push_type {
    /* Array of 64-bit pointers to the base addresses (BASES) and array of
@@ -76,10 +77,17 @@ struct agx_push {
 
 /* Arbitrary */
 #define AGX_MAX_PUSH_RANGES (16)
+#define AGX_MAX_VARYINGS (32)
+
+struct agx_varyings {
+   unsigned nr_descs, nr_slots;
+   struct agx_varying_packed packed[AGX_MAX_VARYINGS];
+};
 
 struct agx_shader_info {
    unsigned push_ranges;
    struct agx_push push[AGX_MAX_PUSH_RANGES];
+   struct agx_varyings varyings;
 
    /* Does the shader read the tilebuffer? */
    bool reads_tib;
@@ -102,6 +110,9 @@ enum agx_format {
    AGX_FORMAT_SRGBA8 = 10,
    AGX_FORMAT_RG11B10F = 12,
    AGX_FORMAT_RGB9E5 = 13,
+
+   /* Keep last */
+   AGX_NUM_FORMATS,
 };
 
 struct agx_attribute {

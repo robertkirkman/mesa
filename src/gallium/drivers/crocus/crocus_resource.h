@@ -26,6 +26,7 @@
 #include "pipe/p_state.h"
 #include "util/u_inlines.h"
 #include "util/u_range.h"
+#include "util/u_threaded_context.h"
 #include "intel/isl/isl.h"
 #include "intel/dev/intel_device_info.h"
 #include "crocus_bufmgr.h"
@@ -83,7 +84,7 @@ crocus_combine_swizzle(enum pipe_swizzle outswz[4],
  * They contain the storage (BO) and layout information (ISL surface).
  */
 struct crocus_resource {
-   struct pipe_resource base;
+   struct threaded_resource base;
    enum pipe_format internal_format;
 
    /**
@@ -259,7 +260,7 @@ struct crocus_surface {
  * Transfer object - information about a buffer mapping.
  */
 struct crocus_transfer {
-   struct pipe_transfer base;
+   struct threaded_transfer base;
    struct pipe_debug_callback *dbg;
    void *buffer;
    void *ptr;
@@ -346,6 +347,14 @@ bool crocus_resource_set_clear_color(struct crocus_context *ice,
                                      union isl_color_value color);
 union isl_color_value
 crocus_resource_get_clear_color(const struct crocus_resource *res);
+
+void
+crocus_replace_buffer_storage(struct pipe_context *ctx,
+                              struct pipe_resource *p_dst,
+                              struct pipe_resource *p_src,
+                              unsigned num_rebinds,
+                              uint32_t rebind_mask,
+                              uint32_t delete_buffer_id);
 
 void crocus_init_screen_resource_functions(struct pipe_screen *pscreen);
 
@@ -497,7 +506,7 @@ void crocus_resource_prepare_texture(struct crocus_context *ice,
 static inline bool
 crocus_resource_unfinished_aux_import(struct crocus_resource *res)
 {
-   return res->base.next != NULL && res->mod_info &&
+   return res->base.b.next != NULL && res->mod_info &&
       res->mod_info->aux_usage != ISL_AUX_USAGE_NONE;
 }
 

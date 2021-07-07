@@ -80,7 +80,9 @@ struct panfrost_batch {
         bool scissor_culls_everything;
 
         /* BOs referenced not in the pool */
-        struct hash_table *bos;
+        int first_bo, last_bo;
+        unsigned num_bos;
+        struct util_sparse_array bos;
 
         /* Pool owned by this batch (released when the batch is released) used for temporary descriptors */
         struct panfrost_pool pool;
@@ -127,6 +129,9 @@ struct panfrost_batch {
         mali_ptr attrib_bufs[PIPE_SHADER_TYPES];
         mali_ptr uniform_buffers[PIPE_SHADER_TYPES];
         mali_ptr push_uniforms[PIPE_SHADER_TYPES];
+
+        /* Referenced resources for cleanup */
+        struct util_dynarray resources;
 };
 
 /* Functions for managing the above */
@@ -142,8 +147,19 @@ struct panfrost_batch *
 panfrost_get_fresh_batch_for_fbo(struct panfrost_context *ctx);
 
 void
-panfrost_batch_add_bo(struct panfrost_batch *batch, struct panfrost_bo *bo,
-                      uint32_t flags);
+panfrost_batch_add_bo(struct panfrost_batch *batch,
+                      struct panfrost_bo *bo,
+                      enum pipe_shader_type stage);
+
+void
+panfrost_batch_read_rsrc(struct panfrost_batch *batch,
+                         struct panfrost_resource *rsrc,
+                         enum pipe_shader_type stage);
+
+void
+panfrost_batch_write_rsrc(struct panfrost_batch *batch,
+                          struct panfrost_resource *rsrc,
+                          enum pipe_shader_type stage);
 
 void
 panfrost_batch_add_fbo_bos(struct panfrost_batch *batch);
@@ -156,13 +172,13 @@ panfrost_batch_create_bo(struct panfrost_batch *batch, size_t size,
 void
 panfrost_flush_all_batches(struct panfrost_context *ctx);
 
-bool
-panfrost_pending_batches_access_bo(struct panfrost_context *ctx,
-                                   const struct panfrost_bo *bo);
+void
+panfrost_flush_batches_accessing_rsrc(struct panfrost_context *ctx,
+                                      struct panfrost_resource *rsrc);
 
 void
-panfrost_flush_batches_accessing_bo(struct panfrost_context *ctx,
-                                    struct panfrost_bo *bo, bool flush_readers);
+panfrost_flush_writer(struct panfrost_context *ctx,
+                      struct panfrost_resource *rsrc);
 
 void
 panfrost_batch_adjust_stack_size(struct panfrost_batch *batch);

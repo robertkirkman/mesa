@@ -26,7 +26,6 @@
 #ifndef PAN_RESOURCE_H
 #define PAN_RESOURCE_H
 
-#include <midgard_pack.h>
 #include "pan_screen.h"
 #include "pan_minmax_cache.h"
 #include "pan_texture.h"
@@ -34,6 +33,7 @@
 #include "util/u_range.h"
 
 #define LAYOUT_CONVERT_THRESHOLD 8
+#define PAN_MAX_BATCHES 32
 
 struct panfrost_resource {
         struct pipe_resource base;
@@ -46,6 +46,11 @@ struct panfrost_resource {
                         BITSET_WORD *data;
                 } tile_map;
         } damage;
+
+        struct {
+                struct panfrost_batch *writer;
+                BITSET_DECLARE(users, PAN_MAX_BATCHES);
+        } track;
 
         struct renderonly_scanout *scanout;
 

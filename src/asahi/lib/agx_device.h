@@ -26,6 +26,7 @@
 
 #include "util/sparse_array.h"
 #include "io.h"
+#include "agx_formats.h"
 
 #if __APPLE__
 #include <mach/mach.h>
@@ -35,6 +36,7 @@
 enum agx_dbg {
    AGX_DBG_TRACE = BITFIELD_BIT(0),
    AGX_DBG_DEQP  = BITFIELD_BIT(1),
+   AGX_DBG_NO16  = BITFIELD_BIT(2),
 };
 
 struct agx_device {
@@ -61,6 +63,11 @@ struct agx_device {
       uint32_t clear;
       uint32_t store;
    } internal;
+
+   struct {
+      struct agx_bo *bo;
+      uint32_t format[AGX_NUM_FORMATS];
+   } reload;
 };
 
 bool

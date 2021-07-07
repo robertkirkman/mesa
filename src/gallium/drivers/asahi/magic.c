@@ -2,7 +2,8 @@
 #include "agx_state.h"
 #include "magic.h"
 
-/* magic code lifted from ./demo ... a lot more reveng needed */
+/* The structures managed in this file appear to be software defined (either in
+ * the macOS kernel driver or in the AGX firmware) */
 
 struct cmdbuf {
    uint32_t *map;
@@ -51,7 +52,7 @@ demo_zero(struct agx_pool *pool, unsigned count)
    return ptr.gpu;
 }
 
-void
+unsigned
 demo_cmdbuf(uint64_t *buf, size_t size,
             struct agx_pool *pool,
             uint64_t encoder_ptr,
@@ -60,7 +61,8 @@ demo_cmdbuf(uint64_t *buf, size_t size,
             uint32_t pipeline_null,
             uint32_t pipeline_clear,
             uint32_t pipeline_store,
-            uint64_t rt0)
+            uint64_t rt0,
+            bool clear_pipeline_textures)
 {
    struct cmdbuf _cmdbuf = {
       .map = (uint32_t *) buf,
@@ -69,35 +71,7 @@ demo_cmdbuf(uint64_t *buf, size_t size,
 
    struct cmdbuf *cmdbuf = &_cmdbuf;
 
-   /* Vertex stuff */
-   EMIT32(cmdbuf, 0x10000);
-   EMIT32(cmdbuf, 0x780); // Compute: 0x188
-   EMIT32(cmdbuf, 0x7);
-   EMIT_ZERO_WORDS(cmdbuf, 5);
-   EMIT32(cmdbuf, 0x758); // Compute: 0x180
-   EMIT32(cmdbuf, 0x18);  // Compute: 0x0
-   EMIT32(cmdbuf, 0x758); // Compute: 0x0
-   EMIT32(cmdbuf, 0x728); // Compute: 0x150
-
-   EMIT32(cmdbuf, 0x30); /* 0x30 */
-   EMIT32(cmdbuf, 0x01); /* 0x34. Compute: 0x03 */
-
-   EMIT64(cmdbuf, encoder_ptr);
-
-   EMIT_ZERO_WORDS(cmdbuf, 20);
-
-   EMIT64(cmdbuf, 0); /* 0x90, compute blob - some zero */
-   EMIT64(cmdbuf, 0); // blob - 0x540 bytes of zero, compute blob - null
-   EMIT64(cmdbuf, 0); // blob - 0x280 bytes of zero
-   EMIT64(cmdbuf, 0); // a8, compute blob - zero pointer
-
-   EMIT64(cmdbuf, 0); // compute blob - zero pointer
-   EMIT64(cmdbuf, 0); // compute blob - zero pointer
-   EMIT64(cmdbuf, 0); // compute blob - zero pointer
-
-   // while zero for vertex, used to include the odd unk6 pattern for compute
-   EMIT64(cmdbuf, 0); // compute blob - 0x1
-   EMIT64(cmdbuf, 0); // d0,  ompute blob - pointer to odd pattern, compare how it's done later for frag
+   EMIT_ZERO_WORDS(cmdbuf, 54);
 
    // compute 8 bytes of zero, then reconverge at *
 
@@ -128,7 +102,8 @@ demo_cmdbuf(uint64_t *buf, size_t size,
 
    EMIT_ZERO_WORDS(cmdbuf, 40);
 
-   EMIT32(cmdbuf, 0xffff8002); // 0x270
+   // This is a pipeline bind
+   EMIT32(cmdbuf, 0xffff8002 | (clear_pipeline_textures ? 0x210 : 0)); // 0x270
    EMIT32(cmdbuf, 0);
    EMIT64(cmdbuf, pipeline_clear | 0x4);
    EMIT32(cmdbuf, 0);
@@ -203,7 +178,7 @@ demo_cmdbuf(uint64_t *buf, size_t size,
     * the clear_ .. bbox maybe */
    EMIT32(cmdbuf, 0);
    EMIT32(cmdbuf, 0);
-   EMIT32(cmdbuf, width * 2); // can increase up to 16384
+   EMIT32(cmdbuf, width); // can increase up to 16384
    EMIT32(cmdbuf, height);
 
    EMIT32(cmdbuf, 1);
@@ -221,23 +196,46 @@ demo_cmdbuf(uint64_t *buf, size_t size,
    EMIT32(cmdbuf, 0);
    EMIT64(cmdbuf, 0);
 
-   EMIT_ZERO_WORDS(cmdbuf, 72);
+   EMIT_ZERO_WORDS(cmdbuf, 58);
 
-   EMIT32(cmdbuf, 0); // 0x760
-   EMIT32(cmdbuf, 0x1); // number of attachments (includes depth/stencil) stored to
+   unsigned offset_unk = (cmdbuf->offset * 4);
+   EMIT_ZERO_WORDS(cmdbuf, 12);
+
+   unsigned offset_attachments = (cmdbuf->offset * 4);
+   unsigned nr_attachments = 1;
+   EMIT32(cmdbuf, 0); // 0x758
+   EMIT32(cmdbuf, 0);
+   EMIT32(cmdbuf, 0);
+   EMIT32(cmdbuf, nr_attachments);
 
    /* A single attachment follows, depth/stencil have their own attachments */
-   {
-      EMIT64(cmdbuf, 0x100 | (rt0 << 16));
-      EMIT32(cmdbuf, 0xa0000);
-      EMIT32(cmdbuf, 0x4c000000); // 80000000 also observed, and 8c000 and.. offset into the tilebuffer I imagine
-      EMIT32(cmdbuf, 0x0c001d); // C0020  also observed
-      EMIT32(cmdbuf, 0x640000);
+   agx_pack((cmdbuf->map + cmdbuf->offset), IOGPU_ATTACHMENT, cfg) {
+      cfg.address = rt0;
+      cfg.type = AGX_IOGPU_ATTACHMENT_TYPE_COLOUR;
+      cfg.unk_1 = 0x80000000;
+      cfg.unk_2 = 0x5;
+      cfg.bytes_per_pixel = 4;
+      cfg.percent = 100;
    }
+
+   cmdbuf->offset += (AGX_IOGPU_ATTACHMENT_LENGTH / 4);
+
+   unsigned total_size = (cmdbuf->offset * 4);
+
+   agx_pack(cmdbuf->map, IOGPU_HEADER, cfg) {
+      cfg.total_size = total_size;
+      cfg.attachment_offset_1 = offset_attachments;
+      cfg.attachment_offset_2 = offset_attachments;
+      cfg.attachment_length = nr_attachments * AGX_IOGPU_ATTACHMENT_LENGTH;
+      cfg.unknown_offset = offset_unk;
+      cfg.encoder = encoder_ptr;
+   }
+
+   return total_size;
 }
 
 static struct agx_map_header
-demo_map_header(uint64_t cmdbuf_id, uint64_t encoder_id, unsigned count)
+demo_map_header(uint64_t cmdbuf_id, uint64_t encoder_id, unsigned cmdbuf_size, unsigned count)
 {
    return (struct agx_map_header) {
       .cmdbuf_id = cmdbuf_id,
@@ -245,7 +243,7 @@ demo_map_header(uint64_t cmdbuf_id, uint64_t encoder_id, unsigned count)
       .unk3 = 0x528, // 1320
       .encoder_id = encoder_id,
       .unk6 = 0x0,
-      .unk7 = 0x780, // 1920 -- same as above..
+      .cmdbuf_size = cmdbuf_size,
 
       /* +1 for the sentinel ending */
       .nr_entries_1 = count + 1,
@@ -256,14 +254,14 @@ demo_map_header(uint64_t cmdbuf_id, uint64_t encoder_id, unsigned count)
 
 void
 demo_mem_map(void *map, size_t size, unsigned *handles, unsigned count,
-             uint64_t cmdbuf_id, uint64_t encoder_id)
+             uint64_t cmdbuf_id, uint64_t encoder_id, unsigned cmdbuf_size)
 {
    struct agx_map_header *header = map;
    struct agx_map_entry *entries = (struct agx_map_entry *) (((uint8_t *) map) + 0x40);
    struct agx_map_entry *end = (struct agx_map_entry *) (((uint8_t *) map) + size);
 
    /* Header precedes the entry */
-   *header = demo_map_header(cmdbuf_id, encoder_id, count);
+   *header = demo_map_header(cmdbuf_id, encoder_id, cmdbuf_size, count);
 
    /* Add an entry for each BO mapped */
    for (unsigned i = 0; i < count; ++i) {
@@ -326,4 +324,6 @@ agx_internal_shaders(struct agx_device *dev)
    dev->internal.bo = bo;
    dev->internal.clear = bo->ptr.gpu + clear_offset;
    dev->internal.store = bo->ptr.gpu + store_offset;
+
+   agx_build_reload_shader(dev);
 }

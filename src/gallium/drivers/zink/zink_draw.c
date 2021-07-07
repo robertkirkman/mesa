@@ -167,10 +167,10 @@ update_compute_program(struct zink_context *ctx)
    if (ctx->dirty_shader_stages & bits) {
       struct zink_compute_program *comp = NULL;
       struct hash_entry *entry = _mesa_hash_table_search(ctx->compute_program_cache,
-                                                         &ctx->compute_stage->shader_id);
+                                                         ctx->compute_stage);
       if (!entry) {
          comp = zink_create_compute_program(ctx, ctx->compute_stage);
-         entry = _mesa_hash_table_insert(ctx->compute_program_cache, &comp->shader->shader_id, comp);
+         entry = _mesa_hash_table_insert(ctx->compute_program_cache, comp->shader, comp);
       }
       comp = (struct zink_compute_program*)(entry ? entry->data : NULL);
       if (comp && comp != ctx->curr_compute) {
@@ -434,20 +434,36 @@ zink_draw_vbo(struct pipe_context *pctx,
    ctx->gfx_prim_mode = dinfo->mode;
    update_gfx_program(ctx);
 
+   if (zink_program_has_descriptors(&ctx->curr_program->base))
+      screen->descriptors_update(ctx, false);
+
    if (ctx->gfx_pipeline_state.primitive_restart != dinfo->primitive_restart)
       ctx->gfx_pipeline_state.dirty = true;
    ctx->gfx_pipeline_state.primitive_restart = dinfo->primitive_restart;
 
    unsigned index_offset = 0;
+   unsigned index_size = dinfo->index_size;
    struct pipe_resource *index_buffer = NULL;
-   if (dinfo->index_size > 0) {
-       if (dinfo->has_user_indices) {
-          if (!util_upload_index_buffer(pctx, dinfo, &draws[0], &index_buffer, &index_offset, 4)) {
-             debug_printf("util_upload_index_buffer() failed\n");
-             return;
-          }
-       } else
-          index_buffer = dinfo->index.resource;
+   if (index_size > 0) {
+      if (dinfo->has_user_indices) {
+         if (!util_upload_index_buffer(pctx, dinfo, &draws[0], &index_buffer, &index_offset, 4)) {
+            debug_printf("util_upload_index_buffer() failed\n");
+            return;
+         }
+         zink_batch_reference_resource_move(batch, zink_resource(index_buffer));
+      } else {
+         index_buffer = dinfo->index.resource;
+         zink_batch_reference_resource_rw(batch, zink_resource(index_buffer), false);
+      }
+      assert(index_size <= 4 && index_size != 3);
+      assert(index_size != 1 || screen->info.have_EXT_index_type_uint8);
+      const VkIndexType index_type[3] = {
+         VK_INDEX_TYPE_UINT8_EXT,
+         VK_INDEX_TYPE_UINT16,
+         VK_INDEX_TYPE_UINT32,
+      };
+      struct zink_resource *res = zink_resource(index_buffer);
+      vkCmdBindIndexBuffer(batch->state->cmdbuf, res->obj->buffer, index_offset, index_type[index_size >> 1]);
    }
 
    bool have_streamout = !!ctx->num_so_targets;
@@ -462,9 +478,6 @@ zink_draw_vbo(struct pipe_context *pctx,
       zink_emit_xfb_vertex_input_barrier(ctx, zink_resource(so_target->base.buffer));
 
    barrier_draw_buffers(ctx, dinfo, dindirect, index_buffer);
-
-   if (zink_program_has_descriptors(&ctx->curr_program->base))
-      screen->descriptors_update(ctx, false);
 
    if (ctx->descriptor_refs_dirty[0])
       zink_update_descriptor_refs(ctx, false);
@@ -625,7 +638,7 @@ zink_draw_vbo(struct pipe_context *pctx,
       zink_bind_vertex_buffers(batch, ctx);
 
    if (BITSET_TEST(ctx->gfx_stages[PIPE_SHADER_VERTEX]->nir->info.system_values_read, SYSTEM_VALUE_BASE_VERTEX)) {
-      unsigned draw_mode_is_indexed = dinfo->index_size > 0;
+      unsigned draw_mode_is_indexed = index_size > 0;
       vkCmdPushConstants(batch->state->cmdbuf, ctx->curr_program->base.layout, VK_SHADER_STAGE_VERTEX_BIT,
                          offsetof(struct zink_gfx_push_constant, draw_mode_is_indexed), sizeof(unsigned),
                          &draw_mode_is_indexed);
@@ -638,27 +651,12 @@ zink_draw_vbo(struct pipe_context *pctx,
    zink_query_update_gs_states(ctx);
 
    if (have_streamout) {
-      for (int i = 0; i < ZINK_SHADER_COUNT; i++) {
-         struct zink_shader *shader = ctx->gfx_stages[i];
-         if (!shader)
-            continue;
-         enum pipe_shader_type stage = pipe_shader_type_from_mesa(shader->nir->info.stage);
-         if ((stage == PIPE_SHADER_GEOMETRY ||
-             (stage == PIPE_SHADER_TESS_EVAL && !ctx->gfx_stages[PIPE_SHADER_GEOMETRY]) ||
-             (stage == PIPE_SHADER_VERTEX && !ctx->gfx_stages[PIPE_SHADER_GEOMETRY] && !ctx->gfx_stages[PIPE_SHADER_TESS_EVAL]))) {
-            for (unsigned j = 0; j < ctx->num_so_targets; j++) {
-               struct zink_so_target *t = zink_so_target(ctx->so_targets[j]);
-               if (t)
-                  t->stride = shader->streamout.so_info.stride[j] * sizeof(uint32_t);
-            }
-         }
-      }
-
       for (unsigned i = 0; i < ctx->num_so_targets; i++) {
          struct zink_so_target *t = zink_so_target(ctx->so_targets[i]);
          counter_buffers[i] = VK_NULL_HANDLE;
          if (t) {
             struct zink_resource *res = zink_resource(t->counter_buffer);
+            t->stride = ctx->last_vertex_stage->streamout.so_info.stride[i] * sizeof(uint32_t);
             zink_batch_reference_resource_rw(batch, res, true);
             if (t->counter_buffer_valid) {
                counter_buffers[i] = res->obj->buffer;
@@ -674,29 +672,7 @@ zink_draw_vbo(struct pipe_context *pctx,
    unsigned draw_id = drawid_offset;
    bool needs_drawid = ctx->drawid_broken;
    batch->state->draw_count += num_draws;
-   if (dinfo->index_size > 0) {
-      VkIndexType index_type;
-      unsigned index_size = dinfo->index_size;
-      if (need_index_buffer_unref)
-         /* index buffer will have been promoted from uint8 to uint16 in this case */
-         index_size = MAX2(index_size, 2);
-      switch (index_size) {
-      case 1:
-         assert(screen->info.have_EXT_index_type_uint8);
-         index_type = VK_INDEX_TYPE_UINT8_EXT;
-         break;
-      case 2:
-         index_type = VK_INDEX_TYPE_UINT16;
-         break;
-      case 4:
-         index_type = VK_INDEX_TYPE_UINT32;
-         break;
-      default:
-         unreachable("unknown index size!");
-      }
-      struct zink_resource *res = zink_resource(index_buffer);
-      vkCmdBindIndexBuffer(batch->state->cmdbuf, res->obj->buffer, index_offset, index_type);
-      zink_batch_reference_resource_rw(batch, res, false);
+   if (index_size > 0) {
       if (dindirect && dindirect->buffer) {
          assert(num_draws == 1);
          if (needs_drawid)
@@ -744,9 +720,6 @@ zink_draw_vbo(struct pipe_context *pctx,
          draw(ctx, dinfo, draws, num_draws, draw_id, needs_drawid);
       }
    }
-
-   if (dinfo->index_size > 0 && (dinfo->has_user_indices || need_index_buffer_unref))
-      pipe_resource_reference(&index_buffer, NULL);
 
    if (have_streamout) {
       for (unsigned i = 0; i < ctx->num_so_targets; i++) {
