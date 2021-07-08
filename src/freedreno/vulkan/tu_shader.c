@@ -80,6 +80,9 @@ tu_spirv_to_nir(struct tu_device *dev,
          .demote_to_helper_invocation = true,
          .vk_memory_model = true,
          .vk_memory_model_device_scope = true,
+         .subgroup_basic = true,
+         .subgroup_ballot = true,
+         .subgroup_vote = true,
       },
    };
 
@@ -330,7 +333,7 @@ lower_ssbo_ubo_intrinsic(nir_builder *b, nir_intrinsic_instr *intrin)
          nir_ssa_dest_init(&copy->instr, &copy->dest,
                            intrin->dest.ssa.num_components,
                            intrin->dest.ssa.bit_size,
-                           intrin->dest.ssa.name);
+                           NULL);
          results[i] = &copy->dest.ssa;
       }
 

@@ -189,6 +189,39 @@ radv_optimize_nir(const struct radv_device *device, struct nir_shader *shader,
    NIR_PASS(progress, shader, nir_opt_move, nir_move_load_ubo);
 }
 
+void
+radv_optimize_nir_algebraic(nir_shader *nir, bool opt_offsets)
+{
+   bool more_algebraic = true;
+   while (more_algebraic) {
+      more_algebraic = false;
+      NIR_PASS_V(nir, nir_copy_prop);
+      NIR_PASS_V(nir, nir_opt_dce);
+      NIR_PASS_V(nir, nir_opt_constant_folding);
+      NIR_PASS_V(nir, nir_opt_cse);
+      NIR_PASS(more_algebraic, nir, nir_opt_algebraic);
+   }
+
+   if (opt_offsets)
+      NIR_PASS_V(nir, nir_opt_offsets);
+
+   /* Do late algebraic optimization to turn add(a,
+    * neg(b)) back into subs, then the mandatory cleanup
+    * after algebraic.  Note that it may produce fnegs,
+    * and if so then we need to keep running to squash
+    * fneg(fneg(a)).
+    */
+   bool more_late_algebraic = true;
+   while (more_late_algebraic) {
+      more_late_algebraic = false;
+      NIR_PASS(more_late_algebraic, nir, nir_opt_algebraic_late);
+      NIR_PASS_V(nir, nir_opt_constant_folding);
+      NIR_PASS_V(nir, nir_copy_prop);
+      NIR_PASS_V(nir, nir_opt_dce);
+      NIR_PASS_V(nir, nir_opt_cse);
+   }
+}
+
 static void
 shared_var_info(const struct glsl_type *type, unsigned *size, unsigned *align)
 {
@@ -605,11 +638,12 @@ radv_shader_compile_to_nir(struct radv_device *device, struct vk_shader_module *
    nir_lower_subgroups(nir, &(struct nir_lower_subgroups_options){
                                .subgroup_size = subgroup_size,
                                .ballot_bit_size = ballot_bit_size,
+                               .ballot_components = 1,
                                .lower_to_scalar = 1,
                                .lower_subgroup_masks = 1,
                                .lower_shuffle = 1,
                                .lower_shuffle_to_32bit = 1,
-                               .lower_vote_eq_to_ballot = 1,
+                               .lower_vote_eq = 1,
                                .lower_quad_broadcast_dynamic = 1,
                                .lower_quad_broadcast_dynamic_to_const = gfx7minus,
                                .lower_shuffle_to_swizzle_amd = 1,
@@ -810,47 +844,60 @@ radv_lower_io_to_mem(struct radv_device *device, struct nir_shader *nir,
    return false;
 }
 
-bool radv_lower_ngg(struct radv_device *device, struct nir_shader *nir, bool has_gs,
+void radv_lower_ngg(struct radv_device *device, struct nir_shader *nir,
                     struct radv_shader_info *info,
                     const struct radv_pipeline_key *pl_key,
                     struct radv_shader_variant_key *key)
 {
    /* TODO: support the LLVM backend with the NIR lowering */
-   if (radv_use_llvm_for_stage(device, nir->info.stage))
-      return false;
+   assert(!radv_use_llvm_for_stage(device, nir->info.stage));
+
+   assert(nir->info.stage == MESA_SHADER_VERTEX ||
+          nir->info.stage == MESA_SHADER_TESS_EVAL ||
+          nir->info.stage == MESA_SHADER_GEOMETRY);
 
    ac_nir_ngg_config out_conf = {0};
    const struct gfx10_ngg_info *ngg_info = &info->ngg_info;
    unsigned num_gs_invocations = (nir->info.stage != MESA_SHADER_GEOMETRY || ngg_info->max_vert_out_per_gs_instance) ? 1 : info->gs.invocations;
-   unsigned max_workgroup_size = MAX4(ngg_info->hw_max_esverts, /* Invocations that process an input vertex */
-                                      ngg_info->max_out_verts, /* Invocations that export an output vertex */
-                                      ngg_info->max_gsprims * num_gs_invocations, /* Invocations that process an input primitive */
-                                      ngg_info->max_gsprims * num_gs_invocations * ngg_info->prim_amp_factor /* Invocations that produce an output primitive */);
+   unsigned num_vertices_per_prim = 3;
+
+   /* Get the number of vertices per input primitive */
+   if (nir->info.stage == MESA_SHADER_TESS_EVAL) {
+      if (nir->info.tess.point_mode)
+         num_vertices_per_prim = 1;
+      else if (nir->info.tess.primitive_mode == GL_ISOLINES)
+         num_vertices_per_prim = 2;
+   } else if (nir->info.stage == MESA_SHADER_VERTEX) {
+      /* Need to add 1, because: V_028A6C_POINTLIST=0, V_028A6C_LINESTRIP=1, V_028A6C_TRISTRIP=2, etc. */
+      num_vertices_per_prim = key->vs.outprim + 1;
+   } else if (nir->info.stage == MESA_SHADER_GEOMETRY) {
+      num_vertices_per_prim = nir->info.gs.vertices_in;
+   } else {
+      unreachable("NGG needs to be VS, TES or GS.");
+   }
+
+   /* Invocations that process an input vertex */
+   unsigned max_vtx_in = MIN2(256, ngg_info->enable_vertex_grouping ? ngg_info->hw_max_esverts : num_vertices_per_prim * ngg_info->max_gsprims);
+   /* Invocations that export an output vertex */
+   unsigned max_vtx_out = ngg_info->max_out_verts;
+   /* Invocations that process an input primitive */
+   unsigned max_prm_in = ngg_info->max_gsprims * num_gs_invocations;
+   /* Invocations that produce an output primitive */
+   unsigned max_prm_out = ngg_info->max_gsprims * num_gs_invocations * ngg_info->prim_amp_factor;
+
+   unsigned max_workgroup_size = MAX4(max_vtx_in, max_vtx_out, max_prm_in, max_prm_out);
 
    /* Maximum HW limit for NGG workgroups */
-   assert(max_workgroup_size <= 256);
+   max_workgroup_size = MIN2(256, max_workgroup_size);
 
    if (nir->info.stage == MESA_SHADER_VERTEX ||
        nir->info.stage == MESA_SHADER_TESS_EVAL) {
-      if (has_gs || !key->vs_common_out.as_ngg)
-         return false;
-
-      unsigned num_vertices_per_prim = 3;
-
-      if (nir->info.stage == MESA_SHADER_TESS_EVAL) {
-         if (nir->info.tess.point_mode)
-            num_vertices_per_prim = 1;
-         else if (nir->info.tess.primitive_mode == GL_ISOLINES)
-            num_vertices_per_prim = 2;
-      } else if (nir->info.stage == MESA_SHADER_VERTEX) {
-         /* Need to add 1, because: V_028A6C_POINTLIST=0, V_028A6C_LINESTRIP=1, V_028A6C_TRISTRIP=2, etc. */
-         num_vertices_per_prim = key->vs.outprim + 1;
-      }
+      assert(key->vs_common_out.as_ngg);
 
       out_conf =
          ac_nir_lower_ngg_nogs(
             nir,
-            ngg_info->hw_max_esverts,
+            max_vtx_in,
             num_vertices_per_prim,
             max_workgroup_size,
             info->wave_size,
@@ -862,21 +909,16 @@ bool radv_lower_ngg(struct radv_device *device, struct nir_shader *nir, bool has
       info->is_ngg_passthrough = out_conf.passthrough;
       key->vs_common_out.as_ngg_passthrough = out_conf.passthrough;
    } else if (nir->info.stage == MESA_SHADER_GEOMETRY) {
-      if (!info->is_ngg)
-         return false;
-
+      assert(info->is_ngg);
       ac_nir_lower_ngg_gs(
          nir, info->wave_size, max_workgroup_size,
          info->ngg_info.esgs_ring_size,
          info->gs.gsvs_vertex_size,
          info->ngg_info.ngg_emit_size * 4u,
          key->vs.provoking_vtx_last);
-      return true;
    } else {
-      return false;
+      unreachable("invalid SW stage passed to radv_lower_ngg");
    }
-
-   return true;
 }
 
 static void *

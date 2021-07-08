@@ -293,6 +293,12 @@ struct ra_block_state {
 	/* True if the block has been visited and "renames" is complete.
 	 */
 	bool visited;
+
+	/* True if the block is unreachable via the logical CFG. This happens for
+	 * blocks after an if where both sides end in a break/continue. We ignore
+	 * it for everything but shared registers.
+	 */
+	bool logical_unreachable;
 };
 
 struct ra_parallel_copy {
@@ -313,6 +319,8 @@ struct ra_ctx {
 
 	/* Shared regs. */
 	struct ra_file shared;
+
+	struct ir3 *ir;
 
 	struct ir3_liveness *live;
 
@@ -1492,7 +1500,8 @@ handle_live_in(struct ra_ctx *ctx, struct ir3_register *def)
 		struct ir3_block *pred = ctx->block->predecessors[i];
 		struct ra_block_state *pred_state = &ctx->blocks[pred->index];
 
-		if (!pred_state->visited)
+		if (!pred_state->visited ||
+			(pred_state->logical_unreachable && !(def->flags & IR3_REG_SHARED)))
 			continue;
 
 		physreg = read_register(ctx, pred, def);
@@ -1646,8 +1655,14 @@ insert_live_in_move(struct ra_ctx *ctx, struct ra_interval *interval)
 {
 	physreg_t physreg = ra_interval_get_physreg(interval);
 	
-	for (unsigned i = 0; i < ctx->block->predecessors_count; i++) {
-		struct ir3_block *pred = ctx->block->predecessors[i];
+	bool shared = interval->interval.reg->flags & IR3_REG_SHARED;
+	struct ir3_block **predecessors =
+		shared ? ctx->block->physical_predecessors : ctx->block->predecessors;
+	unsigned predecessors_count =
+		shared ? ctx->block->physical_predecessors_count : ctx->block->predecessors_count;
+
+	for (unsigned i = 0; i < predecessors_count; i++) {
+		struct ir3_block *pred = predecessors[i];
 		struct ra_block_state *pred_state = &ctx->blocks[pred->index];
 
 		if (!pred_state->visited)
@@ -1656,6 +1671,27 @@ insert_live_in_move(struct ra_ctx *ctx, struct ra_interval *interval)
 		physreg_t pred_reg = read_register(ctx, pred, interval->interval.reg);
 		if (pred_reg != physreg) {
 			insert_liveout_copy(pred, physreg, pred_reg, interval->interval.reg);
+
+			/* This is a bit tricky, but when visiting the destination of a
+			 * physical-only edge, we have two predecessors (the if and the
+			 * header block) and both have multiple successors. We pick the
+			 * register for all live-ins from the normal edge, which should
+			 * guarantee that there's no need for shuffling things around in
+			 * the normal predecessor as long as there are no phi nodes, but
+			 * we still may need to insert fixup code in the physical
+			 * predecessor (i.e. the last block of the if) and that has
+			 * another successor (the block after the if) so we need to update
+			 * the renames state for when we process the other successor. This
+			 * crucially depends on the other successor getting processed
+			 * after this.
+			 *
+			 * For normal (non-physical) edges we disallow critical edges so
+			 * that hacks like this aren't necessary.
+			 */
+			if (!pred_state->renames)
+				pred_state->renames = _mesa_pointer_hash_table_create(ctx);
+			_mesa_hash_table_insert(pred_state->renames, interval->interval.reg,
+									(void *)(uintptr_t)physreg);
 		}
 	}
 }
@@ -1763,6 +1799,21 @@ handle_block(struct ra_ctx *ctx, struct ir3_block *block)
 	ra_file_init(&ctx->half);
 	ra_file_init(&ctx->shared);
 
+	bool unreachable = false;
+	if (block != ir3_start_block(ctx->ir)) {
+		unreachable = true;
+		for (unsigned i = 0; i < block->predecessors_count; i++) {
+			struct ra_block_state *pred_state =
+				&ctx->blocks[block->predecessors[i]->index];
+			if (!pred_state->logical_unreachable) {
+				unreachable = false;
+				break;
+			}
+		}
+	}
+
+	ctx->blocks[block->index].logical_unreachable = unreachable;
+
 	/* Handle live-ins, phis, and input meta-instructions. These all appear
 	 * live at the beginning of the block, and interfere with each other
 	 * therefore need to be allocated "in parallel". This means that we
@@ -1787,6 +1838,8 @@ handle_block(struct ra_ctx *ctx, struct ir3_block *block)
 	BITSET_FOREACH_SET(name, ctx->live->live_in[block->index],
 					   ctx->live->definitions_count) {
 		struct ir3_register *reg = ctx->live->definitions[name];
+		if (unreachable && !(reg->flags & IR3_REG_SHARED))
+			continue;
 		handle_live_in(ctx, reg);
 	}
 
@@ -1850,10 +1903,6 @@ handle_block(struct ra_ctx *ctx, struct ir3_block *block)
 	}
 
 	ctx->blocks[block->index].visited = true;
-
-	for (unsigned i = 0; i < block->dom_children_count; i++) {
-		handle_block(ctx, block->dom_children[i]);
-	}
 }
 
 static unsigned
@@ -1918,6 +1967,7 @@ ir3_ra(struct ir3_shader_variant *v)
 
 	struct ra_ctx *ctx = rzalloc(NULL, struct ra_ctx);
 
+	ctx->ir = v->ir;
 	ctx->merged_regs = v->mergedregs;
 	ctx->compiler = v->shader->compiler;
 	ctx->stage = v->type;
@@ -1933,7 +1983,8 @@ ir3_ra(struct ir3_shader_variant *v)
 
 	ctx->shared.size = RA_SHARED_SIZE;
 
-	handle_block(ctx, ir3_start_block(v->ir));
+	foreach_block (block, &v->ir->block_list)
+		handle_block(ctx, block);
 
 	ir3_ra_validate(v, ctx->full.size, ctx->half.size, live->block_count);
 

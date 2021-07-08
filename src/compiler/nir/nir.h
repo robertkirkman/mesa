@@ -728,9 +728,6 @@ typedef struct nir_register {
    /** generic register index. */
    unsigned index;
 
-   /** only for debug purposes, can be NULL */
-   const char *name;
-
    /** set of nir_srcs where this register is used (read from) */
    struct list_head uses;
 
@@ -806,9 +803,6 @@ nir_instr_is_last(const nir_instr *instr)
 }
 
 typedef struct nir_ssa_def {
-   /** for debugging only, can be NULL */
-   const char* name;
-
    /** Instruction which produces this SSA value. */
    nir_instr *parent_instr;
 
@@ -4020,8 +4014,7 @@ void nir_ssa_dest_init(nir_instr *instr, nir_dest *dest,
                        unsigned num_components, unsigned bit_size,
                        const char *name);
 void nir_ssa_def_init(nir_instr *instr, nir_ssa_def *def,
-                      unsigned num_components, unsigned bit_size,
-                      const char *name);
+                      unsigned num_components, unsigned bit_size);
 static inline void
 nir_ssa_dest_init_for_type(nir_instr *instr, nir_dest *dest,
                            const struct glsl_type *type,
@@ -4726,9 +4719,10 @@ bool nir_lower_is_helper_invocation(nir_shader *shader);
 typedef struct nir_lower_subgroups_options {
    uint8_t subgroup_size;
    uint8_t ballot_bit_size;
+   uint8_t ballot_components;
    bool lower_to_scalar:1;
    bool lower_vote_trivial:1;
-   bool lower_vote_eq_to_ballot:1;
+   bool lower_vote_eq:1;
    bool lower_subgroup_masks:1;
    bool lower_shuffle:1;
    bool lower_shuffle_to_32bit:1;
@@ -4737,6 +4731,7 @@ typedef struct nir_lower_subgroups_options {
    bool lower_quad_broadcast_dynamic:1;
    bool lower_quad_broadcast_dynamic_to_const:1;
    bool lower_elect:1;
+   bool lower_read_invocation_to_cond:1;
 } nir_lower_subgroups_options;
 
 bool nir_lower_subgroups(nir_shader *shader,

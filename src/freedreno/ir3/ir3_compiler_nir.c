@@ -2005,6 +2005,12 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 			dst[i] = create_driver_param(ctx, IR3_DP_LOCAL_GROUP_SIZE_X + i);
 		}
 		break;
+	case nir_intrinsic_load_subgroup_size:
+		dst[0] = create_driver_param(ctx, IR3_DP_SUBGROUP_SIZE);
+		break;
+	case nir_intrinsic_load_subgroup_id_shift_ir3:
+		dst[0] = create_driver_param(ctx, IR3_DP_SUBGROUP_ID_SHIFT);
+		break;
 	case nir_intrinsic_discard_if:
 	case nir_intrinsic_discard:
 	case nir_intrinsic_demote:
@@ -2072,6 +2078,65 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 
 		array_insert(ctx->ir, ctx->ir->predicates, kill);
 		array_insert(b, b->keeps, kill);
+		break;
+	}
+
+	case nir_intrinsic_vote_any:
+	case nir_intrinsic_vote_all: {
+		struct ir3_instruction *src = ir3_get_src(ctx, &intr->src[0])[0];
+		struct ir3_instruction *pred = ir3_get_predicate(ctx, src);
+		if (intr->intrinsic == nir_intrinsic_vote_any)
+			dst[0] = ir3_ANY_MACRO(ctx->block, pred, 0);
+		else
+			dst[0] = ir3_ALL_MACRO(ctx->block, pred, 0);
+		dst[0]->srcs[0]->num = regid(REG_P0, 0);
+		array_insert(ctx->ir, ctx->ir->predicates, dst[0]);
+		break;
+	}
+	case nir_intrinsic_elect:
+		dst[0] = ir3_ELECT_MACRO(ctx->block);
+		/* This may expand to a divergent if/then, so allocate stack space for
+		 * it.
+		 */
+		ctx->max_stack = MAX2(ctx->max_stack, ctx->stack + 1);
+		break;
+
+	case nir_intrinsic_read_invocation_cond_ir3: {
+		struct ir3_instruction *src = ir3_get_src(ctx, &intr->src[0])[0];
+		struct ir3_instruction *cond = ir3_get_src(ctx, &intr->src[1])[0];
+		dst[0] = ir3_READ_COND_MACRO(ctx->block,
+									 ir3_get_predicate(ctx, cond), 0,
+									 src, 0);
+		dst[0]->dsts[0]->flags |= IR3_REG_SHARED;
+		dst[0]->srcs[0]->num = regid(REG_P0, 0);
+		array_insert(ctx->ir, ctx->ir->predicates, dst[0]);
+		ctx->max_stack = MAX2(ctx->max_stack, ctx->stack + 1);
+		break;
+	}
+
+	case nir_intrinsic_read_first_invocation: {
+		struct ir3_instruction *src = ir3_get_src(ctx, &intr->src[0])[0];
+		dst[0] = ir3_READ_FIRST_MACRO(ctx->block, src, 0);
+		dst[0]->dsts[0]->flags |= IR3_REG_SHARED;
+		ctx->max_stack = MAX2(ctx->max_stack, ctx->stack + 1);
+		break;
+	}
+
+	case nir_intrinsic_ballot: {
+		struct ir3_instruction *ballot;
+		unsigned components = intr->dest.ssa.num_components;
+		if (nir_src_is_const(intr->src[0]) && nir_src_as_bool(intr->src[0])) {
+			/* ballot(true) is just MOVMSK */
+			ballot = ir3_MOVMSK(ctx->block, components);
+		} else {
+			struct ir3_instruction *src = ir3_get_src(ctx, &intr->src[0])[0];
+			struct ir3_instruction *pred = ir3_get_predicate(ctx, src);
+			ballot = ir3_BALLOT_MACRO(ctx->block, pred, components);
+			ballot->srcs[0]->num = regid(REG_P0, 0);
+			array_insert(ctx->ir, ctx->ir->predicates, ballot);
+			ctx->max_stack = MAX2(ctx->max_stack, ctx->stack + 1);
+		}
+		ir3_split_dest(ctx->block, dst, ballot, 0, components);
 		break;
 	}
 
@@ -2734,6 +2799,43 @@ emit_phi(struct ir3_context *ctx, nir_phi_instr *nphi)
 
 static struct ir3_block *get_block(struct ir3_context *ctx, const nir_block *nblock);
 
+static struct ir3_instruction *read_phi_src(struct ir3_context *ctx,
+											struct ir3_block *blk,
+											struct ir3_instruction *phi,
+											nir_phi_instr *nphi)
+{
+	if (!blk->nblock) {
+		struct ir3_instruction *continue_phi =
+			ir3_instr_create(blk, OPC_META_PHI, 1, blk->predecessors_count);
+		__ssa_dst(continue_phi)->flags = phi->dsts[0]->flags;
+
+		for (unsigned i = 0; i < blk->predecessors_count; i++) {
+			struct ir3_instruction *src =
+				read_phi_src(ctx, blk->predecessors[i], phi, nphi);
+			if (src)
+				__ssa_src(continue_phi, src, 0);
+			else
+				ir3_src_create(continue_phi, INVALID_REG, phi->dsts[0]->flags);
+		}
+
+		return continue_phi;
+	}
+
+	nir_foreach_phi_src(nsrc, nphi) {
+		if (blk->nblock == nsrc->pred) {
+			if (nsrc->src.ssa->parent_instr->type == nir_instr_type_ssa_undef) {
+				/* Create an ir3 undef */
+				return NULL;
+			} else {
+				return ir3_get_src(ctx, &nsrc->src)[0];
+			}
+		}
+	}
+
+	unreachable("couldn't find phi node ir3 block");
+	return NULL;
+}
+
 static void
 resolve_phis(struct ir3_context *ctx, struct ir3_block *block)
 {
@@ -2743,19 +2845,17 @@ resolve_phis(struct ir3_context *ctx, struct ir3_block *block)
 
 		nir_phi_instr *nphi = phi->phi.nphi;
 
+		if (!nphi) /* skip continue phis created above */
+			continue;
+
 		for (unsigned i = 0; i < block->predecessors_count; i++) {
 			struct ir3_block *pred = block->predecessors[i];
-			nir_foreach_phi_src(nsrc, nphi) {
-				if (get_block(ctx, nsrc->pred) == pred) {
-					if (nsrc->src.ssa->parent_instr->type == nir_instr_type_ssa_undef) {
-						/* Create an ir3 undef */
-						ir3_src_create(phi, INVALID_REG, phi->dsts[0]->flags);
-					} else {
-						struct ir3_instruction *src = ir3_get_src(ctx, &nsrc->src)[0];
-						__ssa_src(phi, src, 0);
-					}
-					break;
-				}
+			struct ir3_instruction *src = read_phi_src(ctx, pred, phi, nphi);
+			if (src) {
+				__ssa_src(phi, src, 0);
+			} else {
+				/* Create an ir3 undef */
+				ir3_src_create(phi, INVALID_REG, phi->dsts[0]->flags);
 			}
 		}
 	}
@@ -2848,12 +2948,35 @@ get_block(struct ir3_context *ctx, const nir_block *nblock)
 	return block;
 }
 
+static struct ir3_block *
+get_block_or_continue(struct ir3_context *ctx, const nir_block *nblock)
+{
+	struct hash_entry *hentry;
+
+	hentry = _mesa_hash_table_search(ctx->continue_block_ht, nblock);
+	if (hentry)
+		return hentry->data;
+
+	return get_block(ctx, nblock);
+}
+
+static struct ir3_block *
+create_continue_block(struct ir3_context *ctx, const nir_block *nblock)
+{
+	struct ir3_block *block = ir3_block_create(ctx->ir);
+	block->nblock = NULL;
+	_mesa_hash_table_insert(ctx->continue_block_ht, nblock, block);
+	return block;
+}
+
 static void
 emit_block(struct ir3_context *ctx, nir_block *nblock)
 {
 	ctx->block = get_block(ctx, nblock);
 
 	list_addtail(&ctx->block->node, &ctx->ir->block_list);
+
+	ctx->block->loop_id = ctx->loop_id;
 
 	/* re-emit addr register in each block if needed: */
 	for (int i = 0; i < ARRAY_SIZE(ctx->addr0_ht); i++) {
@@ -2875,7 +2998,8 @@ emit_block(struct ir3_context *ctx, nir_block *nblock)
 	for (int i = 0; i < ARRAY_SIZE(ctx->block->successors); i++) {
 		if (nblock->successors[i]) {
 			ctx->block->successors[i] =
-				get_block(ctx, nblock->successors[i]);
+				get_block_or_continue(ctx, nblock->successors[i]);
+			ctx->block->physical_successors[i] = ctx->block->successors[i];
 		}
 	}
 
@@ -2889,17 +3013,63 @@ emit_if(struct ir3_context *ctx, nir_if *nif)
 {
 	struct ir3_instruction *condition = ir3_get_src(ctx, &nif->condition)[0];
 
-	ctx->block->condition = ir3_get_predicate(ctx, condition);
+	if (condition->opc == OPC_ANY_MACRO && condition->block == ctx->block) {
+		ctx->block->condition = ssa(condition->srcs[0]);
+		ctx->block->brtype = IR3_BRANCH_ANY;
+	} else if (condition->opc == OPC_ALL_MACRO && condition->block == ctx->block) {
+		ctx->block->condition = ssa(condition->srcs[0]);
+		ctx->block->brtype = IR3_BRANCH_ALL;
+	} else if (condition->opc == OPC_ELECT_MACRO && condition->block == ctx->block) {
+		ctx->block->condition = NULL;
+		ctx->block->brtype = IR3_BRANCH_GETONE;
+	} else {
+		ctx->block->condition = ir3_get_predicate(ctx, condition);
+		ctx->block->brtype = IR3_BRANCH_COND;
+	}
 
 	emit_cf_list(ctx, &nif->then_list);
 	emit_cf_list(ctx, &nif->else_list);
+
+	struct ir3_block *last_then = get_block(ctx, nir_if_last_then_block(nif));
+	struct ir3_block *first_else = get_block(ctx, nir_if_first_else_block(nif));
+	assert(last_then->physical_successors[0] && !last_then->physical_successors[1]);
+	last_then->physical_successors[1] = first_else;
+
+	struct ir3_block *last_else = get_block(ctx, nir_if_last_else_block(nif));
+	struct ir3_block *after_if =
+		get_block(ctx, nir_cf_node_as_block(nir_cf_node_next(&nif->cf_node)));
+	last_else->physical_successors[0] = after_if;
 }
 
 static void
 emit_loop(struct ir3_context *ctx, nir_loop *nloop)
 {
+	unsigned old_loop_id = ctx->loop_id;
+	ctx->loop_id = ctx->so->loops + 1;
+
+	struct nir_block *nstart = nir_loop_first_block(nloop);
+	struct ir3_block *continue_blk = NULL;
+
+	/* There's always one incoming edge from outside the loop, and if there
+	 * are more than two backedges from inside the loop (so more than 2 total
+	 * edges) then we need to create a continue block after the loop to ensure
+	 * that control reconverges at the end of each loop iteration.
+	 */
+	if (nstart->predecessors->entries > 2) {
+		continue_blk = create_continue_block(ctx, nstart);
+	}
+
 	emit_cf_list(ctx, &nloop->body);
+
+	if (continue_blk) {
+		struct ir3_block *start = get_block(ctx, nstart);
+		continue_blk->successors[0] = start;
+		continue_blk->physical_successors[0] = start;
+		list_addtail(&continue_blk->node, &ctx->ir->block_list);
+	}
+
 	ctx->so->loops++;
+	ctx->loop_id = old_loop_id;
 }
 
 static void
@@ -3065,6 +3235,8 @@ setup_predecessors(struct ir3 *ir)
 		for (int i = 0; i < ARRAY_SIZE(block->successors); i++) {
 			if (block->successors[i])
 				ir3_block_add_predecessor(block->successors[i], block);
+			if (block->physical_successors[i])
+				ir3_block_add_physical_predecessor(block->physical_successors[i], block);
 		}
 	}
 }
@@ -4029,6 +4201,8 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 	}
 
 	IR3_PASS(ir, ir3_postsched, so);
+
+	IR3_PASS(ir, ir3_lower_subgroups);
 
 	if (so->type == MESA_SHADER_FRAGMENT)
 		pack_inlocs(ctx);

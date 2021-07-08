@@ -760,8 +760,6 @@ struct wsi_wl_swapchain {
 
    struct wl_surface *                          surface;
 
-   struct wl_drm *                              drm_wrapper;
-
    struct wl_callback *                         frame;
 
    VkExtent2D                                   extent;
@@ -956,7 +954,8 @@ wsi_wl_image_init(struct wsi_wl_swapchain *chain,
    if (display->dmabuf.wl_dmabuf) {
       struct zwp_linux_buffer_params_v1 *params =
          zwp_linux_dmabuf_v1_create_params(display->dmabuf.wl_dmabuf);
-      wl_proxy_set_queue((struct wl_proxy *) params, chain->display->queue);
+      if (!params)
+         goto fail_image;
 
       for (int i = 0; i < image->base.num_planes; i++) {
          zwp_linux_buffer_params_v1_add(params,
@@ -982,7 +981,7 @@ wsi_wl_image_init(struct wsi_wl_swapchain *chain,
       assert(image->base.drm_modifier == DRM_FORMAT_MOD_INVALID);
 
       image->buffer =
-         wl_drm_create_prime_buffer(chain->drm_wrapper,
+         wl_drm_create_prime_buffer(display->drm.wl_drm,
                                     image->base.fds[0], /* name */
                                     chain->extent.width,
                                     chain->extent.height,
@@ -1003,7 +1002,7 @@ wsi_wl_image_init(struct wsi_wl_swapchain *chain,
 fail_image:
    wsi_destroy_image(&chain->base, &image->base);
 
-   return result;
+   return VK_ERROR_OUT_OF_HOST_MEMORY;
 }
 
 static VkResult
@@ -1023,8 +1022,6 @@ wsi_wl_swapchain_destroy(struct wsi_swapchain *wsi_chain,
       wl_callback_destroy(chain->frame);
    if (chain->surface)
       wl_proxy_wrapper_destroy(chain->surface);
-   if (chain->drm_wrapper)
-      wl_proxy_wrapper_destroy(chain->drm_wrapper);
 
    if (chain->display)
       wsi_wl_display_unref(chain->display);
@@ -1073,7 +1070,6 @@ wsi_wl_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
    for (uint32_t i = 0; i < num_images; i++)
       chain->images[i].buffer = NULL;
    chain->surface = NULL;
-   chain->drm_wrapper = NULL;
    chain->frame = NULL;
 
    bool alpha = pCreateInfo->compositeAlpha ==
@@ -1135,17 +1131,6 @@ wsi_wl_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
          chain->drm_modifiers = u_vector_tail(modifiers);
          chain->num_drm_modifiers = u_vector_length(modifiers);
       }
-   }
-
-   if (chain->display->drm.wl_drm) {
-      chain->drm_wrapper =
-         wl_proxy_create_wrapper(chain->display->drm.wl_drm);
-      if (!chain->drm_wrapper) {
-         result = VK_ERROR_OUT_OF_HOST_MEMORY;
-         goto fail;
-      }
-      wl_proxy_set_queue((struct wl_proxy *) chain->drm_wrapper,
-                         chain->display->queue);
    }
 
    chain->fifo_ready = true;

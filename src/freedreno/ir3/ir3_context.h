@@ -110,6 +110,8 @@ struct ir3_context {
 	 */
 	unsigned stack, max_stack;
 
+	unsigned loop_id;
+
 	/* a common pattern for indirect addressing is to request the
 	 * same address register multiple times.  To avoid generating
 	 * duplicate instruction sequences (which our backend does not
@@ -138,6 +140,11 @@ struct ir3_context {
 	 * figuring out the blocks successors
 	 */
 	struct hash_table *block_ht;
+
+	/* maps nir_block at the top of a loop to ir3_block collecting continue
+	 * edges.
+	 */
+	struct hash_table *continue_block_ht;
 
 	/* on a4xx, bitmask of samplers which need astc+srgb workaround: */
 	unsigned astc_srgb;

@@ -63,6 +63,8 @@ ir3_context_init(struct ir3_compiler *compiler,
 			_mesa_hash_pointer, _mesa_key_pointer_equal);
 	ctx->block_ht = _mesa_hash_table_create(ctx,
 			_mesa_hash_pointer, _mesa_key_pointer_equal);
+	ctx->continue_block_ht = _mesa_hash_table_create(ctx,
+			_mesa_hash_pointer, _mesa_key_pointer_equal);
 	ctx->sel_cond_conversions = _mesa_hash_table_create(ctx,
 			_mesa_hash_pointer, _mesa_key_pointer_equal);
 
@@ -557,7 +559,7 @@ ir3_get_array(struct ir3_context *ctx, nir_register *reg)
 		if (arr->r == reg)
 			return arr;
 	}
-	ir3_context_error(ctx, "bogus reg: %s\n", reg->name);
+	ir3_context_error(ctx, "bogus reg: r%d\n", reg->index);
 	return NULL;
 }
 

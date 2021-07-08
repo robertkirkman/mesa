@@ -514,6 +514,13 @@ struct ir3_array {
 
 struct ir3_array * ir3_lookup_array(struct ir3 *ir, unsigned id);
 
+enum ir3_branch_type {
+	IR3_BRANCH_COND, /* condition */
+	IR3_BRANCH_ANY, /* subgroupAny(condition) */
+	IR3_BRANCH_ALL, /* subgroupAll(condition) */
+	IR3_BRANCH_GETONE, /* subgroupElect() */
+};
+
 struct ir3_block {
 	struct list_head node;
 	struct ir3 *shader;
@@ -522,14 +529,29 @@ struct ir3_block {
 
 	struct list_head instr_list;  /* list of ir3_instruction */
 
-	/* each block has either one or two successors.. in case of
-	 * two successors, 'condition' decides which one to follow.
-	 * A block preceding an if/else has two successors.
+	/* The actual branch condition, if there are two successors */
+	enum ir3_branch_type brtype;
+
+	/* each block has either one or two successors.. in case of two
+	 * successors, 'condition' decides which one to follow.  A block preceding
+	 * an if/else has two successors.
+	 *
+	 * In some cases the path that the machine actually takes through the
+	 * program may not match the per-thread view of the CFG. In particular
+	 * this is the case for if/else, where the machine jumps from the end of
+	 * the if to the beginning of the else and switches active lanes. While
+	 * most things only care about the per-thread view, we need to use the
+	 * "physical" view when allocating shared registers. "successors" contains
+	 * the per-thread successors, and "physical_successors" contains the
+	 * physical successors which includes the fallthrough edge from the if to
+	 * the else.
 	 */
 	struct ir3_instruction *condition;
 	struct ir3_block *successors[2];
+	struct ir3_block *physical_successors[2];
 
 	DECLARE_ARRAY(struct ir3_block *, predecessors);
+	DECLARE_ARRAY(struct ir3_block *, physical_predecessors);
 
 	uint16_t start_ip, end_ip;
 
@@ -550,6 +572,8 @@ struct ir3_block {
 
 	uint32_t dom_pre_index;
 	uint32_t dom_post_index;
+
+	uint32_t loop_id;
 
 #ifdef DEBUG
 	uint32_t serialno;
@@ -573,6 +597,7 @@ ir3_start_block(struct ir3 *ir)
 }
 
 void ir3_block_add_predecessor(struct ir3_block *block, struct ir3_block *pred);
+void ir3_block_add_physical_predecessor(struct ir3_block *block, struct ir3_block *pred);
 void ir3_block_remove_predecessor(struct ir3_block *block, struct ir3_block *pred);
 unsigned ir3_block_get_pred_index(struct ir3_block *block, struct ir3_block *pred);
 
@@ -700,13 +725,17 @@ static inline bool is_nop(struct ir3_instruction *instr)
 	return instr->opc == OPC_NOP;
 }
 
-static inline bool is_same_type_reg(struct ir3_register *reg1,
-		struct ir3_register *reg2)
+static inline bool is_same_type_reg(struct ir3_register *dst,
+		struct ir3_register *src)
 {
-	unsigned type_reg1 = (reg1->flags & (IR3_REG_SHARED | IR3_REG_HALF));
-	unsigned type_reg2 = (reg2->flags & (IR3_REG_SHARED | IR3_REG_HALF));
+	unsigned dst_type = (dst->flags & IR3_REG_HALF);
+	unsigned src_type = (src->flags & IR3_REG_HALF);
 
-	if (type_reg1 ^ type_reg2)
+	/* Treat shared->normal copies as same-type, because they can generally be
+	 * folded, but not normal->shared copies.
+	 */
+	if (dst_type != src_type ||
+		((dst->flags & IR3_REG_SHARED) && !(src->flags & IR3_REG_SHARED)))
 		return false;
 	else
 		return true;
@@ -1429,6 +1458,8 @@ __ssa_srcp_n(struct ir3_instruction *instr, unsigned n)
 	list_for_each_entry_rev(struct ir3_instruction, __instr, __list, node)
 #define foreach_instr_safe(__instr, __list) \
 	list_for_each_entry_safe(struct ir3_instruction, __instr, __list, node)
+#define foreach_instr_from_safe(__instr, __start, __list) \
+	list_for_each_entry_from_safe(struct ir3_instruction, __instr, __start, __list, node)
 
 /* iterators for blocks: */
 #define foreach_block(__block, __list) \
@@ -1496,6 +1527,9 @@ bool ir3_postsched(struct ir3 *ir, struct ir3_shader_variant *v);
 
 /* register assignment: */
 int ir3_ra(struct ir3_shader_variant *v);
+
+/* lower subgroup ops: */
+bool ir3_lower_subgroups(struct ir3 *ir);
 
 /* legalize: */
 bool ir3_legalize(struct ir3 *ir, struct ir3_shader_variant *so, int *max_bary);
@@ -1658,6 +1692,21 @@ ir3_MOVMSK(struct ir3_block *block, unsigned components)
 	struct ir3_register *dst = __ssa_dst(instr);
 	dst->flags |= IR3_REG_SHARED;
 	dst->wrmask = (1 << components) - 1;
+	instr->repeat = components - 1;
+	return instr;
+}
+
+static inline struct ir3_instruction *
+ir3_BALLOT_MACRO(struct ir3_block *block, struct ir3_instruction *src, unsigned components)
+{
+	struct ir3_instruction *instr = ir3_instr_create(block, OPC_BALLOT_MACRO, 1, 1);
+
+	struct ir3_register *dst = __ssa_dst(instr);
+	dst->flags |= IR3_REG_SHARED;
+	dst->wrmask = (1 << components) - 1;
+
+	__ssa_src(instr, src, 0);
+
 	return instr;
 }
 
@@ -1820,6 +1869,22 @@ INSTR0(CHMASK)
 INSTR1NODST(PREDT)
 INSTR0(PREDF)
 INSTR0(PREDE)
+INSTR0(GETONE)
+
+/* cat1 macros */
+INSTR1(ANY_MACRO)
+INSTR1(ALL_MACRO)
+INSTR1(READ_FIRST_MACRO)
+INSTR2(READ_COND_MACRO)
+
+static inline struct ir3_instruction *
+ir3_ELECT_MACRO(struct ir3_block *block)
+{
+	struct ir3_instruction *instr =
+		ir3_instr_create(block, OPC_ELECT_MACRO, 1, 0);
+	__ssa_dst(instr);
+	return instr;
+}
 
 /* cat2 instructions, most 2 src but some 1 src: */
 INSTR2(ADD_F)

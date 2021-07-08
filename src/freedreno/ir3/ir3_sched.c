@@ -92,6 +92,8 @@ struct ir3_sched_ctx {
 	struct ir3_instruction *addr1;     /* current a1.x user, if any */
 	struct ir3_instruction *pred;      /* current p0.x user, if any */
 
+	struct ir3_instruction *split;     /* most-recently-split a0/a1/p0 producer */
+
 	int remaining_kills;
 	int remaining_tex;
 
@@ -354,6 +356,13 @@ check_instr(struct ir3_sched_ctx *ctx, struct ir3_sched_notes *notes,
 		struct ir3_instruction *instr)
 {
 	debug_assert(!is_scheduled(instr));
+
+	if (instr == ctx->split) {
+		/* Don't schedule instructions created by splitting a a0.x/a1.x/p0.x
+		 * write until another "normal" instruction has been scheduled.
+		 */
+		return false;
+	}
 
 	if (ctx->remaining_kills && (is_tex(instr) || is_mem(instr))) {
 		/* avoid texture/memory access if we have unscheduled kills
@@ -910,6 +919,9 @@ split_pred(struct ir3_sched_ctx *ctx)
 	for (i = 0; i < ir->predicates_count; i++) {
 		struct ir3_instruction *predicated = ir->predicates[i];
 
+		if (!predicated)
+			continue;
+
 		/* skip instructions already scheduled: */
 		if (is_scheduled(predicated))
 			continue;
@@ -933,6 +945,16 @@ split_pred(struct ir3_sched_ctx *ctx)
 			sched_node_add_dep(predicated, new_pred, 0);
 			di(predicated, "new predicate");
 		}
+	}
+
+	if (ctx->block->condition == ctx->pred) {
+		if (!new_pred) {
+			new_pred = split_instr(ctx, ctx->pred);
+			/* original pred is scheduled, but new one isn't: */
+			new_pred->flags &= ~IR3_INSTR_MARK;
+		}
+		ctx->block->condition = new_pred;
+		d("new branch condition");
 	}
 
 	/* all remaining predicated remapped to new pred: */
@@ -1167,6 +1189,11 @@ sched_block(struct ir3_sched_ctx *ctx, struct ir3_block *block)
 			}
 
 			schedule(ctx, instr);
+
+			/* Since we've scheduled a "real" instruction, we can now
+			 * schedule any split instruction created by the scheduler again.
+			 */
+			ctx->split = NULL;
 		} else {
 			struct ir3_instruction *new_instr = NULL;
 			struct ir3 *ir = block->shader;
@@ -1197,6 +1224,11 @@ sched_block(struct ir3_sched_ctx *ctx, struct ir3_block *block)
 				list_delinit(&new_instr->node);
 				list_addtail(&new_instr->node, &ctx->unscheduled_list);
 			}
+
+			/* If we produced a new instruction, do not schedule it next to
+			 * guarantee progress.
+			 */
+			ctx->split = new_instr;
 		}
 	}
 
