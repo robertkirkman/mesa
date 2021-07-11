@@ -20,6 +20,7 @@
 # SOFTWARE.
 
 libpanfrost_bifrost_files = files(
+  'bi_helper_invocations.c',
   'bi_layout.c',
   'bi_liveness.c',
   'bi_lower_divergent_indirects.c',
@@ -28,6 +29,7 @@ libpanfrost_bifrost_files = files(
   'bi_opt_constant_fold.c',
   'bi_opt_copy_prop.c',
   'bi_opt_dce.c',
+  'bi_opt_cse.c',
   'bi_opt_push_ubo.c',
   'bi_opt_mod_props.c',
   'bi_pack.c',

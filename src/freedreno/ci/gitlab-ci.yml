@@ -1,7 +1,7 @@
 .freedreno-test:
   extends:
     - .baremetal-test
-    - .use-arm_test
+    - .use-debian/arm_test
     - .freedreno-rules
   variables:
     MINIO_ARTIFACT_NAME: mesa-arm64
@@ -12,8 +12,8 @@
   script:
     - ./install/bare-metal/fastboot.sh
   needs:
-    - arm_test
-    - job: meson-arm64
+    - debian/arm_test
+    - job: debian-arm64
       artifacts: false
   tags:
     - google-freedreno-db410c

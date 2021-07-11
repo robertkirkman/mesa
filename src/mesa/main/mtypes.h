@@ -48,6 +48,7 @@
 #include "compiler/shader_info.h"
 #include "main/formats.h"       /* MESA_FORMAT_COUNT */
 #include "compiler/glsl/list.h"
+#include "util/u_idalloc.h"
 #include "util/simple_mtx.h"
 #include "util/u_dynarray.h"
 #include "vbo/vbo.h"
@@ -3483,6 +3484,13 @@ struct gl_shared_state
     * users.
     */
    bool HasExternallySharedImages;
+
+   /* Small display list storage */
+   struct {
+      union gl_dlist_node *ptr;
+      struct util_idalloc free_idx;
+      unsigned size;
+   } small_dlist_store;
 };
 
 
@@ -4278,10 +4286,6 @@ struct gl_constants
    /** Whether out-of-order draw (Begin/End) optimizations are allowed. */
    bool AllowDrawOutOfOrder;
 
-   /** Whether draw merging optimizations are allowed (might cause
-    *  incorrect results). */
-   bool AllowIncorrectPrimitiveId;
-
    /** Whether to allow the fast path for frequently updated VAOs. */
    bool AllowDynamicVAOFastPath;
 
@@ -4699,10 +4703,23 @@ union gl_dlist_node;
 struct gl_display_list
 {
    GLuint Name;
-   GLbitfield Flags;  /**< DLIST_x flags */
+   bool small_list;
+   /* If small_list and begins_with_a_nop are true, this means
+    * the 'start' has been incremented to skip a NOP at the
+    * beginning.
+    */
+   bool begins_with_a_nop;
    GLchar *Label;     /**< GL_KHR_debug */
    /** The dlist commands are in a linked list of nodes */
-   union gl_dlist_node *Head;
+   union {
+      /* Big lists allocate their own storage */
+      union gl_dlist_node *Head;
+      /* Small lists use ctx->Shared->small_dlist_store */
+      struct {
+         unsigned start;
+         unsigned count;
+      };
+   };
 };
 
 
@@ -4729,6 +4746,7 @@ struct gl_dlist_state
        * list.  Used to eliminate some redundant state changes.
        */
       GLenum16 ShadeModel;
+      bool UseLoopback;
    } Current;
 };
 
@@ -5471,8 +5489,6 @@ struct gl_context
 
    GLboolean ViewportInitialized;  /**< has viewport size been initialized? */
    GLboolean _AllowDrawOutOfOrder;
-   /* Is gl_PrimitiveID unused by the current shaders? */
-   bool _PrimitiveIDIsUnused;
 
    /** \name Derived state */
    GLbitfield _ImageTransferState;/**< bitwise-or of IMAGE_*_BIT flags */

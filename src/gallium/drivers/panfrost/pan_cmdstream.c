@@ -284,11 +284,17 @@ static bool
 panfrost_fs_required(
                 struct panfrost_shader_state *fs,
                 struct panfrost_blend_state *blend,
-                struct pipe_framebuffer_state *state)
+                struct pipe_framebuffer_state *state,
+                const struct panfrost_zsa_state *zsa)
 {
         /* If we generally have side effects. This inclues use of discard,
          * which can affect the results of an occlusion query. */
         if (fs->info.fs.sidefx)
+                return true;
+
+        /* Using an empty FS requires early-z to be enabled, but alpha test
+         * needs it disabled */
+        if ((enum mali_func) zsa->base.alpha_func != MALI_FUNC_ALWAYS)
                 return true;
 
         /* If colour is written we need to execute */
@@ -518,21 +524,22 @@ panfrost_prepare_fs_state(struct panfrost_context *ctx,
         bool msaa = rast->multisample;
 
         pan_pack(rsd, RENDERER_STATE, cfg) {
-                if (pan_is_bifrost(dev) && panfrost_fs_required(fs, so, &ctx->pipe_framebuffer)) {
+                if (pan_is_bifrost(dev) && panfrost_fs_required(fs, so, &ctx->pipe_framebuffer, zsa)) {
                         /* Track if any colour buffer is reused across draws, either
                          * from reading it directly, or from failing to write it */
                         unsigned rt_mask = ctx->fb_rt_mask;
+                        uint64_t rt_written = (fs->info.outputs_written >> FRAG_RESULT_DATA0);
                         bool blend_reads_dest = (so->load_dest_mask & rt_mask);
 
                         cfg.properties.bifrost.allow_forward_pixel_to_kill =
                                 fs->info.fs.can_fpk &&
-                                !(rt_mask & ~fs->info.outputs_written) &&
+                                !(rt_mask & ~rt_written) &&
                                 !alpha_to_coverage &&
                                 !blend_reads_dest;
                 } else if (!pan_is_bifrost(dev)) {
                         unsigned rt_count = ctx->pipe_framebuffer.nr_cbufs;
 
-                        if (panfrost_fs_required(fs, ctx->blend, &ctx->pipe_framebuffer)) {
+                        if (panfrost_fs_required(fs, ctx->blend, &ctx->pipe_framebuffer, zsa)) {
                                 cfg.properties.midgard.force_early_z =
                                         fs->info.fs.can_early_z && !alpha_to_coverage &&
                                         ((enum mali_func) zsa->base.alpha_func == MALI_FUNC_ALWAYS);
@@ -637,7 +644,7 @@ panfrost_emit_frag_shader(struct panfrost_context *ctx,
         }
 
         /* Merge with CSO state and upload */
-        if (panfrost_fs_required(fs, ctx->blend, &ctx->pipe_framebuffer))
+        if (panfrost_fs_required(fs, ctx->blend, &ctx->pipe_framebuffer, zsa))
                 pan_merge(rsd, fs->partial_rsd, RENDERER_STATE);
         else
                 pan_merge_empty_fs(&rsd, pan_is_bifrost(dev));

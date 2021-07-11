@@ -1478,6 +1478,20 @@ bi_lower_fexp2_32(bi_builder *b, bi_index dst, bi_index s0)
 }
 
 static void
+bi_fexp_32(bi_builder *b, bi_index dst, bi_index s0, bi_index log2_base)
+{
+        /* Scale by base, Multiply by 2*24 and convert to integer to get a 8:24
+         * fixed-point input */
+        bi_index scale = bi_fma_rscale_f32(b, s0, log2_base, bi_negzero(),
+                        bi_imm_u32(24), BI_ROUND_NONE, BI_SPECIAL_NONE);
+        bi_index fixed_pt = bi_f32_to_s32(b, scale, BI_ROUND_NONE);
+
+        /* Compute the result for the fixed-point input, but pass along
+         * the original input for correct NaN propagation */
+        bi_fexp_f32_to(b, dst, fixed_pt, s0);
+}
+
+static void
 bi_lower_flog2_32(bi_builder *b, bi_index dst, bi_index s0)
 {
         /* s0 = a1 * 2^e, with a1 in [0.75, 1.5) */
@@ -1509,6 +1523,46 @@ bi_lower_flog2_32(bi_builder *b, bi_index dst, bi_index s0)
 
         /* log(s0) = x1 + x2 */
         bi_fadd_f32_to(b, dst, x1, x2, BI_ROUND_NONE);
+}
+
+static void
+bi_flog2_32(bi_builder *b, bi_index dst, bi_index s0)
+{
+        bi_index frexp = bi_frexpe_f32(b, s0, true, false);
+        bi_index frexpi = bi_s32_to_f32(b, frexp, BI_ROUND_RTZ);
+        bi_index add = bi_fadd_lscale_f32(b, bi_imm_f32(-1.0f), s0);
+        bi_fma_f32_to(b, dst, bi_flogd_f32(b, s0), add, frexpi,
+                        BI_ROUND_NONE);
+}
+
+static void
+bi_lower_fpow_32(bi_builder *b, bi_index dst, bi_index base, bi_index exp)
+{
+        bi_index log2_base = bi_null();
+
+        if (base.type == BI_INDEX_CONSTANT) {
+                log2_base = bi_imm_f32(log2f(uif(base.value)));
+        } else {
+                log2_base = bi_temp(b->shader);
+                bi_lower_flog2_32(b, log2_base, base);
+        }
+
+        return bi_lower_fexp2_32(b, dst, bi_fmul_f32(b, exp, log2_base));
+}
+
+static void
+bi_fpow_32(bi_builder *b, bi_index dst, bi_index base, bi_index exp)
+{
+        bi_index log2_base = bi_null();
+
+        if (base.type == BI_INDEX_CONSTANT) {
+                log2_base = bi_imm_f32(log2f(uif(base.value)));
+        } else {
+                log2_base = bi_temp(b->shader);
+                bi_flog2_32(b, log2_base, base);
+        }
+
+        return bi_fexp_32(b, dst, exp, log2_base);
 }
 
 /* Bifrost has extremely coarse tables for approximating sin/cos, accessible as
@@ -1813,38 +1867,35 @@ bi_emit_alu(bi_builder *b, nir_alu_instr *instr)
                 bi_lower_fsincos_32(b, dst, s0, true);
                 break;
 
-        case nir_op_fexp2: {
+        case nir_op_fexp2:
                 assert(sz == 32); /* should've been lowered */
 
-                if (b->shader->quirks & BIFROST_NO_FP32_TRANSCENDENTALS) {
+                if (b->shader->quirks & BIFROST_NO_FP32_TRANSCENDENTALS)
                         bi_lower_fexp2_32(b, dst, s0);
-                        break;
-                }
+                else
+                        bi_fexp_32(b, dst, s0, bi_imm_f32(1.0f));
 
-                /* multiply by 1.0 * 2*24 */
-                bi_index scale = bi_fma_rscale_f32(b, s0, bi_imm_f32(1.0f),
-                                bi_negzero(), bi_imm_u32(24), BI_ROUND_NONE,
-                                BI_SPECIAL_NONE);
-
-                bi_fexp_f32_to(b, dst, bi_f32_to_s32(b, scale, BI_ROUND_NONE), s0);
                 break;
-        }
 
-        case nir_op_flog2: {
+        case nir_op_flog2:
                 assert(sz == 32); /* should've been lowered */
 
-                if (b->shader->quirks & BIFROST_NO_FP32_TRANSCENDENTALS) {
+                if (b->shader->quirks & BIFROST_NO_FP32_TRANSCENDENTALS)
                         bi_lower_flog2_32(b, dst, s0);
-                        break;
-                }
+                else
+                        bi_flog2_32(b, dst, s0);
 
-                bi_index frexp = bi_frexpe_f32(b, s0, true, false);
-                bi_index frexpi = bi_s32_to_f32(b, frexp, BI_ROUND_RTZ);
-                bi_index add = bi_fadd_lscale_f32(b, bi_imm_f32(-1.0f), s0);
-                bi_fma_f32_to(b, dst, bi_flogd_f32(b, s0), add, frexpi,
-                                BI_ROUND_NONE);
                 break;
-        }
+
+        case nir_op_fpow:
+                assert(sz == 32); /* should've been lowered */
+
+                if (b->shader->quirks & BIFROST_NO_FP32_TRANSCENDENTALS)
+                        bi_lower_fpow_32(b, dst, s0, s1);
+                else
+                        bi_fpow_32(b, dst, s0, s1);
+
+                break;
 
         case nir_op_bcsel:
                 if (src1_sz == 8)
@@ -2333,29 +2384,33 @@ bi_emit_cube_coord(bi_builder *b, bi_index coord,
         S->clamp = BI_CLAMP_CLAMP_0_1;
         T->clamp = BI_CLAMP_CLAMP_0_1;
 
-        /* Cube face is stored in bit[29:31], we don't apply the shift here
-         * because the TEXS_CUBE and TEXC instructions expect the face index to
-         * be at this position.
-         */
+        /* Face index at bit[29:31], matching the cube map descriptor */
         *face = cubeface->dest[1];
 }
 
 /* Emits a cube map descriptor, returning lower 32-bits and putting upper
- * 32-bits in passed pointer t */
+ * 32-bits in passed pointer t. The packing of the face with the S coordinate
+ * exploits the redundancy of floating points with the range restriction of
+ * CUBEFACE output.
+ *
+ *     struct cube_map_descriptor {
+ *         float s : 29;
+ *         unsigned face : 3;
+ *         float t : 32;
+ *     }
+ *
+ * Since the cube face index is preshifted, this is easy to pack with a bitwise
+ * MUX.i32 and a fixed mask, selecting the lower bits 29 from s and the upper 3
+ * bits from face.
+ */
 
 static bi_index
 bi_emit_texc_cube_coord(bi_builder *b, bi_index coord, bi_index *t)
 {
         bi_index face, s;
         bi_emit_cube_coord(b, coord, &face, &s, t);
-
-        bi_index and1 = bi_lshift_and_i32(b, face, bi_imm_u32(0xe0000000),
-                        bi_imm_u8(0));
-
-        bi_index and2 = bi_lshift_and_i32(b, s, bi_imm_u32(0x1fffffff),
-                        bi_imm_u8(0));
-
-        return bi_lshift_or_i32(b, and1, and2, bi_imm_u8(0));
+        bi_index mask = bi_imm_u32(BITFIELD_MASK(29));
+        return bi_mux_i32(b, s, face, mask, BI_MUX_BIT);
 }
 
 /* Map to the main texture op used. Some of these (txd in particular) will
@@ -2411,6 +2466,8 @@ enum bifrost_tex_dreg {
 static void
 bi_emit_texc(bi_builder *b, nir_tex_instr *instr)
 {
+        bool computed_lod = false;
+
         struct bifrost_texture_operation desc = {
                 .op = bi_tex_op(instr->op),
                 .offset_or_bias_disable = false, /* TODO */
@@ -2424,6 +2481,7 @@ bi_emit_texc(bi_builder *b, nir_tex_instr *instr)
         switch (desc.op) {
         case BIFROST_TEX_OP_TEX:
                 desc.lod_or_fetch = BIFROST_LOD_MODE_COMPUTE;
+                computed_lod = true;
                 break;
         case BIFROST_TEX_OP_FETCH:
                 desc.lod_or_fetch = instr->op == nir_texop_tg4 ?
@@ -2503,6 +2561,7 @@ bi_emit_texc(bi_builder *b, nir_tex_instr *instr)
                         dregs[BIFROST_TEX_DREG_LOD] =
                                 bi_emit_texc_lod_88(b, index, sz == 16);
                         desc.lod_or_fetch = BIFROST_LOD_MODE_BIAS;
+                        computed_lod = true;
                         break;
 
                 case nir_tex_src_ms_index:
@@ -2595,7 +2654,8 @@ bi_emit_texc(bi_builder *b, nir_tex_instr *instr)
         uint32_t desc_u = 0;
         memcpy(&desc_u, &desc, sizeof(desc_u));
         bi_texc_to(b, sr_count ? idx : bi_dest_index(&instr->dest),
-                        idx, cx, cy, bi_imm_u32(desc_u), sr_count);
+                        idx, cx, cy, bi_imm_u32(desc_u), !computed_lod,
+                        sr_count);
 
         /* Explicit copy to facilitate tied operands */
         if (sr_count) {
@@ -2882,44 +2942,117 @@ emit_cf_list(bi_context *ctx, struct exec_list *list)
 
 /* shader-db stuff */
 
+struct bi_stats {
+        unsigned nr_clauses, nr_tuples, nr_ins;
+        unsigned nr_arith, nr_texture, nr_varying, nr_ldst;
+};
+
+static void
+bi_count_tuple_stats(bi_clause *clause, bi_tuple *tuple, struct bi_stats *stats)
+{
+        /* Count instructions */
+        stats->nr_ins += (tuple->fma ? 1 : 0) + (tuple->add ? 1 : 0);
+
+        /* Non-message passing tuples are always arithmetic */
+        if (tuple->add != clause->message) {
+                stats->nr_arith++;
+                return;
+        }
+
+        /* Message + FMA we'll count as arithmetic _and_ message */
+        if (tuple->fma)
+                stats->nr_arith++;
+
+        switch (clause->message_type) {
+        case BIFROST_MESSAGE_VARYING:
+                /* Check components interpolated */
+                stats->nr_varying += (clause->message->vecsize + 1) *
+                        (bi_is_regfmt_16(clause->message->register_format) ? 1 : 2);
+                break;
+
+        case BIFROST_MESSAGE_VARTEX:
+                /* 2 coordinates, fp32 each */
+                stats->nr_varying += (2 * 2);
+                FALLTHROUGH;
+        case BIFROST_MESSAGE_TEX:
+                stats->nr_texture++;
+                break;
+
+        case BIFROST_MESSAGE_ATTRIBUTE:
+        case BIFROST_MESSAGE_LOAD:
+        case BIFROST_MESSAGE_STORE:
+        case BIFROST_MESSAGE_ATOMIC:
+                stats->nr_ldst++;
+                break;
+
+        case BIFROST_MESSAGE_NONE:
+        case BIFROST_MESSAGE_BARRIER:
+        case BIFROST_MESSAGE_BLEND:
+        case BIFROST_MESSAGE_TILE:
+        case BIFROST_MESSAGE_Z_STENCIL:
+        case BIFROST_MESSAGE_ATEST:
+        case BIFROST_MESSAGE_JOB:
+        case BIFROST_MESSAGE_64BIT:
+                /* Nothing to do */
+                break;
+        };
+
+}
+
 static void
 bi_print_stats(bi_context *ctx, unsigned size, FILE *fp)
 {
-        unsigned nr_clauses = 0, nr_tuples = 0, nr_ins = 0;
+        struct bi_stats stats = { 0 };
 
-        /* Count instructions, clauses, and tuples */
+        /* Count instructions, clauses, and tuples. Also attempt to construct
+         * normalized execution engine cycle counts, using the following ratio:
+         *
+         * 24 arith tuples/cycle
+         * 2 texture messages/cycle
+         * 16 x 16-bit varying channels interpolated/cycle
+         * 1 load store message/cycle
+         *
+         * These numbers seem to match Arm Mobile Studio's heuristic. The real
+         * cycle counts are surely more complicated.
+         */
+
         bi_foreach_block(ctx, _block) {
                 bi_block *block = (bi_block *) _block;
 
                 bi_foreach_clause_in_block(block, clause) {
-                        nr_clauses++;
-                        nr_tuples += clause->tuple_count;
+                        stats.nr_clauses++;
+                        stats.nr_tuples += clause->tuple_count;
 
-                        for (unsigned i = 0; i < clause->tuple_count; ++i) {
-                                if (clause->tuples[i].fma)
-                                        nr_ins++;
-
-                                if (clause->tuples[i].add)
-                                        nr_ins++;
-                        }
+                        for (unsigned i = 0; i < clause->tuple_count; ++i)
+                                bi_count_tuple_stats(clause, &clause->tuples[i], &stats);
                 }
         }
 
-        /* In the future, we'll calculate thread count for v7. For now we
-         * always use fewer threads than we should (v6 style) due to missing
-         * piping, TODO: fix that for a nice perf win */
-        unsigned nr_threads = 1;
+        float cycles_arith = ((float) stats.nr_arith) / 24.0;
+        float cycles_texture = ((float) stats.nr_texture) / 2.0;
+        float cycles_varying = ((float) stats.nr_varying) / 16.0;
+        float cycles_ldst = ((float) stats.nr_ldst) / 1.0;
+
+        float cycles_message = MAX3(cycles_texture, cycles_varying, cycles_ldst);
+        float cycles_bound = MAX2(cycles_arith, cycles_message);
+
+        /* Thread count and register pressure are traded off only on v7 */
+        bool full_threads = (ctx->arch == 7 && ctx->info->work_reg_count <= 32);
+        unsigned nr_threads = full_threads ? 2 : 1;
 
         /* Dump stats */
 
         fprintf(stderr, "%s - %s shader: "
                         "%u inst, %u tuples, %u clauses, "
+                        "%f cycles, %f arith, %f texture, %f vary, %f ldst, "
                         "%u quadwords, %u threads, %u loops, "
                         "%u:%u spills:fills\n",
                         ctx->nir->info.label ?: "",
                         ctx->inputs->is_blend ? "PAN_SHADER_BLEND" :
                         gl_shader_stage_name(ctx->stage),
-                        nr_ins, nr_tuples, nr_clauses,
+                        stats.nr_ins, stats.nr_tuples, stats.nr_clauses,
+                        cycles_bound, cycles_arith, cycles_texture,
+                        cycles_varying, cycles_ldst,
                         size / 16, nr_threads,
                         ctx->loop_count,
                         ctx->spills, ctx->fills);
@@ -2964,6 +3097,7 @@ bi_lower_bit_size(const nir_instr *instr, UNUSED void *data)
         switch (alu->op) {
         case nir_op_fexp2:
         case nir_op_flog2:
+        case nir_op_fpow:
         case nir_op_fsin:
         case nir_op_fcos:
                 return (nir_dest_bit_size(alu->dest.dest) == 32) ? 0 : 32;
@@ -3434,9 +3568,12 @@ bifrost_compile_shader_nir(nir_shader *nir,
         /* Runs before copy prop */
         bi_opt_push_ubo(ctx);
         bi_opt_constant_fold(ctx);
+
         bi_opt_copy_prop(ctx);
         bi_opt_mod_prop_forward(ctx);
         bi_opt_mod_prop_backward(ctx);
+        bi_opt_dead_code_eliminate(ctx);
+        bi_opt_cse(ctx);
         bi_opt_dead_code_eliminate(ctx);
 
         bi_foreach_block(ctx, _block) {
@@ -3447,6 +3584,11 @@ bifrost_compile_shader_nir(nir_shader *nir,
         if (bifrost_debug & BIFROST_DBG_SHADERS && !skip_internal)
                 bi_print_shader(ctx, stdout);
         bi_lower_fau(ctx);
+
+        /* Analyze as late as possible before RA/scheduling */
+        bi_analyze_helper_terminate(ctx);
+        bi_analyze_helper_requirements(ctx);
+
         bi_register_allocate(ctx);
         bi_opt_post_ra(ctx);
         if (bifrost_debug & BIFROST_DBG_SHADERS && !skip_internal)
