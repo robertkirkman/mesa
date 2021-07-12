@@ -20,18 +20,14 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
  *
- * Authors:
- *    Daniel Schürmann (daniel.schuermann@campus.tu-berlin.de)
- *
  */
 
-#include <map>
-
-#include "aco_ir.h"
 #include "aco_builder.h"
-#include "util/u_math.h"
-#include "sid.h"
+#include "aco_ir.h"
+#include "common/sid.h"
 
+#include <map>
+#include <vector>
 
 namespace aco {
 

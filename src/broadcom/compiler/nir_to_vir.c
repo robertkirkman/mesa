@@ -2048,12 +2048,25 @@ ntq_setup_gs_inputs(struct v3d_compile *c)
                  * in the input primitive, but here we only care about the
                  * per-vertex input type.
                  */
-                const struct glsl_type *type = glsl_without_array(var->type);
+                assert(glsl_type_is_array(var->type));
+                const struct glsl_type *type = glsl_get_array_element(var->type);
                 unsigned array_len = MAX2(glsl_get_length(type), 1);
                 unsigned loc = var->data.driver_location;
 
                 resize_qreg_array(c, &c->inputs, &c->inputs_array_size,
                                   (loc + array_len) * 4);
+
+                if (var->data.compact) {
+                        for (unsigned j = 0; j < array_len; j++) {
+                                unsigned input_idx = c->num_inputs++;
+                                unsigned loc_frac = var->data.location_frac + j;
+                                unsigned loc = var->data.location + loc_frac / 4;
+                                unsigned comp = loc_frac % 4;
+                                c->input_slots[input_idx] =
+                                        v3d_slot_from_slot_and_component(loc, comp);
+                        }
+                       continue;
+                }
 
                 for (unsigned j = 0; j < array_len; j++) {
                         unsigned num_elements = glsl_get_vector_elements(type);
@@ -3093,11 +3106,17 @@ ntq_emit_intrinsic(struct v3d_compile *c, nir_intrinsic_instr *instr)
                  *
                  * col: vertex index, row = varying index
                  */
+                assert(nir_src_is_const(instr->src[1]));
+                uint32_t location =
+                        nir_intrinsic_io_semantics(instr).location +
+                        nir_src_as_uint(instr->src[1]);
+                uint32_t component = nir_intrinsic_component(instr);
+
                 int32_t row_idx = -1;
                 for (int i = 0; i < c->num_inputs; i++) {
                         struct v3d_varying_slot slot = c->input_slots[i];
-                        if (v3d_slot_get_slot(slot) == nir_intrinsic_io_semantics(instr).location &&
-                            v3d_slot_get_component(slot) == nir_intrinsic_component(instr)) {
+                        if (v3d_slot_get_slot(slot) == location &&
+                            v3d_slot_get_component(slot) == component) {
                                 row_idx = i;
                                 break;
                         }

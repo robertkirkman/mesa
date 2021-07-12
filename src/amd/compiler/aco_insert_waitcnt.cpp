@@ -22,13 +22,12 @@
  *
  */
 
-#include <algorithm>
+#include "aco_ir.h"
+#include "common/sid.h"
+
 #include <map>
 #include <stack>
-#include <math.h>
-
-#include "aco_ir.h"
-#include "sid.h"
+#include <vector>
 
 namespace aco {
 

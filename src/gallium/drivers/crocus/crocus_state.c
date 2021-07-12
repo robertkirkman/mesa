@@ -2226,7 +2226,11 @@ crocus_bind_rasterizer_state(struct pipe_context *ctx, void *state)
 static bool
 wrap_mode_needs_border_color(unsigned wrap_mode)
 {
+#if GFX_VER == 8
+   return wrap_mode == TCM_CLAMP_BORDER || wrap_mode == TCM_HALF_BORDER;
+#else
    return wrap_mode == TCM_CLAMP_BORDER;
+#endif
 }
 
 /**
@@ -9075,6 +9079,23 @@ static void update_so_strides(struct crocus_context *ice,
 }
 #endif
 
+static void crocus_fill_clamp_mask(const struct crocus_sampler_state *samp,
+                                   int s,
+                                   uint32_t *clamp_mask)
+{
+#if GFX_VER < 8
+   if (samp->pstate.min_img_filter != PIPE_TEX_FILTER_NEAREST &&
+       samp->pstate.mag_img_filter != PIPE_TEX_FILTER_NEAREST) {
+      if (samp->pstate.wrap_s == PIPE_TEX_WRAP_CLAMP)
+         clamp_mask[0] |= (1 << s);
+      if (samp->pstate.wrap_t == PIPE_TEX_WRAP_CLAMP)
+         clamp_mask[1] |= (1 << s);
+      if (samp->pstate.wrap_r == PIPE_TEX_WRAP_CLAMP)
+         clamp_mask[2] |= (1 << s);
+   }
+#endif
+}
+
 static void
 crocus_set_frontend_noop(struct pipe_context *ctx, bool enable)
 {
@@ -9141,6 +9162,7 @@ genX(crocus_init_screen_state)(struct crocus_screen *screen)
    screen->vtbl.upload_urb_fence = crocus_upload_urb_fence;
    screen->vtbl.calculate_urb_fence = crocus_calculate_urb_fence;
 #endif
+   screen->vtbl.fill_clamp_mask = crocus_fill_clamp_mask;
    screen->vtbl.batch_reset_dirty = crocus_batch_reset_dirty;
    screen->vtbl.translate_prim_type = translate_prim_type;
 #if GFX_VER >= 6

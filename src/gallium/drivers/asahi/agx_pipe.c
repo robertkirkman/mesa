@@ -411,10 +411,7 @@ agx_flush(struct pipe_context *pctx,
       return;
 
    /* Finalize the encoder */
-   uint8_t stop[] = {
-      0x00, 0x00, 0x00, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, // Stop
-   };
-
+   uint8_t stop[5 + 64] = { 0x00, 0x00, 0x00, 0xc0, 0x00 };
    memcpy(ctx->batch->encoder_current, stop, sizeof(stop));
 
    /* Emit the commandbuffer */
@@ -513,10 +510,14 @@ agx_flush(struct pipe_context *pctx,
    /* Size calculation should've been exact */
    assert(handle_i == handle_count);
 
+   unsigned cmdbuf_id = agx_get_global_id(dev);
+   unsigned encoder_id = agx_get_global_id(dev);
+
    unsigned cmdbuf_size = demo_cmdbuf(dev->cmdbuf.ptr.cpu,
                dev->cmdbuf.size,
                &ctx->batch->pool,
                ctx->batch->encoder->ptr.gpu,
+               encoder_id,
                ctx->batch->scissor.bo->ptr.gpu,
                ctx->batch->width,
                ctx->batch->height,
@@ -528,7 +529,7 @@ agx_flush(struct pipe_context *pctx,
 
    /* Generate the mapping table from the BO list */
    demo_mem_map(dev->memmap.ptr.cpu, dev->memmap.size, handles, handle_count,
-                0xDEADBEEF, 0xCAFECAFE, cmdbuf_size);
+                cmdbuf_id, encoder_id, cmdbuf_size);
 
    free(handles);
 
@@ -779,10 +780,11 @@ agx_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
    case PIPE_CAP_TGSI_TEXCOORD:
    case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
    case PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL:
-   case PIPE_CAP_TGSI_FS_POINT_IS_SYSVAL:
    case PIPE_CAP_SEAMLESS_CUBE_MAP:
    case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
       return true;
+   case PIPE_CAP_TGSI_FS_POINT_IS_SYSVAL:
+      return false;
 
    case PIPE_CAP_MAX_VERTEX_ELEMENT_SRC_OFFSET:
       return 0xffff;
@@ -834,7 +836,7 @@ agx_get_paramf(struct pipe_screen* pscreen,
 
    case PIPE_CAPF_MAX_POINT_WIDTH:
    case PIPE_CAPF_MAX_POINT_WIDTH_AA:
-      return 1024.0;
+      return 511.95f;
 
    case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
       return 16.0;

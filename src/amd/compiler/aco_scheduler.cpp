@@ -22,15 +22,17 @@
  *
  */
 
-#include "aco_ir.h"
 #include "aco_builder.h"
-#include <unordered_set>
+#include "aco_ir.h"
+
+#include "common/amdgfxregs.h"
+
 #include <algorithm>
+#include <unordered_set>
+#include <vector>
 
-#include "amdgfxregs.h"
-
-#define SMEM_WINDOW_SIZE (350 - ctx.num_waves * 35)
-#define VMEM_WINDOW_SIZE (1024 - ctx.num_waves * 64)
+#define SMEM_WINDOW_SIZE    (350 - ctx.num_waves * 35)
+#define VMEM_WINDOW_SIZE    (1024 - ctx.num_waves * 64)
 #define POS_EXP_WINDOW_SIZE 512
 #define SMEM_MAX_MOVES (64 - ctx.num_waves * 4)
 #define VMEM_MAX_MOVES (256 - ctx.num_waves * 16)

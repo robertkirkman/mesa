@@ -1705,7 +1705,6 @@ cmd_buffer_execute_outside_pass(struct v3dv_cmd_buffer *primary,
       list_for_each_entry(struct v3dv_job, secondary_job,
                           &secondary->jobs, list_link) {
          /* These can only happen inside a render pass */
-         assert(secondary_job->type != V3DV_JOB_TYPE_CPU_CLEAR_ATTACHMENTS);
          assert(secondary_job->type != V3DV_JOB_TYPE_GPU_CL_SECONDARY);
          struct v3dv_job *job = v3dv_job_clone_in_cmd_buffer(secondary_job, primary);
          if (!job)
@@ -2086,6 +2085,7 @@ update_gfx_uniform_state(struct v3dv_cmd_buffer *cmd_buffer,
    const bool has_new_push_constants = dirty_uniform_state & V3DV_CMD_DIRTY_PUSH_CONSTANTS;
    const bool has_new_descriptors = dirty_uniform_state & V3DV_CMD_DIRTY_DESCRIPTOR_SETS;
 
+   /* VK_SHADER_STAGE_FRAGMENT_BIT */
    const bool has_new_descriptors_fs =
       has_new_descriptors &&
       (cmd_buffer->state.dirty_descriptor_stages & VK_SHADER_STAGE_FRAGMENT_BIT);
@@ -2106,6 +2106,39 @@ update_gfx_uniform_state(struct v3dv_cmd_buffer *cmd_buffer,
          v3dv_write_uniforms(cmd_buffer, pipeline, fs_variant);
    }
 
+   /* VK_SHADER_STAGE_GEOMETRY_BIT */
+   if (pipeline->has_gs) {
+      const bool has_new_descriptors_gs =
+         has_new_descriptors &&
+         (cmd_buffer->state.dirty_descriptor_stages &
+          VK_SHADER_STAGE_GEOMETRY_BIT);
+
+      const bool has_new_push_constants_gs =
+         has_new_push_constants &&
+         (cmd_buffer->state.dirty_push_constants_stages &
+          VK_SHADER_STAGE_GEOMETRY_BIT);
+
+      const bool needs_gs_update = has_new_viewport ||
+                                   has_new_pipeline ||
+                                   has_new_push_constants_gs ||
+                                   has_new_descriptors_gs;
+
+      if (needs_gs_update) {
+         struct v3dv_shader_variant *gs_variant =
+            pipeline->shared_data->variants[BROADCOM_SHADER_GEOMETRY];
+
+          struct v3dv_shader_variant *gs_bin_variant =
+            pipeline->shared_data->variants[BROADCOM_SHADER_GEOMETRY_BIN];
+
+         cmd_buffer->state.uniforms.gs =
+            v3dv_write_uniforms(cmd_buffer, pipeline, gs_variant);
+
+         cmd_buffer->state.uniforms.gs_bin =
+            v3dv_write_uniforms(cmd_buffer, pipeline, gs_bin_variant);
+      }
+   }
+
+   /* VK_SHADER_STAGE_VERTEX_BIT */
    const bool has_new_descriptors_vs =
       has_new_descriptors &&
       (cmd_buffer->state.dirty_descriptor_stages & VK_SHADER_STAGE_VERTEX_BIT);

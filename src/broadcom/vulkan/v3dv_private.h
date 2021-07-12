@@ -276,6 +276,8 @@ struct v3dv_pipeline_cache_stats {
 enum broadcom_shader_stage {
    BROADCOM_SHADER_VERTEX,
    BROADCOM_SHADER_VERTEX_BIN,
+   BROADCOM_SHADER_GEOMETRY,
+   BROADCOM_SHADER_GEOMETRY_BIN,
    BROADCOM_SHADER_FRAGMENT,
    BROADCOM_SHADER_COMPUTE,
 };
@@ -289,6 +291,8 @@ gl_shader_stage_to_broadcom(gl_shader_stage stage)
    switch (stage) {
    case MESA_SHADER_VERTEX:
       return BROADCOM_SHADER_VERTEX;
+   case MESA_SHADER_GEOMETRY:
+      return BROADCOM_SHADER_GEOMETRY;
    case MESA_SHADER_FRAGMENT:
       return BROADCOM_SHADER_FRAGMENT;
    case MESA_SHADER_COMPUTE:
@@ -305,6 +309,9 @@ broadcom_shader_stage_to_gl(enum broadcom_shader_stage stage)
    case BROADCOM_SHADER_VERTEX:
    case BROADCOM_SHADER_VERTEX_BIN:
       return MESA_SHADER_VERTEX;
+   case BROADCOM_SHADER_GEOMETRY:
+   case BROADCOM_SHADER_GEOMETRY_BIN:
+      return MESA_SHADER_GEOMETRY;
    case BROADCOM_SHADER_FRAGMENT:
       return MESA_SHADER_FRAGMENT;
    case BROADCOM_SHADER_COMPUTE:
@@ -314,12 +321,51 @@ broadcom_shader_stage_to_gl(enum broadcom_shader_stage stage)
    }
 }
 
+static inline bool
+broadcom_shader_stage_is_binning(enum broadcom_shader_stage stage)
+{
+   switch (stage) {
+   case BROADCOM_SHADER_VERTEX_BIN:
+   case BROADCOM_SHADER_GEOMETRY_BIN:
+      return true;
+   default:
+      return false;
+   }
+}
+
+static inline bool
+broadcom_shader_stage_is_render_with_binning(enum broadcom_shader_stage stage)
+{
+   switch (stage) {
+   case BROADCOM_SHADER_VERTEX:
+   case BROADCOM_SHADER_GEOMETRY:
+      return true;
+   default:
+      return false;
+   }
+}
+
+static inline enum broadcom_shader_stage
+broadcom_binning_shader_stage_for_render_stage(enum broadcom_shader_stage stage)
+{
+   switch (stage) {
+   case BROADCOM_SHADER_VERTEX:
+      return BROADCOM_SHADER_VERTEX_BIN;
+   case BROADCOM_SHADER_GEOMETRY:
+      return BROADCOM_SHADER_GEOMETRY_BIN;
+   default:
+      unreachable("Invalid shader stage");
+   }
+}
+
 static inline const char *
 broadcom_shader_stage_name(enum broadcom_shader_stage stage)
 {
    switch(stage) {
    case BROADCOM_SHADER_VERTEX_BIN:
       return "MESA_SHADER_VERTEX_BIN";
+   case BROADCOM_SHADER_GEOMETRY_BIN:
+      return "MESA_SHADER_GEOMETRY_BIN";
    default:
       return gl_shader_stage_name(broadcom_shader_stage_to_gl(stage));
    }
@@ -804,7 +850,6 @@ enum v3dv_job_type {
    V3DV_JOB_TYPE_CPU_COPY_QUERY_RESULTS,
    V3DV_JOB_TYPE_CPU_SET_EVENT,
    V3DV_JOB_TYPE_CPU_WAIT_EVENTS,
-   V3DV_JOB_TYPE_CPU_CLEAR_ATTACHMENTS,
    V3DV_JOB_TYPE_CPU_COPY_BUFFER_TO_IMAGE,
    V3DV_JOB_TYPE_CPU_CSD_INDIRECT,
    V3DV_JOB_TYPE_CPU_TIMESTAMP_QUERY,
@@ -843,13 +888,6 @@ struct v3dv_event_wait_cpu_job_info {
 
    /* Whether any postponed jobs after the wait should wait on semaphores */
    bool sem_wait;
-};
-
-struct v3dv_clear_attachments_cpu_job_info {
-   uint32_t attachment_count;
-   VkClearAttachment attachments[V3D_MAX_DRAW_BUFFERS + 1]; /* 4 color + D/S */
-   uint32_t rect_count;
-   VkClearRect *rects;
 };
 
 struct v3dv_copy_buffer_to_image_cpu_job_info {
@@ -956,7 +994,6 @@ struct v3dv_job {
       struct v3dv_copy_query_results_cpu_job_info   query_copy_results;
       struct v3dv_event_set_cpu_job_info            event_set;
       struct v3dv_event_wait_cpu_job_info           event_wait;
-      struct v3dv_clear_attachments_cpu_job_info    clear_attachments;
       struct v3dv_copy_buffer_to_image_cpu_job_info copy_buffer_to_image;
       struct v3dv_csd_indirect_cpu_job_info         csd_indirect;
       struct v3dv_timestamp_query_cpu_job_info      query_timestamp;
@@ -1086,6 +1123,8 @@ struct v3dv_cmd_buffer_state {
    struct {
       struct v3dv_cl_reloc vs_bin;
       struct v3dv_cl_reloc vs;
+      struct v3dv_cl_reloc gs_bin;
+      struct v3dv_cl_reloc gs;
       struct v3dv_cl_reloc fs;
    } uniforms;
 
@@ -1351,6 +1390,7 @@ struct v3dv_shader_variant {
    union {
       struct v3d_prog_data *base;
       struct v3d_vs_prog_data *vs;
+      struct v3d_gs_prog_data *gs;
       struct v3d_fs_prog_data *fs;
       struct v3d_compute_prog_data *cs;
    } prog_data;
@@ -1398,20 +1438,6 @@ struct v3dv_pipeline_stage {
 
    /** A name for this program, so you can track it in shader-db output. */
    uint32_t program_id;
-};
-
-/* FIXME: although the full vpm_config is not required at this point, as we
- * don't plan to initially support GS, it is more readable and serves as a
- * placeholder, to have the struct and fill it with default values.
- */
-struct vpm_config {
-   uint32_t As;
-   uint32_t Vc;
-   uint32_t Gs;
-   uint32_t Gd;
-   uint32_t Gv;
-   uint32_t Ve;
-   uint32_t gs_width;
 };
 
 /* We are using the descriptor pool entry for two things:
@@ -1692,13 +1718,19 @@ struct v3dv_pipeline {
    struct v3dv_render_pass *pass;
    struct v3dv_subpass *subpass;
 
-   /* Note: We can't use just a MESA_SHADER_STAGES array as we need to track
-    * too the coordinate shader
+   /* Note: We can't use just a MESA_SHADER_STAGES array because we also need
+    * to track binning shaders. Note these will be freed once the pipeline
+    * has been compiled.
     */
    struct v3dv_pipeline_stage *vs;
    struct v3dv_pipeline_stage *vs_bin;
+   struct v3dv_pipeline_stage *gs;
+   struct v3dv_pipeline_stage *gs_bin;
    struct v3dv_pipeline_stage *fs;
    struct v3dv_pipeline_stage *cs;
+
+   /* Flags for whether optional pipeline stages are present, for convenience */
+   bool has_gs;
 
    /* Spilling memory requirements */
    struct {

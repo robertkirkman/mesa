@@ -19,16 +19,20 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
+ *
  */
 
 #include "aco_interface.h"
 #include "aco_ir.h"
-#include "util/memstream.h"
+
 #include "vulkan/radv_shader.h"
 #include "vulkan/radv_shader_args.h"
 
+#include "util/memstream.h"
+
 #include <array>
 #include <iostream>
+#include <vector>
 
 static const std::array<aco_compiler_statistic_info, aco::num_statistics> statistic_infos = []()
 {

@@ -1103,6 +1103,39 @@ agx_lower_front_face(struct nir_builder *b,
    return true;
 }
 
+static bool
+agx_lower_point_coord(struct nir_builder *b,
+                      nir_instr *instr, UNUSED void *data)
+{
+   if (instr->type != nir_instr_type_intrinsic)
+      return false;
+
+   nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+
+   if (intr->intrinsic != nir_intrinsic_load_deref)
+      return false;
+
+   nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
+   nir_variable *var = nir_deref_instr_get_variable(deref);
+
+   if (var->data.mode != nir_var_shader_in)
+      return false;
+
+   if (var->data.location != VARYING_SLOT_PNTC)
+      return false;
+
+   assert(intr->dest.is_ssa);
+   assert(intr->dest.ssa.num_components == 2);
+
+   b->cursor = nir_after_instr(&intr->instr);
+   nir_ssa_def *def = nir_load_deref(b, deref);
+   nir_ssa_def *y = nir_channel(b, def, 1);
+   nir_ssa_def *flipped_y = nir_fadd_imm(b, nir_fneg(b, y), 1.0);
+   nir_ssa_def *flipped = nir_vec2(b, nir_channel(b, def, 0), flipped_y);
+   nir_ssa_def_rewrite_uses(&intr->dest.ssa, flipped);
+   return true;
+}
+
 static void
 agx_optimize_nir(nir_shader *nir)
 {
@@ -1212,7 +1245,7 @@ agx_remap_varyings_fs(nir_shader *nir, struct agx_varyings *varyings,
    agx_pack(packed, VARYING, cfg) {
       cfg.type = AGX_VARYING_TYPE_FRAGCOORD_W;
       cfg.components = 1;
-      cfg.slot_1 = cfg.slot_2 = base;
+      cfg.triangle_slot = cfg.point_slot = base;
    }
 
    base++;
@@ -1221,7 +1254,7 @@ agx_remap_varyings_fs(nir_shader *nir, struct agx_varyings *varyings,
    agx_pack(packed, VARYING, cfg) {
       cfg.type = AGX_VARYING_TYPE_FRAGCOORD_Z;
       cfg.components = 1;
-      cfg.slot_1 = cfg.slot_2 = base;
+      cfg.triangle_slot = cfg.point_slot = base;
    }
 
    base++;
@@ -1254,11 +1287,14 @@ agx_remap_varyings_fs(nir_shader *nir, struct agx_varyings *varyings,
 
      for (int c = 0; c < sz; ++c) {
         agx_pack(packed, VARYING, cfg) {
-           cfg.type = (var->data.interpolation == INTERP_MODE_FLAT) ?
-              AGX_VARYING_TYPE_FLAT_LAST :
-              AGX_VARYING_TYPE_SMOOTH;
+           cfg.type = (var->data.location == VARYING_SLOT_PNTC) ?
+              AGX_VARYING_TYPE_POINT_COORDINATES :
+              (var->data.interpolation == INTERP_MODE_FLAT) ?
+                 AGX_VARYING_TYPE_FLAT_LAST :
+                 AGX_VARYING_TYPE_SMOOTH;
+
            cfg.components = channels;
-           cfg.slot_1 = cfg.slot_2 = base;
+           cfg.triangle_slot = cfg.point_slot = base;
         }
 
         base += channels;
@@ -1285,6 +1321,11 @@ agx_compile_shader_nir(nir_shader *nir,
    ctx->stage = nir->info.stage;
    list_inithead(&ctx->blocks);
 
+   if (ctx->stage == MESA_SHADER_VERTEX) {
+      out->writes_psiz = nir->info.outputs_written &
+         BITFIELD_BIT(VARYING_SLOT_PSIZ);
+   }
+
    NIR_PASS_V(nir, nir_lower_vars_to_ssa);
 
    /* Lower large arrays to scratch and small arrays to csel */
@@ -1296,6 +1337,11 @@ agx_compile_shader_nir(nir_shader *nir,
       /* Lower from OpenGL [-1, 1] to [0, 1] if half-z is not set */
       if (!key->vs.clip_halfz)
          NIR_PASS_V(nir, nir_lower_clip_halfz);
+   } else if (ctx->stage == MESA_SHADER_FRAGMENT) {
+      /* Flip point coordinate since OpenGL and Metal disagree */
+      NIR_PASS_V(nir, nir_shader_instructions_pass,
+            agx_lower_point_coord,
+            nir_metadata_block_index | nir_metadata_dominance, NULL);
    }
 
    NIR_PASS_V(nir, nir_split_var_copies);

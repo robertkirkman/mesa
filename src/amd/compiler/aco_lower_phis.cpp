@@ -20,17 +20,14 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
  *
- * Authors:
- *    Rhys Perry (pendingchaos02@gmail.com)
- *
  */
 
-#include <map>
-
-#include "aco_ir.h"
 #include "aco_builder.h"
-#include <algorithm>
+#include "aco_ir.h"
 
+#include <algorithm>
+#include <map>
+#include <vector>
 
 namespace aco {
 

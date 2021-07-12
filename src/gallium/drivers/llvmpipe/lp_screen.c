@@ -649,7 +649,7 @@ llvmpipe_is_format_supported( struct pipe_screen *_screen,
    if (MAX2(1, sample_count) != MAX2(1, storage_sample_count))
       return false;
 
-   if (bind & PIPE_BIND_RENDER_TARGET) {
+   if (bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SHADER_IMAGE)) {
       if (format_desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB) {
          /* this is a lie actually other formats COULD exist where we would fail */
          if (format_desc->nr_channels < 3)
@@ -671,6 +671,54 @@ llvmpipe_is_format_supported( struct pipe_screen *_screen,
       if (!format_desc->is_array && !format_desc->is_bitmask &&
           format != PIPE_FORMAT_R11G11B10_FLOAT)
          return false;
+   }
+
+   if (bind & PIPE_BIND_SHADER_IMAGE) {
+      switch (format) {
+         case PIPE_FORMAT_R32G32B32A32_FLOAT:
+         case PIPE_FORMAT_R16G16B16A16_FLOAT:
+         case PIPE_FORMAT_R32G32_FLOAT:
+         case PIPE_FORMAT_R16G16_FLOAT:
+         case PIPE_FORMAT_R11G11B10_FLOAT:
+         case PIPE_FORMAT_R32_FLOAT:
+         case PIPE_FORMAT_R16_FLOAT:
+         case PIPE_FORMAT_R32G32B32A32_UINT:
+         case PIPE_FORMAT_R16G16B16A16_UINT:
+         case PIPE_FORMAT_R10G10B10A2_UINT:
+         case PIPE_FORMAT_R8G8B8A8_UINT:
+         case PIPE_FORMAT_R32G32_UINT:
+         case PIPE_FORMAT_R16G16_UINT:
+         case PIPE_FORMAT_R8G8_UINT:
+         case PIPE_FORMAT_R32_UINT:
+         case PIPE_FORMAT_R16_UINT:
+         case PIPE_FORMAT_R8_UINT:
+         case PIPE_FORMAT_R32G32B32A32_SINT:
+         case PIPE_FORMAT_R16G16B16A16_SINT:
+         case PIPE_FORMAT_R8G8B8A8_SINT:
+         case PIPE_FORMAT_R32G32_SINT:
+         case PIPE_FORMAT_R16G16_SINT:
+         case PIPE_FORMAT_R8G8_SINT:
+         case PIPE_FORMAT_R32_SINT:
+         case PIPE_FORMAT_R16_SINT:
+         case PIPE_FORMAT_R8_SINT:
+         case PIPE_FORMAT_R16G16B16A16_UNORM:
+         case PIPE_FORMAT_R10G10B10A2_UNORM:
+         case PIPE_FORMAT_R8G8B8A8_UNORM:
+         case PIPE_FORMAT_R16G16_UNORM:
+         case PIPE_FORMAT_R8G8_UNORM:
+         case PIPE_FORMAT_R16_UNORM:
+         case PIPE_FORMAT_R8_UNORM:
+         case PIPE_FORMAT_R16G16B16A16_SNORM:
+         case PIPE_FORMAT_R8G8B8A8_SNORM:
+         case PIPE_FORMAT_R16G16_SNORM:
+         case PIPE_FORMAT_R8G8_SNORM:
+         case PIPE_FORMAT_R16_SNORM:
+         case PIPE_FORMAT_R8_SNORM:
+            break;
+
+         default:
+            return false;
+      }
    }
 
    if ((bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW)) &&

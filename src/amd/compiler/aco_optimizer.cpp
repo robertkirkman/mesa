@@ -20,19 +20,15 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
  *
- * Authors:
- *    Daniel Schürmann (daniel.schuermann@campus.tu-berlin.de)
- *
  */
-
-#include <algorithm>
-#include <array>
-#include <math.h>
 
 #include "aco_ir.h"
 #include "util/half_float.h"
 #include "util/memstream.h"
-#include "util/u_math.h"
+
+#include <algorithm>
+#include <array>
+#include <vector>
 
 namespace aco {
 

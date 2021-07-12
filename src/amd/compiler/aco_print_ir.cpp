@@ -1,8 +1,32 @@
-#include "aco_ir.h"
-#include "aco_builder.h"
+/*
+ * Copyright © 2018 Valve Corporation
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
+ *
+ */
 
-#include "sid.h"
-#include "ac_shader_util.h"
+#include "aco_builder.h"
+#include "aco_ir.h"
+
+#include "common/ac_shader_util.h"
+#include "common/sid.h"
 
 #include <array>
 
@@ -703,9 +727,15 @@ void aco_print_instr(const Instruction *instr, FILE *output, unsigned flags)
       bool *const neg = (bool *)alloca(instr->operands.size() * sizeof(bool));
       bool *const opsel = (bool *)alloca(instr->operands.size() * sizeof(bool));
       uint8_t *const sel = (uint8_t *)alloca(instr->operands.size() * sizeof(uint8_t));
+      for (unsigned i = 0; i < instr->operands.size(); ++i) {
+         abs[i] = false;
+         neg[i] = false;
+         opsel[i] = false;
+         sel[i] = sdwa_udword;
+      }
       if (instr->isVOP3()) {
          const VOP3_instruction& vop3 = instr->vop3();
-         for (unsigned i = 0; i < instr->operands.size(); ++i) {
+         for (unsigned i = 0; i < 3; ++i) {
             abs[i] = vop3.abs[i];
             neg[i] = vop3.neg[i];
             opsel[i] = vop3.opsel & (1 << i);
@@ -713,26 +743,19 @@ void aco_print_instr(const Instruction *instr, FILE *output, unsigned flags)
          }
       } else if (instr->isDPP()) {
          const DPP_instruction& dpp = instr->dpp();
-         for (unsigned i = 0; i < instr->operands.size(); ++i) {
-            abs[i] = i < 2 ? dpp.abs[i] : false;
-            neg[i] = i < 2 ? dpp.neg[i] : false;
+         for (unsigned i = 0; i < 2; ++i) {
+            abs[i] = dpp.abs[i];
+            neg[i] = dpp.neg[i];
             opsel[i] = false;
             sel[i] = sdwa_udword;
          }
       } else if (instr->isSDWA()) {
          const SDWA_instruction& sdwa = instr->sdwa();
-         for (unsigned i = 0; i < instr->operands.size(); ++i) {
-            abs[i] = i < 2 ? sdwa.abs[i] : false;
-            neg[i] = i < 2 ? sdwa.neg[i] : false;
+         for (unsigned i = 0; i < 2; ++i) {
+            abs[i] = sdwa.abs[i];
+            neg[i] = sdwa.neg[i];
             opsel[i] = false;
-            sel[i] = i < 2 ? sdwa.sel[i] : sdwa_udword;
-         }
-      } else {
-         for (unsigned i = 0; i < instr->operands.size(); ++i) {
-            abs[i] = false;
-            neg[i] = false;
-            opsel[i] = false;
-            sel[i] = sdwa_udword;
+            sel[i] = sdwa.sel[i];
          }
       }
       for (unsigned i = 0; i < instr->operands.size(); ++i) {

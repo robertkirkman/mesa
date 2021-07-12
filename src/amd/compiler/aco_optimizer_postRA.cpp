@@ -20,17 +20,14 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
  *
- * Authors:
- *    Timur Kristóf <timur.kristof@gmail.com
- *
  */
 
 #include "aco_ir.h"
 
-#include <vector>
 #include <bitset>
 #include <algorithm>
 #include <array>
+#include <vector>
 
 namespace aco {
 namespace {
@@ -342,3 +339,4 @@ void optimize_postRA(Program* program)
 }
 
 } /* End of aco namespace */
+
