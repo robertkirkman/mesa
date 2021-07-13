@@ -68,6 +68,7 @@ struct zink_resource_object {
    VkBuffer sbuffer;
    bool storage_init; //layout was set for image
    bool transfer_dst;
+   VkImageAspectFlags modifier_aspect;
 
    VkDeviceMemory mem;
    uint32_t mem_hash;
@@ -127,6 +128,9 @@ struct zink_resource {
 
    uint32_t bind_history; // enum zink_descriptor_type bitmask
    uint32_t bind_stages;
+
+   uint8_t modifiers_count;
+   uint64_t *modifiers;
 };
 
 struct zink_transfer {

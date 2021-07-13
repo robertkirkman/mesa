@@ -43,7 +43,6 @@
 #include "drm-uapi/drm_fourcc.h"
 #include "drm-uapi/panfrost_drm.h"
 
-#include "pan_blitter.h"
 #include "pan_bo.h"
 #include "pan_shader.h"
 #include "pan_screen.h"
@@ -68,7 +67,6 @@ static const struct debug_named_value panfrost_debug_options[] = {
         {"noafbc",    PAN_DBG_NO_AFBC,  "Disable AFBC support"},
         {"nocrc",     PAN_DBG_NO_CRC,   "Disable transaction elimination"},
         {"msaa16",    PAN_DBG_MSAA16,   "Enable MSAA 8x and 16x support"},
-        {"panblit",   PAN_DBG_PANBLIT,  "Use pan_blitter instead of u_blitter"},
         {"noindirect", PAN_DBG_NOINDIRECT, "Emulate indirect draws on the CPU"},
         DEBUG_NAMED_VALUE_END
 };
@@ -534,19 +532,19 @@ panfrost_is_format_supported( struct pipe_screen *screen,
                 | PIPE_BIND_VERTEX_BUFFER | PIPE_BIND_SAMPLER_VIEW);
 
         struct panfrost_format fmt = dev->formats[format];
-        enum mali_format indexed = MALI_EXTRACT_INDEX(fmt.hw);
 
         /* Also check that compressed texture formats are supported on this
          * particular chip. They may not be depending on system integration
          * differences. RGTC can be emulated so is always supported. */
 
         bool is_rgtc = format_desc->layout == UTIL_FORMAT_LAYOUT_RGTC;
-        bool supported = panfrost_supports_compressed_format(dev, indexed);
+        bool supported = panfrost_supports_compressed_format(dev,
+                        MALI_EXTRACT_INDEX(fmt.hw));
 
         if (!is_rgtc && !supported)
                 return false;
 
-        return indexed && ((relevant_bind & ~fmt.bind) == 0);
+        return MALI_EXTRACT_INDEX(fmt.hw) && ((relevant_bind & ~fmt.bind) == 0);
 }
 
 /* We always support linear and tiled operations, both external and internal.
@@ -697,10 +695,11 @@ panfrost_destroy_screen(struct pipe_screen *pscreen)
         pan_indirect_dispatch_cleanup(dev);
         panfrost_cleanup_indirect_draw_shaders(dev);
         panfrost_pool_cleanup(&screen->indirect_draw.bin_pool);
-        pan_blitter_cleanup(dev);
         panfrost_pool_cleanup(&screen->blitter.bin_pool);
         panfrost_pool_cleanup(&screen->blitter.desc_pool);
         pan_blend_shaders_cleanup(dev);
+
+        screen->vtbl.screen_destroy(pscreen);
 
         if (dev->ro)
                 dev->ro->destroy(dev->ro);
@@ -893,9 +892,6 @@ panfrost_create_screen(int fd, struct renderonly *ro)
                            4096, "Blitter shaders", false, true);
         panfrost_pool_init(&screen->blitter.desc_pool, NULL, dev, 0, 65536,
                            "Blitter RSDs", false, true);
-        pan_blitter_init(dev, &screen->blitter.bin_pool.base,
-                         &screen->blitter.desc_pool.base);
-
         panfrost_cmdstream_screen_init(screen);
 
         return &screen->base;

@@ -45,6 +45,7 @@
 #include "pan_util.h"
 #include "pan_indirect_draw.h"
 #include "pan_indirect_dispatch.h"
+#include "pan_blitter.h"
 
 #include "midgard_pack.h"
 
@@ -362,7 +363,7 @@ panfrost_emit_bifrost_blend(struct panfrost_batch *batch,
                 if (!blend_shaders[i]) {
                         /* Word 1: Blend Equation */
                         STATIC_ASSERT(MALI_BLEND_EQUATION_LENGTH == 4);
-                        packed->opaque[1] = so->equation[i].opaque[0];
+                        packed->opaque[1] = so->equation[i];
                 }
 
                 /* Words 2 and 3: Internal blend */
@@ -445,7 +446,7 @@ panfrost_emit_midgard_blend(struct panfrost_batch *batch,
                 if (!blend_shaders[i]) {
                         /* Word 2: Blend Equation */
                         STATIC_ASSERT(MALI_BLEND_EQUATION_LENGTH == 4);
-                        packed->opaque[2] = so->equation[i].opaque[0];
+                        packed->opaque[2] = so->equation[i];
                 }
         }
 }
@@ -640,7 +641,7 @@ panfrost_emit_frag_shader(struct panfrost_context *ctx,
 
                 /* Word 14: SFBD Blend Equation */
                 STATIC_ASSERT(MALI_BLEND_EQUATION_LENGTH == 4);
-                rsd.opaque[14] = ctx->blend->equation[0].opaque[0];
+                rsd.opaque[14] = ctx->blend->equation[0];
         }
 
         /* Merge with CSO state and upload */
@@ -3682,13 +3683,36 @@ panfrost_get_sample_position(struct pipe_context *context,
                         out_value);
 }
 
+static void
+screen_destroy(struct pipe_screen *pscreen)
+{
+        struct panfrost_device *dev = pan_device(pscreen);
+        pan_blitter_cleanup(dev);
+}
+
+static void
+preload(struct panfrost_batch *batch, struct pan_fb_info *fb)
+{
+        struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
+
+        pan_preload_fb(&batch->pool.base, &batch->scoreboard, fb, batch->tls.gpu,
+                       pan_is_bifrost(dev) ? batch->tiler_ctx.bifrost : 0);
+}
+
 void
 panfrost_cmdstream_screen_init(struct panfrost_screen *screen)
 {
+        struct panfrost_device *dev = &screen->dev;
+
         screen->vtbl.prepare_rsd = prepare_rsd;
         screen->vtbl.emit_tls    = emit_tls;
         screen->vtbl.emit_fbd    = emit_fbd;
         screen->vtbl.emit_fragment_job = emit_fragment_job;
+        screen->vtbl.screen_destroy = screen_destroy;
+        screen->vtbl.preload     = preload;
+
+        pan_blitter_init(dev, &screen->blitter.bin_pool.base,
+                         &screen->blitter.desc_pool.base);
 }
 
 void

@@ -316,9 +316,6 @@ typedef struct {
          * useless double fills */
         bool no_spill;
 
-        /* Should we terminate discarded threads after executing this instruction? */
-        bool tdd;
-
         /* Override table, inducing a DTSEL_IMM pair if nonzero */
         enum bi_table table;
 
@@ -520,6 +517,9 @@ typedef struct {
         /* Unique in a clause */
         enum bifrost_message_type message_type;
         bi_instr *message;
+
+        /* Discard helper threads */
+        bool td;
 } bi_clause;
 
 typedef struct bi_block {
@@ -730,9 +730,9 @@ bi_node_to_index(unsigned node, unsigned node_count)
                 bi_foreach_instr_in_block_rev_safe((bi_block *) v_block, v)
 
 #define bi_foreach_instr_in_tuple(tuple, v) \
-        for (bi_instr *v = tuple->fma ?: tuple->add; \
+        for (bi_instr *v = (tuple)->fma ?: (tuple)->add; \
                         v != NULL; \
-                        v = (v == tuple->add) ? NULL : tuple->add)
+                        v = (v == (tuple)->add) ? NULL : (tuple)->add)
 
 /* Based on set_foreach, expanded with automatic type casts */
 
@@ -918,13 +918,17 @@ bi_after_instr(bi_instr *instr)
  * in which case there must exist a nonempty penultimate tuple */
 
 ATTRIBUTE_RETURNS_NONNULL static inline bi_instr *
-bi_first_instr_in_clause(bi_clause *clause)
+bi_first_instr_in_tuple(bi_tuple *tuple)
 {
-        bi_tuple tuple = clause->tuples[0];
-        bi_instr *instr = tuple.fma ?: tuple.add;
-
+        bi_instr *instr = tuple->fma ?: tuple->add;
         assert(instr != NULL);
         return instr;
+}
+
+ATTRIBUTE_RETURNS_NONNULL static inline bi_instr *
+bi_first_instr_in_clause(bi_clause *clause)
+{
+        return bi_first_instr_in_tuple(&clause->tuples[0]);
 }
 
 ATTRIBUTE_RETURNS_NONNULL static inline bi_instr *
@@ -962,6 +966,12 @@ static inline bi_cursor
 bi_before_clause(bi_clause *clause)
 {
     return bi_before_instr(bi_first_instr_in_clause(clause));
+}
+
+static inline bi_cursor
+bi_before_tuple(bi_tuple *tuple)
+{
+    return bi_before_instr(bi_first_instr_in_tuple(tuple));
 }
 
 static inline bi_cursor
