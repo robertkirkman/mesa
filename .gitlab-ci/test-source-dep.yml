@@ -66,7 +66,8 @@
       - src/gallium/auxiliary/**/*
       - src/gallium/drivers/*
       - src/gallium/include/**/*
-      - src/gallium/frontends/**/*
+      - src/gallium/frontends/dri/*
+      - src/gallium/frontends/glx/**/*
       - src/gallium/targets/**/*
       - src/gallium/tests/**/*
       - src/gallium/winsys/*
@@ -117,6 +118,9 @@
       - src/gallium/drivers/llvmpipe/**/*
       - src/gallium/frontends/lavapipe/**/*
       - src/gallium/winsys/sw/**/*
+      when: on_success
+    - changes:
+        *vulkan_file_list
       when: on_success
     - when: never
 
