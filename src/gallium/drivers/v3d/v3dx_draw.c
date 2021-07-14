@@ -618,8 +618,10 @@ v3d_emit_gl_shader_state(struct v3d_context *v3d,
 
 #if V3D_VERSION >= 41
                 shader.any_shader_reads_hardware_written_primitive_id =
-                        v3d->prog.gs ? v3d->prog.gs->prog_data.gs->uses_pid :
-                                       false;
+                        (v3d->prog.gs && v3d->prog.gs->prog_data.gs->uses_pid) ||
+                        v3d->prog.fs->prog_data.fs->uses_pid;
+                shader.insert_primitive_id_as_first_varying_to_fragment_shader =
+                        !v3d->prog.gs && v3d->prog.fs->prog_data.fs->uses_pid;
 #endif
 
 #if V3D_VERSION >= 40
@@ -1613,6 +1615,7 @@ v3d_tlb_clear(struct v3d_job *job, unsigned buffers,
         job->draw_max_y = v3d->framebuffer.height;
         job->clear |= buffers;
         job->store |= buffers;
+        job->scissor.disabled = true;
 
         v3d_start_draw(v3d);
 

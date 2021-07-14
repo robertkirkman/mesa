@@ -73,7 +73,7 @@ panfrost_clear(
          * color/depth/stencil value, thus avoiding the generation of extra
          * fragment jobs.
          */
-        struct panfrost_batch *batch = panfrost_get_fresh_batch_for_fbo(ctx);
+        struct panfrost_batch *batch = panfrost_get_fresh_batch_for_fbo(ctx, "Clear");
         panfrost_batch_clear(batch, buffers, color, depth, stencil);
 }
 
@@ -99,7 +99,7 @@ panfrost_flush(
 
 
         /* Submit all pending jobs */
-        panfrost_flush_all_batches(ctx);
+        panfrost_flush_all_batches(ctx, NULL);
 
         if (fence) {
                 struct pipe_fence_handle *f = panfrost_fence_create(ctx);
@@ -115,14 +115,14 @@ static void
 panfrost_texture_barrier(struct pipe_context *pipe, unsigned flags)
 {
         struct panfrost_context *ctx = pan_context(pipe);
-        panfrost_flush_all_batches(ctx);
+        panfrost_flush_all_batches(ctx, "Texture barrier");
 }
 
 static void
 panfrost_set_frontend_noop(struct pipe_context *pipe, bool enable)
 {
         struct panfrost_context *ctx = pan_context(pipe);
-        panfrost_flush_all_batches(ctx);
+        panfrost_flush_all_batches(ctx, "Frontend no-op change");
         ctx->is_noop = enable;
 }
 
@@ -265,7 +265,8 @@ panfrost_set_shader_images(
                 /* Images don't work with AFBC, since they require pixel-level granularity */
                 if (drm_is_afbc(rsrc->image.layout.modifier)) {
                         pan_resource_modifier_convert(ctx, rsrc,
-                                        DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED);
+                                        DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED,
+                                        "Shader image");
                 }
 
                 util_copy_image_view(&ctx->images[shader][start_slot+i], image);
@@ -915,7 +916,7 @@ panfrost_get_query_result(struct pipe_context *pipe,
         case PIPE_QUERY_OCCLUSION_COUNTER:
         case PIPE_QUERY_OCCLUSION_PREDICATE:
         case PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE:
-                panfrost_flush_writer(ctx, rsrc);
+                panfrost_flush_writer(ctx, rsrc, "Occlusion query");
                 panfrost_bo_wait(rsrc->image.data.bo, INT64_MAX, false);
 
                 /* Read back the query results */
@@ -938,7 +939,7 @@ panfrost_get_query_result(struct pipe_context *pipe,
 
         case PIPE_QUERY_PRIMITIVES_GENERATED:
         case PIPE_QUERY_PRIMITIVES_EMITTED:
-                panfrost_flush_all_batches(ctx);
+                panfrost_flush_all_batches(ctx, "Primitive count query");
                 vresult->u64 = query->end - query->start;
                 break;
 
@@ -955,6 +956,8 @@ panfrost_render_condition_check(struct panfrost_context *ctx)
 {
 	if (!ctx->cond_query)
 		return true;
+
+        perf_debug_ctx(ctx, "Implementing conditional rendering on the CPU");
 
 	union pipe_query_result res = { 0 };
 	bool wait =

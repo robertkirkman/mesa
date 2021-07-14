@@ -182,7 +182,8 @@ panfrost_get_batch(struct panfrost_context *ctx,
 
 struct panfrost_batch *
 panfrost_get_fresh_batch(struct panfrost_context *ctx,
-                         const struct pipe_framebuffer_state *key)
+                         const struct pipe_framebuffer_state *key,
+                         const char *reason)
 {
         struct panfrost_batch *batch = panfrost_get_batch(ctx, key);
 
@@ -200,6 +201,7 @@ panfrost_get_fresh_batch(struct panfrost_context *ctx,
         /* Otherwise, we need to flush the existing one and instantiate a new
          * one.
          */
+        perf_debug_ctx(ctx, "Flushing a batch due to: %s", reason);
         panfrost_batch_submit(batch, 0, 0);
         batch = panfrost_get_batch(ctx, key);
         return batch;
@@ -231,7 +233,7 @@ panfrost_get_batch_for_fbo(struct panfrost_context *ctx)
 }
 
 struct panfrost_batch *
-panfrost_get_fresh_batch_for_fbo(struct panfrost_context *ctx)
+panfrost_get_fresh_batch_for_fbo(struct panfrost_context *ctx, const char *reason)
 {
         struct panfrost_batch *batch;
 
@@ -250,6 +252,7 @@ panfrost_get_fresh_batch_for_fbo(struct panfrost_context *ctx)
         /* Otherwise, we need to freeze the existing one and instantiate a new
          * one.
          */
+        perf_debug_ctx(ctx, "Flushing the current FBO due to: %s", reason);
         panfrost_batch_submit(batch, 0, 0);
         batch = panfrost_get_batch(ctx, &ctx->pipe_framebuffer);
         ctx->batch = batch;
@@ -902,13 +905,16 @@ out:
 /* Submit all batches, applying the out_sync to the currently bound batch */
 
 void
-panfrost_flush_all_batches(struct panfrost_context *ctx)
+panfrost_flush_all_batches(struct panfrost_context *ctx, const char *reason)
 {
         struct panfrost_batch *batch = panfrost_get_batch_for_fbo(ctx);
         panfrost_batch_submit(batch, ctx->syncobj, ctx->syncobj);
 
         for (unsigned i = 0; i < PAN_MAX_BATCHES; i++) {
                 if (ctx->batches.slots[i].seqnum) {
+                        if (reason)
+                                perf_debug_ctx(ctx, "Flushing everything due to: %s", reason);
+
                         panfrost_batch_submit(&ctx->batches.slots[i],
                                               ctx->syncobj, ctx->syncobj);
                 }
@@ -917,9 +923,11 @@ panfrost_flush_all_batches(struct panfrost_context *ctx)
 
 void
 panfrost_flush_writer(struct panfrost_context *ctx,
-                      struct panfrost_resource *rsrc)
+                      struct panfrost_resource *rsrc,
+                      const char *reason)
 {
         if (rsrc->track.writer) {
+                perf_debug_ctx(ctx, "Flushing writer due to: %s", reason);
                 panfrost_batch_submit(rsrc->track.writer, ctx->syncobj, ctx->syncobj);
                 rsrc->track.writer = NULL;
         }
@@ -927,10 +935,12 @@ panfrost_flush_writer(struct panfrost_context *ctx,
 
 void
 panfrost_flush_batches_accessing_rsrc(struct panfrost_context *ctx,
-                                      struct panfrost_resource *rsrc)
+                                      struct panfrost_resource *rsrc,
+                                      const char *reason)
 {
         unsigned i;
         BITSET_FOREACH_SET(i, rsrc->track.users, PAN_MAX_BATCHES) {
+                perf_debug_ctx(ctx, "Flushing user due to: %s", reason);
                 panfrost_batch_submit(&ctx->batches.slots[i],
                                       ctx->syncobj, ctx->syncobj);
         }
