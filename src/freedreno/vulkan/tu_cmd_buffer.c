@@ -160,10 +160,10 @@ tu_emit_cache_flush_ccu(struct tu_cmd_buffer *cmd_buffer,
    if (ccu_state != cmd_buffer->state.ccu_state) {
       struct tu_physical_device *phys_dev = cmd_buffer->device->physical_device;
       tu_cs_emit_regs(cs,
-                      A6XX_RB_CCU_CNTL(.offset =
+                      A6XX_RB_CCU_CNTL(.color_offset =
                                           ccu_state == TU_CMD_CCU_GMEM ?
-                                          phys_dev->info.a6xx.ccu_offset_gmem :
-                                          phys_dev->info.a6xx.ccu_offset_bypass,
+                                          phys_dev->ccu_offset_gmem :
+                                          phys_dev->ccu_offset_bypass,
                                        .gmem = ccu_state == TU_CMD_CCU_GMEM));
       cmd_buffer->state.ccu_state = ccu_state;
    }
@@ -324,9 +324,13 @@ tu6_emit_render_cntl(struct tu_cmd_buffer *cmd,
                      bool binning)
 {
    const struct tu_framebuffer *fb = cmd->state.framebuffer;
+   /* doesn't RB_RENDER_CNTL set differently for binning pass: */
+   bool no_track = !cmd->device->physical_device->info->a6xx.has_cp_reg_write;
    uint32_t cntl = 0;
    cntl |= A6XX_RB_RENDER_CNTL_UNK4;
    if (binning) {
+      if (no_track)
+         return;
       cntl |= A6XX_RB_RENDER_CNTL_BINNING;
    } else {
       uint32_t mrts_ubwc_enable = 0;
@@ -347,6 +351,12 @@ tu6_emit_render_cntl(struct tu_cmd_buffer *cmd,
          const struct tu_image_view *iview = fb->attachments[a].attachment;
          if (iview->ubwc_enabled)
             cntl |= A6XX_RB_RENDER_CNTL_FLAG_DEPTH;
+      }
+
+      if (no_track) {
+         tu_cs_emit_pkt4(cs, REG_A6XX_RB_RENDER_CNTL, 1);
+         tu_cs_emit(cs, cntl);
+         return;
       }
 
       /* In the !binning case, we need to set RB_RENDER_CNTL in the draw_cs
@@ -389,10 +399,10 @@ tu6_emit_blit_scissor(struct tu_cmd_buffer *cmd, struct tu_cs *cs, bool align)
    uint32_t y2 = y1 + render_area->extent.height - 1;
 
    if (align) {
-      x1 = x1 & ~(phys_dev->info.gmem_align_w - 1);
-      y1 = y1 & ~(phys_dev->info.gmem_align_h - 1);
-      x2 = ALIGN_POT(x2 + 1, phys_dev->info.gmem_align_w) - 1;
-      y2 = ALIGN_POT(y2 + 1, phys_dev->info.gmem_align_h) - 1;
+      x1 = x1 & ~(phys_dev->info->gmem_align_w - 1);
+      y1 = y1 & ~(phys_dev->info->gmem_align_h - 1);
+      x2 = ALIGN_POT(x2 + 1, phys_dev->info->gmem_align_w) - 1;
+      y2 = ALIGN_POT(y2 + 1, phys_dev->info->gmem_align_h) - 1;
    }
 
    tu_cs_emit_regs(cs,
@@ -500,29 +510,6 @@ use_hw_binning(struct tu_cmd_buffer *cmd)
    if (cmd->state.xfb_used)
       return true;
 
-   /* Some devices have a newer a630_sqe.fw in which, only in CP_DRAW_INDX and
-    * CP_DRAW_INDX_OFFSET, visibility-based skipping happens *before*
-    * predication-based skipping. It seems this breaks predication, because
-    * draws skipped by predication will not be executed in the binning phase,
-    * and therefore won't have an entry in the draw stream, but the
-    * visibility-based skipping will expect it to have an entry. The result is
-    * a GPU hang when actually executing the first non-predicated draw.
-    * However, it seems that things still work if the whole renderpass is
-    * predicated. Affected tests are
-    * dEQP-VK.conditional_rendering.draw_clear.draw.case_2 as well as a few
-    * other case_N.
-    *
-    * Broken FW version: 016ee181
-    * linux-firmware (working) FW version: 016ee176
-    *
-    * All known a650_sqe.fw versions don't have this bug.
-    *
-    * TODO: we should do version detection of the FW so that devices using the
-    * linux-firmware version of a630_sqe.fw don't need this workaround.
-    */
-   if (cmd->state.has_subpass_predication && cmd->device->physical_device->gpu_id != 650)
-      return false;
-
    if (unlikely(cmd->device->physical_device->instance->debug_flags & TU_DEBUG_NOBIN))
       return false;
 
@@ -536,13 +523,6 @@ static bool
 use_sysmem_rendering(struct tu_cmd_buffer *cmd)
 {
    if (unlikely(cmd->device->physical_device->instance->debug_flags & TU_DEBUG_SYSMEM))
-      return true;
-
-   /* If hw binning is required because of XFB but doesn't work because of the
-    * conditional rendering bug, fallback to sysmem.
-    */
-   if (cmd->state.xfb_used && cmd->state.has_subpass_predication &&
-       cmd->device->physical_device->gpu_id != 650)
       return true;
 
    /* can't fit attachments into gmem */
@@ -742,7 +722,7 @@ tu6_init_hw(struct tu_cmd_buffer *cmd, struct tu_cs *cs)
       ~(TU_CMD_FLAG_WAIT_FOR_IDLE | TU_CMD_FLAG_CACHE_INVALIDATE);
 
    tu_cs_emit_regs(cs,
-                   A6XX_RB_CCU_CNTL(.offset = phys_dev->info.a6xx.ccu_offset_bypass));
+                   A6XX_RB_CCU_CNTL(.color_offset = phys_dev->ccu_offset_bypass));
    cmd->state.ccu_state = TU_CMD_CCU_SYSMEM;
    tu_cs_emit_write_reg(cs, REG_A6XX_RB_UNKNOWN_8E04, 0x00100000);
    tu_cs_emit_write_reg(cs, REG_A6XX_SP_FLOAT_CNTL, 0);
@@ -940,10 +920,10 @@ tu6_emit_binning_pass(struct tu_cmd_buffer *cmd, struct tu_cs *cs)
    update_vsc_pipe(cmd, cs);
 
    tu_cs_emit_regs(cs,
-                   A6XX_PC_UNKNOWN_9805(.unknown = phys_dev->info.a6xx.magic.PC_UNKNOWN_9805));
+                   A6XX_PC_UNKNOWN_9805(.unknown = phys_dev->info->a6xx.magic.PC_UNKNOWN_9805));
 
    tu_cs_emit_regs(cs,
-                   A6XX_SP_UNKNOWN_A0F8(.unknown = phys_dev->info.a6xx.magic.SP_UNKNOWN_A0F8));
+                   A6XX_SP_UNKNOWN_A0F8(.unknown = phys_dev->info->a6xx.magic.SP_UNKNOWN_A0F8));
 
    tu_cs_emit_pkt7(cs, CP_EVENT_WRITE, 1);
    tu_cs_emit(cs, UNK_2C);
@@ -1045,7 +1025,7 @@ tu_emit_input_attachments(struct tu_cmd_buffer *cmd,
          dst[0] &= ~(A6XX_TEX_CONST_0_FMT__MASK |
             A6XX_TEX_CONST_0_SWIZ_X__MASK | A6XX_TEX_CONST_0_SWIZ_Y__MASK |
             A6XX_TEX_CONST_0_SWIZ_Z__MASK | A6XX_TEX_CONST_0_SWIZ_W__MASK);
-         if (!cmd->device->physical_device->info.a6xx.has_z24uint_s8uint) {
+         if (!cmd->device->physical_device->info->a6xx.has_z24uint_s8uint) {
             dst[0] |= A6XX_TEX_CONST_0_FMT(FMT6_8_8_8_8_UINT) |
                A6XX_TEX_CONST_0_SWIZ_X(A6XX_TEX_W) |
                A6XX_TEX_CONST_0_SWIZ_Y(A6XX_TEX_ZERO) |
@@ -1233,9 +1213,9 @@ tu6_tile_render_begin(struct tu_cmd_buffer *cmd, struct tu_cs *cs)
       tu_cs_emit_regs(cs,
                       A6XX_VFD_MODE_CNTL(0));
 
-      tu_cs_emit_regs(cs, A6XX_PC_UNKNOWN_9805(.unknown = phys_dev->info.a6xx.magic.PC_UNKNOWN_9805));
+      tu_cs_emit_regs(cs, A6XX_PC_UNKNOWN_9805(.unknown = phys_dev->info->a6xx.magic.PC_UNKNOWN_9805));
 
-      tu_cs_emit_regs(cs, A6XX_SP_UNKNOWN_A0F8(.unknown = phys_dev->info.a6xx.magic.SP_UNKNOWN_A0F8));
+      tu_cs_emit_regs(cs, A6XX_SP_UNKNOWN_A0F8(.unknown = phys_dev->info->a6xx.magic.SP_UNKNOWN_A0F8));
 
       tu_cs_emit_pkt7(cs, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
       tu_cs_emit(cs, 0x1);
@@ -3990,14 +3970,7 @@ tu_CmdDrawIndirect(VkCommandBuffer commandBuffer,
 
    tu6_emit_empty_vs_params(cmd);
 
-   /* The latest known a630_sqe.fw fails to wait for WFI before reading the
-    * indirect buffer when using CP_DRAW_INDIRECT_MULTI, so we have to fall
-    * back to CP_WAIT_FOR_ME except for a650 which has a fixed firmware.
-    *
-    * TODO: There may be newer a630_sqe.fw released in the future which fixes
-    * this, if so we should detect it and avoid this workaround.
-    */
-   if (cmd->device->physical_device->gpu_id != 650)
+   if (cmd->device->physical_device->info->a6xx.indirect_draw_wfm_quirk)
       draw_wfm(cmd);
 
    tu6_draw_common(cmd, cs, false, 0);
@@ -4024,7 +3997,7 @@ tu_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer,
 
    tu6_emit_empty_vs_params(cmd);
 
-   if (cmd->device->physical_device->gpu_id != 650)
+   if (cmd->device->physical_device->info->a6xx.indirect_draw_wfm_quirk)
       draw_wfm(cmd);
 
    tu6_draw_common(cmd, cs, true, 0);

@@ -26,6 +26,8 @@
 
 #include "util/ralloc.h"
 
+#include "freedreno_dev_info.h"
+
 #include "ir3_compiler.h"
 
 static const struct debug_named_value shader_debug_options[] = {
@@ -120,8 +122,8 @@ ir3_compiler_create(struct fd_device *dev, uint32_t gpu_id,
       /* TODO: implement private memory on earlier gen's */
       compiler->has_pvtmem = true;
 
-      if (compiler->gpu_id == 650)
-         compiler->tess_use_shared = true;
+      compiler->tess_use_shared =
+            fd_dev_info(compiler->gpu_id)->a6xx.tess_use_shared;
    } else {
       compiler->max_const_pipeline = 512;
       compiler->max_const_geom = 512;
@@ -134,13 +136,9 @@ ir3_compiler_create(struct fd_device *dev, uint32_t gpu_id,
       compiler->max_const_safe = 256;
    }
 
-   if (compiler->gpu_id == 650) {
-      /* This changed mid-generation for a650, so that using r32.x and above
-       * requires using the smallest threadsize.
-       */
-      compiler->reg_size_vec4 = 64;
-   } else if (compiler->gpu_id >= 600) {
-      compiler->reg_size_vec4 = 96;
+   if (compiler->gpu_id >= 600) {
+      compiler->reg_size_vec4 =
+            fd_dev_info(compiler->gpu_id)->a6xx.reg_size_vec4;
    } else if (compiler->gpu_id >= 400) {
       /* On a4xx-a5xx, using r24.x and above requires using the smallest
        * threadsize.

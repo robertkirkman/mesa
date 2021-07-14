@@ -846,8 +846,7 @@ tu6_emit_vpc(struct tu_cs *cs,
              const struct ir3_shader_variant *ds,
              const struct ir3_shader_variant *gs,
              const struct ir3_shader_variant *fs,
-             uint32_t patch_control_points,
-             bool vshs_workgroup)
+             uint32_t patch_control_points)
 {
    /* note: doesn't compile as static because of the array regs.. */
    const struct reg_config {
@@ -1613,16 +1612,20 @@ tu6_emit_program(struct tu_cs *cs,
     * CP_EVENT_WRITE when multiview is disabled. I'm not exactly sure what
     * this is working around yet.
     */
-   tu_cs_emit_pkt7(cs, CP_REG_WRITE, 3);
-   tu_cs_emit(cs, CP_REG_WRITE_0_TRACKER(UNK_EVENT_WRITE));
-   tu_cs_emit(cs, REG_A6XX_PC_MULTIVIEW_CNTL);
+   if (builder->device->physical_device->info->a6xx.has_cp_reg_write) {
+      tu_cs_emit_pkt7(cs, CP_REG_WRITE, 3);
+      tu_cs_emit(cs, CP_REG_WRITE_0_TRACKER(UNK_EVENT_WRITE));
+      tu_cs_emit(cs, REG_A6XX_PC_MULTIVIEW_CNTL);
+   } else {
+      tu_cs_emit_pkt4(cs, REG_A6XX_PC_MULTIVIEW_CNTL, 1);
+   }
    tu_cs_emit(cs, multiview_cntl);
 
    tu_cs_emit_pkt4(cs, REG_A6XX_VFD_MULTIVIEW_CNTL, 1);
    tu_cs_emit(cs, multiview_cntl);
 
    if (multiview_cntl &&
-       builder->device->physical_device->info.a6xx.supports_multiview_mask) {
+       builder->device->physical_device->info->a6xx.supports_multiview_mask) {
       tu_cs_emit_pkt4(cs, REG_A6XX_PC_MULTIVIEW_MASK, 1);
       tu_cs_emit(cs, builder->multiview_mask);
    }
@@ -1630,8 +1633,7 @@ tu6_emit_program(struct tu_cs *cs,
    tu_cs_emit_pkt4(cs, REG_A6XX_SP_HS_WAVE_INPUT_SIZE, 1);
    tu_cs_emit(cs, 0);
 
-   tu6_emit_vpc(cs, vs, hs, ds, gs, fs, cps_per_patch,
-                builder->device->physical_device->gpu_id == 650);
+   tu6_emit_vpc(cs, vs, hs, ds, gs, fs, cps_per_patch);
    tu6_emit_vpc_varying_modes(cs, fs);
 
    bool no_earlyz = builder->depth_attachment_format == VK_FORMAT_S8_UINT;
@@ -2064,14 +2066,14 @@ calc_pvtmem_size(struct tu_device *dev, struct tu_pvtmem_config *config,
 {
    uint32_t per_fiber_size = ALIGN(pvtmem_bytes, 512);
    uint32_t per_sp_size =
-      ALIGN(per_fiber_size * dev->physical_device->info.fibers_per_sp, 1 << 12);
+      ALIGN(per_fiber_size * dev->physical_device->info->a6xx.fibers_per_sp, 1 << 12);
 
    if (config) {
       config->per_fiber_size = per_fiber_size;
       config->per_sp_size = per_sp_size;
    }
 
-   return dev->physical_device->info.num_sp_cores * per_sp_size;
+   return dev->physical_device->info->num_sp_cores * per_sp_size;
 }
 
 static VkResult

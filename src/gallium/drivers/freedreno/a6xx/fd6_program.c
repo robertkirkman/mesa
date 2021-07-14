@@ -103,8 +103,8 @@ fd6_emit_shader(struct fd_context *ctx, struct fd_ringbuffer *ring,
       fd_emit_string5(ring, name, strlen(name));
 #endif
 
-   uint32_t fibers_per_sp = ctx->screen->info.fibers_per_sp;
-   uint32_t num_sp_cores = ctx->screen->info.num_sp_cores;
+   uint32_t fibers_per_sp = ctx->screen->info->a6xx.fibers_per_sp;
+   uint32_t num_sp_cores = ctx->screen->info->num_sp_cores;
 
    uint32_t per_fiber_size = ALIGN(so->pvtmem_size, 512);
    if (per_fiber_size > ctx->pvtmem[so->pvtmem_per_wave].per_fiber_size) {
@@ -153,7 +153,7 @@ fd6_emit_shader(struct fd_context *ctx, struct fd_ringbuffer *ring,
 }
 
 static void
-setup_stream_out(struct fd6_program_state *state,
+setup_stream_out(struct fd_context *ctx, struct fd6_program_state *state,
                  const struct ir3_shader_variant *v,
                  struct ir3_shader_linkage *l)
 {
@@ -203,7 +203,8 @@ setup_stream_out(struct fd6_program_state *state,
       }
    }
 
-   struct fd_ringbuffer *ring = state->streamout_stateobj;
+   struct fd_ringbuffer *ring =
+      fd_ringbuffer_new_object(ctx->pipe, (13 + (2 * prog_count)) * 4);
 
    OUT_PKT7(ring, CP_CONTEXT_REG_BUNCH, 12 + (2 * prog_count));
    OUT_RING(ring, REG_A6XX_VPC_SO_STREAM_CNTL);
@@ -227,12 +228,15 @@ setup_stream_out(struct fd6_program_state *state,
       OUT_RING(ring, REG_A6XX_VPC_SO_PROG);
       OUT_RING(ring, prog[i]);
    }
+
+   state->streamout_stateobj = ring;
 }
 
 static void
-setup_config_stateobj(struct fd_ringbuffer *ring,
-                      struct fd6_program_state *state)
+setup_config_stateobj(struct fd_context *ctx, struct fd6_program_state *state)
 {
+   struct fd_ringbuffer *ring = fd_ringbuffer_new_object(ctx->pipe, 100 * 4);
+
    OUT_REG(ring, A6XX_HLSQ_INVALIDATE_CMD(.vs_state = true, .hs_state = true,
                                           .ds_state = true, .gs_state = true,
                                           .fs_state = true, .cs_state = true,
@@ -291,6 +295,8 @@ setup_config_stateobj(struct fd_ringbuffer *ring,
 
    OUT_PKT4(ring, REG_A6XX_SP_IBO_COUNT, 1);
    OUT_RING(ring, ir3_shader_nibo(state->fs));
+
+   state->config_stateobj = ring;
 }
 
 static inline uint32_t
@@ -539,7 +545,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
     * program:
     */
    if (do_streamout && !binning_pass) {
-      setup_stream_out(state, last_shader, &l);
+      setup_stream_out(ctx, state, last_shader, &l);
    }
 
    debug_assert(l.cnt <= 32);
@@ -1115,10 +1121,8 @@ fd6_program_create(void *data, struct ir3_shader_variant *bs,
    state->ds = ds;
    state->gs = gs;
    state->fs = fs;
-   state->config_stateobj = fd_ringbuffer_new_object(ctx->pipe, 0x1000);
    state->binning_stateobj = fd_ringbuffer_new_object(ctx->pipe, 0x1000);
    state->stateobj = fd_ringbuffer_new_object(ctx->pipe, 0x1000);
-   state->streamout_stateobj = fd_ringbuffer_new_object(ctx->pipe, 0x1000);
 
 #ifdef DEBUG
    if (!ds) {
@@ -1130,7 +1134,7 @@ fd6_program_create(void *data, struct ir3_shader_variant *bs,
    }
 #endif
 
-   setup_config_stateobj(state->config_stateobj, state);
+   setup_config_stateobj(ctx, state);
    setup_stateobj(state->binning_stateobj, ctx, state, key, true);
    setup_stateobj(state->stateobj, ctx, state, key, false);
    state->interp_stateobj = create_interp_stateobj(ctx, state);
@@ -1151,7 +1155,8 @@ fd6_program_destroy(void *data, struct ir3_program_state *state)
    fd_ringbuffer_del(so->binning_stateobj);
    fd_ringbuffer_del(so->config_stateobj);
    fd_ringbuffer_del(so->interp_stateobj);
-   fd_ringbuffer_del(so->streamout_stateobj);
+   if (so->streamout_stateobj)
+      fd_ringbuffer_del(so->streamout_stateobj);
    free(so);
 }
 

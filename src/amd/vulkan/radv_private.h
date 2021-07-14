@@ -1415,6 +1415,11 @@ struct radv_cmd_state {
    bool pending_sqtt_barrier_end;
    enum rgp_flush_bits sqtt_flush_bits;
 
+   /* NGG culling state. */
+   uint32_t last_nggc_settings;
+   int8_t last_nggc_settings_sgpr_idx;
+   bool last_nggc_skip;
+
    uint8_t cb_mip[MAX_RTS];
 
    /* Whether DRAW_{INDEX}_INDIRECT_MULTI is emitted. */
@@ -1637,6 +1642,9 @@ radv_get_descriptors_state(struct radv_cmd_buffer *cmd_buffer, VkPipelineBindPoi
    }
 }
 
+void
+radv_get_viewport_xform(const VkViewport *viewport, float scale[3], float translate[3]);
+
 /*
  * Takes x,y,z as exact numbers of invocations, instead of blocks.
  *
@@ -1664,6 +1672,7 @@ struct radv_event {
 #define RADV_HASH_SHADER_FORCE_VRS_2x2     (1 << 9)
 #define RADV_HASH_SHADER_FORCE_VRS_2x1     (1 << 10)
 #define RADV_HASH_SHADER_FORCE_VRS_1x2     (1 << 11)
+#define RADV_HASH_SHADER_FORCE_NGG_CULLING (1 << 13)
 
 void radv_hash_shaders(unsigned char *hash, const VkPipelineShaderStageCreateInfo **stages,
                        const struct radv_pipeline_layout *layout,
@@ -1759,6 +1768,7 @@ struct radv_pipeline {
          unsigned pa_cl_clip_cntl;
          unsigned cb_color_control;
          bool uses_dynamic_stride;
+         bool uses_conservative_overestimate;
 
          /* Used for rbplus */
          uint32_t col_format;
@@ -1766,6 +1776,7 @@ struct radv_pipeline {
 
          /* Whether the pipeline uses NGG (GFX10+). */
          bool is_ngg;
+         bool has_ngg_culling;
 
          /* Last pre-PS API stage */
          gl_shader_stage last_vgt_api_stage;

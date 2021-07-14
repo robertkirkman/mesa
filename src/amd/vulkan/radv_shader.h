@@ -162,7 +162,9 @@ enum radv_ud_index {
    AC_UD_VIEW_INDEX = 4,
    AC_UD_STREAMOUT_BUFFERS = 5,
    AC_UD_NGG_GS_STATE = 6,
-   AC_UD_SHADER_START = 7,
+   AC_UD_NGG_CULLING_SETTINGS = 7,
+   AC_UD_NGG_VIEWPORT = 8,
+   AC_UD_SHADER_START = 9,
    AC_UD_VS_VERTEX_BUFFERS = AC_UD_SHADER_START,
    AC_UD_VS_BASE_VERTEX_START_INSTANCE,
    AC_UD_VS_MAX_UD,
@@ -261,6 +263,9 @@ struct radv_shader_info {
    bool need_indirect_descriptor_sets;
    bool is_ngg;
    bool is_ngg_passthrough;
+   bool has_ngg_culling;
+   bool has_ngg_early_prim_export;
+   uint32_t num_lds_blocks_when_not_culling;
    uint32_t num_tess_patches;
    struct {
       uint8_t input_usage_mask[RADV_VERT_ATTRIB_MAX];
@@ -565,6 +570,10 @@ bool radv_lower_io_to_mem(struct radv_device *device, struct nir_shader *nir,
 void radv_lower_ngg(struct radv_device *device, struct nir_shader *nir,
                     struct radv_shader_info *info,
                     const struct radv_pipeline_key *pl_key,
-                    struct radv_shader_variant_key *key);
+                    struct radv_shader_variant_key *key,
+                    bool consider_culling);
+
+bool radv_consider_culling(struct radv_device *device, struct nir_shader *nir,
+                           uint64_t ps_inputs_read);
 
 #endif

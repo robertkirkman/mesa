@@ -194,7 +194,7 @@ struct tu_physical_device
 
    struct tu_instance *instance;
 
-   char name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
+   const char *name;
    uint8_t driver_uuid[VK_UUID_SIZE];
    uint8_t device_uuid[VK_UUID_SIZE];
    uint8_t cache_uuid[VK_UUID_SIZE];
@@ -207,8 +207,10 @@ struct tu_physical_device
    unsigned gpu_id;
    uint32_t gmem_size;
    uint64_t gmem_base;
+   uint32_t ccu_offset_gmem;
+   uint32_t ccu_offset_bypass;
 
-   struct freedreno_dev_info info;
+   const struct fd_dev_info *info;
 
    int msm_major_version;
    int msm_minor_version;
@@ -1253,8 +1255,7 @@ tu6_emit_vpc(struct tu_cs *cs,
              const struct ir3_shader_variant *ds,
              const struct ir3_shader_variant *gs,
              const struct ir3_shader_variant *fs,
-             uint32_t patch_control_points,
-             bool vshs_workgroup);
+             uint32_t patch_control_points);
 
 void
 tu6_emit_fs_inputs(struct tu_cs *cs, const struct ir3_shader_variant *fs);
@@ -1467,8 +1468,8 @@ tu_image_view_init(struct tu_image_view *iview,
                    bool limited_z24s8);
 
 bool
-ubwc_possible(VkFormat format, VkImageType type, VkImageUsageFlags usage, VkImageUsageFlags stencil_usage, bool limited_z24s8,
-              VkSampleCountFlagBits samples);
+ubwc_possible(VkFormat format, VkImageType type, VkImageUsageFlags usage, VkImageUsageFlags stencil_usage,
+              const struct fd_dev_info *info, VkSampleCountFlagBits samples);
 
 struct tu_buffer_view
 {

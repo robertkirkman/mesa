@@ -91,7 +91,9 @@ struct fd_screen {
    bool has_robustness;
    bool has_syncobj;
 
-   struct freedreno_dev_info info;
+   const struct fd_dev_info *info;
+   uint32_t ccu_offset_gmem;
+   uint32_t ccu_offset_bypass;
 
    /* Bitmask of gmem_reasons that do not force GMEM path over bypass
     * for current generation.
@@ -221,12 +223,6 @@ static inline boolean
 is_a6xx(struct fd_screen *screen)
 {
    return (screen->gpu_id >= 600) && (screen->gpu_id < 700);
-}
-
-static inline boolean
-is_a650(struct fd_screen *screen)
-{
-   return screen->gpu_id == 650;
 }
 
 /* is it using the ir3 compiler (shader isa introduced with a3xx)? */
