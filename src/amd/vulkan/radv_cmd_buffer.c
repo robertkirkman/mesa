@@ -138,6 +138,7 @@ radv_bind_dynamic_state(struct radv_cmd_buffer *cmd_buffer, const struct radv_dy
       if (memcmp(&dest->viewport.viewports, &src->viewport.viewports,
                  src->viewport.count * sizeof(VkViewport))) {
          typed_memcpy(dest->viewport.viewports, src->viewport.viewports, src->viewport.count);
+         typed_memcpy(dest->viewport.xform, src->viewport.xform, src->viewport.count);
          dest_mask |= RADV_DYNAMIC_VIEWPORT;
       }
    }
@@ -1372,8 +1373,29 @@ radv_emit_graphics_pipeline(struct radv_cmd_buffer *cmd_buffer)
 static void
 radv_emit_viewport(struct radv_cmd_buffer *cmd_buffer)
 {
-   si_write_viewport(cmd_buffer->cs, 0, cmd_buffer->state.dynamic.viewport.count,
-                     cmd_buffer->state.dynamic.viewport.viewports);
+   const struct radv_viewport_state *viewport = &cmd_buffer->state.dynamic.viewport;
+   int i;
+   const unsigned count = viewport->count;
+
+   assert(count);
+   radeon_set_context_reg_seq(cmd_buffer->cs, R_02843C_PA_CL_VPORT_XSCALE, count * 6);
+
+   for (i = 0; i < count; i++) {
+      radeon_emit(cmd_buffer->cs, fui(viewport->xform[i].scale[0]));
+      radeon_emit(cmd_buffer->cs, fui(viewport->xform[i].translate[0]));
+      radeon_emit(cmd_buffer->cs, fui(viewport->xform[i].scale[1]));
+      radeon_emit(cmd_buffer->cs, fui(viewport->xform[i].translate[1]));
+      radeon_emit(cmd_buffer->cs, fui(viewport->xform[i].scale[2]));
+      radeon_emit(cmd_buffer->cs, fui(viewport->xform[i].translate[2]));
+   }
+
+   radeon_set_context_reg_seq(cmd_buffer->cs, R_0282D0_PA_SC_VPORT_ZMIN_0, count * 2);
+   for (i = 0; i < count; i++) {
+      float zmin = MIN2(viewport->viewports[i].minDepth, viewport->viewports[i].maxDepth);
+      float zmax = MAX2(viewport->viewports[i].minDepth, viewport->viewports[i].maxDepth);
+      radeon_emit(cmd_buffer->cs, fui(zmin));
+      radeon_emit(cmd_buffer->cs, fui(zmax));
+   }
 }
 
 static void
@@ -2933,10 +2955,10 @@ radv_flush_vertex_descriptors(struct radv_cmd_buffer *cmd_buffer, bool pipeline_
             /* GFX10 uses OOB_SELECT_RAW if stride==0, so convert num_records from elements into
              * into bytes in that case. GFX8 always uses bytes.
              */
-            if (num_records && (chip == GFX8 || (chip >= GFX10 && !stride))) {
+            if (num_records && (chip == GFX8 || (chip != GFX9 && !stride))) {
                num_records = (num_records - 1) * stride + attrib_end;
             } else if (!num_records) {
-               /* On GFX9 (GFX6/7 untested), it seems bounds checking is disabled if both
+               /* On GFX9, it seems bounds checking is disabled if both
                 * num_records and stride are zero. This doesn't seem necessary on GFX8, GFX10 and
                 * GFX10.3 but it doesn't hurt.
                 */
@@ -4390,6 +4412,8 @@ radv_CmdSetViewport(VkCommandBuffer commandBuffer, uint32_t firstViewport, uint3
 
    memcpy(state->dynamic.viewport.viewports + firstViewport, pViewports,
           viewportCount * sizeof(*pViewports));
+   for (unsigned i = firstViewport; i < firstViewport + viewportCount; i++)
+      radv_get_viewport_xform(&pViewports[i], state->dynamic.viewport.xform[i].scale, state->dynamic.viewport.xform[i].translate);
 
    state->dirty |= RADV_CMD_DIRTY_DYNAMIC_VIEWPORT;
 }
@@ -5664,17 +5688,15 @@ enum {
 
 ALWAYS_INLINE static bool
 radv_skip_ngg_culling(bool has_tess, const unsigned vtx_cnt,
-                      bool indirect, unsigned num_viewports)
+                      bool indirect)
 {
    /* If we have to draw only a few vertices, we get better latency if
     * we disable NGG culling.
     *
     * When tessellation is used, what matters is the number of tessellated
     * vertices, so let's always assume it's not a small draw.
-    *
-    * TODO: Figure out how to do culling with multiple viewports efficiently.
     */
-   return !has_tess && !indirect && vtx_cnt < 512 && num_viewports == 1;
+   return !has_tess && !indirect && vtx_cnt < 512;
 }
 
 ALWAYS_INLINE static uint32_t
@@ -5757,9 +5779,7 @@ radv_emit_ngg_culling_state(struct radv_cmd_buffer *cmd_buffer, const struct rad
     * For small draw calls, we disable culling by setting the SGPR to 0.
     */
    const bool skip =
-      radv_skip_ngg_culling(
-         stage == MESA_SHADER_TESS_EVAL, draw_info->count, draw_info->indirect,
-         cmd_buffer->state.dynamic.viewport.count);
+      radv_skip_ngg_culling(stage == MESA_SHADER_TESS_EVAL, draw_info->count, draw_info->indirect);
 
    /* See if anything changed. */
    if (!dirty && skip == cmd_buffer->state.last_nggc_skip)
@@ -5776,8 +5796,9 @@ radv_emit_ngg_culling_state(struct radv_cmd_buffer *cmd_buffer, const struct rad
    assert(!nggc_supported || nggc_sgpr_idx != -1);
 
    /* Get viewport transform. */
-   float vp_scale[3], vp_translate[3];
-   radv_get_viewport_xform(&cmd_buffer->state.dynamic.viewport.viewports[0], vp_scale, vp_translate);
+   float vp_scale[2], vp_translate[2];
+   memcpy(vp_scale, cmd_buffer->state.dynamic.viewport.xform[0].scale, 2 * sizeof(float));
+   memcpy(vp_translate, cmd_buffer->state.dynamic.viewport.xform[0].translate, 2 * sizeof(float));
    bool vp_y_inverted = (-vp_scale[1] + vp_translate[1]) > (vp_scale[1] + vp_translate[1]);
 
    /* Get current culling settings. */
@@ -6621,7 +6642,7 @@ radv_initialize_htile(struct radv_cmd_buffer *cmd_buffer, struct radv_image *ima
 
    radv_set_ds_clear_metadata(cmd_buffer, image, range, value, aspects);
 
-   if (radv_image_is_tc_compat_htile(image)) {
+   if (radv_image_is_tc_compat_htile(image) && (range->aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT)) {
       /* Initialize the TC-compat metada value to 0 because by
        * default DB_Z_INFO.RANGE_PRECISION is set to 1, and we only
        * need have to conditionally update its value when performing

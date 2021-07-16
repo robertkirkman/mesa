@@ -22,7 +22,8 @@
  */
 
 #include "v3dv_private.h"
-#include "v3dv_meta_copy.h"
+#include "v3dv_meta_common.h"
+
 #include "broadcom/common/v3d_macros.h"
 #include "broadcom/cle/v3dx_pack.h"
 #include "broadcom/compiler/v3d_compiler.h"
@@ -33,13 +34,12 @@ struct rcl_clear_info {
    const union v3dv_clear_value *clear_value;
    struct v3dv_image *image;
    VkImageAspectFlags aspects;
-   uint32_t layer;
    uint32_t level;
 };
 
 static struct v3dv_cl *
 emit_rcl_prologue(struct v3dv_job *job,
-                  struct framebuffer_data *fb,
+                  struct v3dv_meta_framebuffer *fb,
                   const struct rcl_clear_info *clear_info)
 {
    const struct v3dv_frame_tiling *tiling = &job->frame_tiling;
@@ -129,7 +129,7 @@ emit_rcl_prologue(struct v3dv_job *job,
 
 static void
 emit_frame_setup(struct v3dv_job *job,
-                 uint32_t layer,
+                 uint32_t min_layer,
                  const union v3dv_clear_value *clear_value)
 {
    v3dv_return_if_oom(NULL, job);
@@ -139,7 +139,7 @@ emit_frame_setup(struct v3dv_job *job,
    struct v3dv_cl *rcl = &job->rcl;
 
    const uint32_t tile_alloc_offset =
-      64 * layer * tiling->draw_tiles_x * tiling->draw_tiles_y;
+      64 * min_layer * tiling->draw_tiles_x * tiling->draw_tiles_y;
    cl_emit(rcl, MULTICORE_RENDERING_TILE_LIST_SET_BASE, list) {
       list.address = v3dv_cl_address(job->tile_alloc, tile_alloc_offset);
    }
@@ -181,7 +181,7 @@ emit_frame_setup(struct v3dv_job *job,
 
 static void
 emit_supertile_coordinates(struct v3dv_job *job,
-                           struct framebuffer_data *framebuffer)
+                           struct v3dv_meta_framebuffer *framebuffer)
 {
    v3dv_return_if_oom(NULL, job);
 
@@ -248,7 +248,7 @@ emit_linear_store(struct v3dv_cl *cl,
  * color format.
  */
 static uint32_t
-choose_tlb_format(struct framebuffer_data *framebuffer,
+choose_tlb_format(struct v3dv_meta_framebuffer *framebuffer,
                   VkImageAspectFlags aspect,
                   bool for_store,
                   bool is_copy_to_buffer,
@@ -314,7 +314,7 @@ format_needs_rb_swap(struct v3dv_device *device,
 static void
 emit_image_load(struct v3dv_device *device,
                 struct v3dv_cl *cl,
-                struct framebuffer_data *framebuffer,
+                struct v3dv_meta_framebuffer *framebuffer,
                 struct v3dv_image *image,
                 VkImageAspectFlags aspect,
                 uint32_t layer,
@@ -397,7 +397,7 @@ emit_image_load(struct v3dv_device *device,
 static void
 emit_image_store(struct v3dv_device *device,
                  struct v3dv_cl *cl,
-                 struct framebuffer_data *framebuffer,
+                 struct v3dv_meta_framebuffer *framebuffer,
                  struct v3dv_image *image,
                  VkImageAspectFlags aspect,
                  uint32_t layer,
@@ -459,7 +459,7 @@ emit_image_store(struct v3dv_device *device,
 
 static void
 emit_copy_layer_to_buffer_per_tile_list(struct v3dv_job *job,
-                                        struct framebuffer_data *framebuffer,
+                                        struct v3dv_meta_framebuffer *framebuffer,
                                         struct v3dv_buffer *buffer,
                                         struct v3dv_image *image,
                                         uint32_t layer_offset,
@@ -541,26 +541,26 @@ static void
 emit_copy_layer_to_buffer(struct v3dv_job *job,
                           struct v3dv_buffer *buffer,
                           struct v3dv_image *image,
-                          struct framebuffer_data *framebuffer,
+                          struct v3dv_meta_framebuffer *framebuffer,
                           uint32_t layer,
                           const VkBufferImageCopy2KHR *region)
 {
-   emit_frame_setup(job, layer, NULL);
    emit_copy_layer_to_buffer_per_tile_list(job, framebuffer, buffer,
                                            image, layer, region);
    emit_supertile_coordinates(job, framebuffer);
 }
 
 void
-v3dX(job_emit_copy_image_to_buffer_rcl)(struct v3dv_job *job,
-                                        struct v3dv_buffer *buffer,
-                                        struct v3dv_image *image,
-                                        struct framebuffer_data *framebuffer,
-                                        const VkBufferImageCopy2KHR *region)
+v3dX(meta_emit_copy_image_to_buffer_rcl)(struct v3dv_job *job,
+                                         struct v3dv_buffer *buffer,
+                                         struct v3dv_image *image,
+                                         struct v3dv_meta_framebuffer *framebuffer,
+                                         const VkBufferImageCopy2KHR *region)
 {
    struct v3dv_cl *rcl = emit_rcl_prologue(job, framebuffer, NULL);
    v3dv_return_if_oom(NULL, job);
 
+   emit_frame_setup(job, 0, NULL);
    for (int layer = 0; layer < job->frame_tiling.layers; layer++)
       emit_copy_layer_to_buffer(job, buffer, image, framebuffer, layer, region);
    cl_emit(rcl, END_OF_RENDERING, end);
@@ -568,7 +568,7 @@ v3dX(job_emit_copy_image_to_buffer_rcl)(struct v3dv_job *job,
 
 static void
 emit_resolve_image_layer_per_tile_list(struct v3dv_job *job,
-                                       struct framebuffer_data *framebuffer,
+                                       struct v3dv_meta_framebuffer *framebuffer,
                                        struct v3dv_image *dst,
                                        struct v3dv_image *src,
                                        uint32_t layer_offset,
@@ -628,26 +628,26 @@ static void
 emit_resolve_image_layer(struct v3dv_job *job,
                          struct v3dv_image *dst,
                          struct v3dv_image *src,
-                         struct framebuffer_data *framebuffer,
+                         struct v3dv_meta_framebuffer *framebuffer,
                          uint32_t layer,
                          const VkImageResolve2KHR *region)
 {
-   emit_frame_setup(job, layer, NULL);
    emit_resolve_image_layer_per_tile_list(job, framebuffer,
                                           dst, src, layer, region);
    emit_supertile_coordinates(job, framebuffer);
 }
 
 void
-v3dX(job_emit_resolve_image_rcl)(struct v3dv_job *job,
-                                 struct v3dv_image *dst,
-                                 struct v3dv_image *src,
-                                 struct framebuffer_data *framebuffer,
-                                 const VkImageResolve2KHR *region)
+v3dX(meta_emit_resolve_image_rcl)(struct v3dv_job *job,
+                                  struct v3dv_image *dst,
+                                  struct v3dv_image *src,
+                                  struct v3dv_meta_framebuffer *framebuffer,
+                                  const VkImageResolve2KHR *region)
 {
    struct v3dv_cl *rcl = emit_rcl_prologue(job, framebuffer, NULL);
    v3dv_return_if_oom(NULL, job);
 
+   emit_frame_setup(job, 0, NULL);
    for (int layer = 0; layer < job->frame_tiling.layers; layer++)
       emit_resolve_image_layer(job, dst, src, framebuffer, layer, region);
    cl_emit(rcl, END_OF_RENDERING, end);
@@ -690,14 +690,14 @@ emit_copy_buffer_per_tile_list(struct v3dv_job *job,
 }
 
 void
-v3dX(job_emit_copy_buffer)(struct v3dv_job *job,
-                           struct v3dv_bo *dst,
-                           struct v3dv_bo *src,
-                           uint32_t dst_offset,
-                           uint32_t src_offset,
-                           struct framebuffer_data *framebuffer,
-                           uint32_t format,
-                           uint32_t item_size)
+v3dX(meta_emit_copy_buffer)(struct v3dv_job *job,
+                            struct v3dv_bo *dst,
+                            struct v3dv_bo *src,
+                            uint32_t dst_offset,
+                            uint32_t src_offset,
+                            struct v3dv_meta_framebuffer *framebuffer,
+                            uint32_t format,
+                            uint32_t item_size)
 {
    const uint32_t stride = job->frame_tiling.width * item_size;
    emit_copy_buffer_per_tile_list(job, dst, src,
@@ -707,29 +707,29 @@ v3dX(job_emit_copy_buffer)(struct v3dv_job *job,
 }
 
 void
-v3dX(job_emit_copy_buffer_rcl)(struct v3dv_job *job,
-                               struct v3dv_bo *dst,
-                               struct v3dv_bo *src,
-                               uint32_t dst_offset,
-                               uint32_t src_offset,
-                               struct framebuffer_data *framebuffer,
-                               uint32_t format,
-                               uint32_t item_size)
+v3dX(meta_emit_copy_buffer_rcl)(struct v3dv_job *job,
+                                struct v3dv_bo *dst,
+                                struct v3dv_bo *src,
+                                uint32_t dst_offset,
+                                uint32_t src_offset,
+                                struct v3dv_meta_framebuffer *framebuffer,
+                                uint32_t format,
+                                uint32_t item_size)
 {
    struct v3dv_cl *rcl = emit_rcl_prologue(job, framebuffer, NULL);
    v3dv_return_if_oom(NULL, job);
 
    emit_frame_setup(job, 0, NULL);
 
-   v3dX(job_emit_copy_buffer)(job, dst, src, dst_offset, src_offset,
-                              framebuffer, format, item_size);
+   v3dX(meta_emit_copy_buffer)(job, dst, src, dst_offset, src_offset,
+                               framebuffer, format, item_size);
 
    cl_emit(rcl, END_OF_RENDERING, end);
 }
 
 static void
 emit_copy_image_layer_per_tile_list(struct v3dv_job *job,
-                                    struct framebuffer_data *framebuffer,
+                                    struct v3dv_meta_framebuffer *framebuffer,
                                     struct v3dv_image *dst,
                                     struct v3dv_image *src,
                                     uint32_t layer_offset,
@@ -789,41 +789,41 @@ static void
 emit_copy_image_layer(struct v3dv_job *job,
                       struct v3dv_image *dst,
                       struct v3dv_image *src,
-                      struct framebuffer_data *framebuffer,
+                      struct v3dv_meta_framebuffer *framebuffer,
                       uint32_t layer,
                       const VkImageCopy2KHR *region)
 {
-   emit_frame_setup(job, layer, NULL);
    emit_copy_image_layer_per_tile_list(job, framebuffer, dst, src, layer, region);
    emit_supertile_coordinates(job, framebuffer);
 }
 
 void
-v3dX(job_emit_copy_image_rcl)(struct v3dv_job *job,
-                              struct v3dv_image *dst,
-                              struct v3dv_image *src,
-                              struct framebuffer_data *framebuffer,
-                              const VkImageCopy2KHR *region)
+v3dX(meta_emit_copy_image_rcl)(struct v3dv_job *job,
+                               struct v3dv_image *dst,
+                               struct v3dv_image *src,
+                               struct v3dv_meta_framebuffer *framebuffer,
+                               const VkImageCopy2KHR *region)
 {
    struct v3dv_cl *rcl = emit_rcl_prologue(job, framebuffer, NULL);
    v3dv_return_if_oom(NULL, job);
 
+   emit_frame_setup(job, 0, NULL);
    for (int layer = 0; layer < job->frame_tiling.layers; layer++)
       emit_copy_image_layer(job, dst, src, framebuffer, layer, region);
    cl_emit(rcl, END_OF_RENDERING, end);
 }
 
 void
-v3dX(cmd_buffer_emit_tfu_job)(struct v3dv_cmd_buffer *cmd_buffer,
-                              struct v3dv_image *dst,
-                              uint32_t dst_mip_level,
-                              uint32_t dst_layer,
-                              struct v3dv_image *src,
-                              uint32_t src_mip_level,
-                              uint32_t src_layer,
-                              uint32_t width,
-                              uint32_t height,
-                              const struct v3dv_format *format)
+v3dX(meta_emit_tfu_job)(struct v3dv_cmd_buffer *cmd_buffer,
+                        struct v3dv_image *dst,
+                        uint32_t dst_mip_level,
+                        uint32_t dst_layer,
+                        struct v3dv_image *src,
+                        uint32_t src_mip_level,
+                        uint32_t src_layer,
+                        uint32_t width,
+                        uint32_t height,
+                        const struct v3dv_format *format)
 {
    const struct v3d_resource_slice *src_slice = &src->slices[src_mip_level];
    const struct v3d_resource_slice *dst_slice = &dst->slices[dst_mip_level];
@@ -893,12 +893,12 @@ v3dX(cmd_buffer_emit_tfu_job)(struct v3dv_cmd_buffer *cmd_buffer,
 }
 
 static void
-emit_clear_image_per_tile_list(struct v3dv_job *job,
-                               struct framebuffer_data *framebuffer,
-                               struct v3dv_image *image,
-                               VkImageAspectFlags aspects,
-                               uint32_t layer,
-                               uint32_t level)
+emit_clear_image_layer_per_tile_list(struct v3dv_job *job,
+                                     struct v3dv_meta_framebuffer *framebuffer,
+                                     struct v3dv_image *image,
+                                     VkImageAspectFlags aspects,
+                                     uint32_t layer,
+                                     uint32_t level)
 {
    struct v3dv_cl *cl = &job->indirect;
    v3dv_cl_ensure_space(cl, 200, 1);
@@ -926,31 +926,35 @@ emit_clear_image_per_tile_list(struct v3dv_job *job,
 }
 
 static void
-emit_clear_image(struct v3dv_job *job,
+emit_clear_image_layers(struct v3dv_job *job,
                  struct v3dv_image *image,
-                 struct framebuffer_data *framebuffer,
+                 struct v3dv_meta_framebuffer *framebuffer,
                  VkImageAspectFlags aspects,
-                 uint32_t layer,
+                 uint32_t min_layer,
+                 uint32_t max_layer,
                  uint32_t level)
 {
-   emit_clear_image_per_tile_list(job, framebuffer, image, aspects, layer, level);
-   emit_supertile_coordinates(job, framebuffer);
+   for (uint32_t layer = min_layer; layer < max_layer; layer++) {
+      emit_clear_image_layer_per_tile_list(job, framebuffer, image, aspects,
+                                           layer, level);
+      emit_supertile_coordinates(job, framebuffer);
+   }
 }
 
 void
-v3dX(job_emit_clear_image_rcl)(struct v3dv_job *job,
-                               struct v3dv_image *image,
-                               struct framebuffer_data *framebuffer,
-                               const union v3dv_clear_value *clear_value,
-                               VkImageAspectFlags aspects,
-                               uint32_t layer,
-                               uint32_t level)
+v3dX(meta_emit_clear_image_rcl)(struct v3dv_job *job,
+                                struct v3dv_image *image,
+                                struct v3dv_meta_framebuffer *framebuffer,
+                                const union v3dv_clear_value *clear_value,
+                                VkImageAspectFlags aspects,
+                                uint32_t min_layer,
+                                uint32_t max_layer,
+                                uint32_t level)
 {
    const struct rcl_clear_info clear_info = {
       .clear_value = clear_value,
       .image = image,
       .aspects = aspects,
-      .layer = layer,
       .level = level,
    };
 
@@ -958,7 +962,8 @@ v3dX(job_emit_clear_image_rcl)(struct v3dv_job *job,
    v3dv_return_if_oom(NULL, job);
 
    emit_frame_setup(job, 0, clear_value);
-   emit_clear_image(job, image, framebuffer, aspects, layer, level);
+   emit_clear_image_layers(job, image, framebuffer, aspects,
+                           min_layer, max_layer, level);
    cl_emit(rcl, END_OF_RENDERING, end);
 }
 
@@ -997,7 +1002,7 @@ static void
 emit_fill_buffer(struct v3dv_job *job,
                  struct v3dv_bo *bo,
                  uint32_t offset,
-                 struct framebuffer_data *framebuffer)
+                 struct v3dv_meta_framebuffer *framebuffer)
 {
    const uint32_t stride = job->frame_tiling.width * 4;
    emit_fill_buffer_per_tile_list(job, bo, offset, stride);
@@ -1005,11 +1010,11 @@ emit_fill_buffer(struct v3dv_job *job,
 }
 
 void
-v3dX(job_emit_fill_buffer_rcl)(struct v3dv_job *job,
-                               struct v3dv_bo *bo,
-                               uint32_t offset,
-                               struct framebuffer_data *framebuffer,
-                               uint32_t data)
+v3dX(meta_emit_fill_buffer_rcl)(struct v3dv_job *job,
+                                struct v3dv_bo *bo,
+                                uint32_t offset,
+                                struct v3dv_meta_framebuffer *framebuffer,
+                                uint32_t data)
 {
    const union v3dv_clear_value clear_value = {
        .color = { data, 0, 0, 0 },
@@ -1019,7 +1024,6 @@ v3dX(job_emit_fill_buffer_rcl)(struct v3dv_job *job,
       .clear_value = &clear_value,
       .image = NULL,
       .aspects = VK_IMAGE_ASPECT_COLOR_BIT,
-      .layer = 0,
       .level = 0,
    };
 
@@ -1034,7 +1038,7 @@ v3dX(job_emit_fill_buffer_rcl)(struct v3dv_job *job,
 
 static void
 emit_copy_buffer_to_layer_per_tile_list(struct v3dv_job *job,
-                                        struct framebuffer_data *framebuffer,
+                                        struct v3dv_meta_framebuffer *framebuffer,
                                         struct v3dv_image *image,
                                         struct v3dv_buffer *buffer,
                                         uint32_t layer,
@@ -1145,26 +1149,26 @@ static void
 emit_copy_buffer_to_layer(struct v3dv_job *job,
                           struct v3dv_image *image,
                           struct v3dv_buffer *buffer,
-                          struct framebuffer_data *framebuffer,
+                          struct v3dv_meta_framebuffer *framebuffer,
                           uint32_t layer,
                           const VkBufferImageCopy2KHR *region)
 {
-   emit_frame_setup(job, layer, NULL);
    emit_copy_buffer_to_layer_per_tile_list(job, framebuffer, image, buffer,
                                            layer, region);
    emit_supertile_coordinates(job, framebuffer);
 }
 
 void
-v3dX(job_emit_copy_buffer_to_image_rcl)(struct v3dv_job *job,
-                                        struct v3dv_image *image,
-                                        struct v3dv_buffer *buffer,
-                                        struct framebuffer_data *framebuffer,
-                                        const VkBufferImageCopy2KHR *region)
+v3dX(meta_emit_copy_buffer_to_image_rcl)(struct v3dv_job *job,
+                                         struct v3dv_image *image,
+                                         struct v3dv_buffer *buffer,
+                                         struct v3dv_meta_framebuffer *framebuffer,
+                                         const VkBufferImageCopy2KHR *region)
 {
    struct v3dv_cl *rcl = emit_rcl_prologue(job, framebuffer, NULL);
    v3dv_return_if_oom(NULL, job);
 
+   emit_frame_setup(job, 0, NULL);
    for (int layer = 0; layer < job->frame_tiling.layers; layer++)
       emit_copy_buffer_to_layer(job, image, buffer, framebuffer, layer, region);
    cl_emit(rcl, END_OF_RENDERING, end);
@@ -1206,12 +1210,12 @@ framebuffer_size_for_pixel_count(uint32_t num_pixels,
 }
 
 struct v3dv_job *
-v3dX(cmd_buffer_copy_buffer)(struct v3dv_cmd_buffer *cmd_buffer,
-                             struct v3dv_bo *dst,
-                             uint32_t dst_offset,
-                             struct v3dv_bo *src,
-                             uint32_t src_offset,
-                             const VkBufferCopy2KHR *region)
+v3dX(meta_copy_buffer)(struct v3dv_cmd_buffer *cmd_buffer,
+                       struct v3dv_bo *dst,
+                       uint32_t dst_offset,
+                       struct v3dv_bo *src,
+                       uint32_t src_offset,
+                       const VkBufferCopy2KHR *region)
 {
    const uint32_t internal_bpp = V3D_INTERNAL_BPP_32;
    const uint32_t internal_type = V3D_INTERNAL_TYPE_8UI;
@@ -1260,16 +1264,16 @@ v3dX(cmd_buffer_copy_buffer)(struct v3dv_cmd_buffer *cmd_buffer,
       uint32_t width, height;
       framebuffer_size_for_pixel_count(num_items, &width, &height);
 
-      v3dv_job_start_frame(job, width, height, 1, 1, internal_bpp, false);
+      v3dv_job_start_frame(job, width, height, 1, true, 1, internal_bpp, false);
 
-      struct framebuffer_data framebuffer;
-      v3dX(setup_framebuffer_data)(&framebuffer, vk_format, internal_type,
-                                   &job->frame_tiling);
+      struct v3dv_meta_framebuffer framebuffer;
+      v3dX(meta_framebuffer_init)(&framebuffer, vk_format, internal_type,
+                                  &job->frame_tiling);
 
       v3dX(job_emit_binning_flush)(job);
 
-      v3dX(job_emit_copy_buffer_rcl)(job, dst, src, dst_offset, src_offset,
-                                     &framebuffer, format, item_size);
+      v3dX(meta_emit_copy_buffer_rcl)(job, dst, src, dst_offset, src_offset,
+                                      &framebuffer, format, item_size);
 
       v3dv_cmd_buffer_finish_job(cmd_buffer);
 
@@ -1284,11 +1288,11 @@ v3dX(cmd_buffer_copy_buffer)(struct v3dv_cmd_buffer *cmd_buffer,
 }
 
 void
-v3dX(cmd_buffer_fill_buffer)(struct v3dv_cmd_buffer *cmd_buffer,
-                             struct v3dv_bo *bo,
-                             uint32_t offset,
-                             uint32_t size,
-                             uint32_t data)
+v3dX(meta_fill_buffer)(struct v3dv_cmd_buffer *cmd_buffer,
+                       struct v3dv_bo *bo,
+                       uint32_t offset,
+                       uint32_t size,
+                       uint32_t data)
 {
    assert(size > 0 && size % 4 == 0);
    assert(offset + size <= bo->size);
@@ -1306,15 +1310,15 @@ v3dX(cmd_buffer_fill_buffer)(struct v3dv_cmd_buffer *cmd_buffer,
       uint32_t width, height;
       framebuffer_size_for_pixel_count(num_items, &width, &height);
 
-      v3dv_job_start_frame(job, width, height, 1, 1, internal_bpp, false);
+      v3dv_job_start_frame(job, width, height, 1, true, 1, internal_bpp, false);
 
-      struct framebuffer_data framebuffer;
-      v3dX(setup_framebuffer_data)(&framebuffer, VK_FORMAT_R8G8B8A8_UINT,
-                                   internal_type, &job->frame_tiling);
+      struct v3dv_meta_framebuffer framebuffer;
+      v3dX(meta_framebuffer_init)(&framebuffer, VK_FORMAT_R8G8B8A8_UINT,
+                                  internal_type, &job->frame_tiling);
 
       v3dX(job_emit_binning_flush)(job);
 
-      v3dX(job_emit_fill_buffer_rcl)(job, bo, offset, &framebuffer, data);
+      v3dX(meta_emit_fill_buffer_rcl)(job, bo, offset, &framebuffer, data);
 
       v3dv_cmd_buffer_finish_job(cmd_buffer);
 
@@ -1326,10 +1330,10 @@ v3dX(cmd_buffer_fill_buffer)(struct v3dv_cmd_buffer *cmd_buffer,
 }
 
 void
-v3dX(setup_framebuffer_data)(struct framebuffer_data *fb,
-                             VkFormat vk_format,
-                             uint32_t internal_type,
-                             const struct v3dv_frame_tiling *tiling)
+v3dX(meta_framebuffer_init)(struct v3dv_meta_framebuffer *fb,
+                            VkFormat vk_format,
+                            uint32_t internal_type,
+                            const struct v3dv_frame_tiling *tiling)
 {
    fb->internal_type = internal_type;
 

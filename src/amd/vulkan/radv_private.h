@@ -333,6 +333,7 @@ struct radv_instance {
    bool disable_tc_compat_htile_in_general;
    bool disable_shrink_image_store;
    bool absolute_depth_bias;
+   bool report_apu_as_dgpu;
 };
 
 VkResult radv_init_wsi(struct radv_physical_device *physical_device);
@@ -1128,6 +1129,10 @@ struct radv_streamout_state {
 struct radv_viewport_state {
    uint32_t count;
    VkViewport viewports[MAX_VIEWPORTS];
+   struct {
+      float scale[3];
+      float translate[3];
+   } xform[MAX_VIEWPORTS];
 };
 
 struct radv_scissor_state {
@@ -1513,8 +1518,6 @@ void si_emit_compute(struct radv_device *device, struct radeon_cmdbuf *cs);
 
 void cik_create_gfx_config(struct radv_device *device);
 
-void si_write_viewport(struct radeon_cmdbuf *cs, int first_vp, int count,
-                       const VkViewport *viewports);
 void si_write_scissors(struct radeon_cmdbuf *cs, int first, int count, const VkRect2D *scissors,
                        const VkViewport *viewports, bool can_use_guardband);
 uint32_t si_get_ia_multi_vgt_param(struct radv_cmd_buffer *cmd_buffer, bool instanced_draw,

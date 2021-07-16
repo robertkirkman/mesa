@@ -1540,6 +1540,9 @@ radv_pipeline_init_dynamic_state(struct radv_pipeline *pipeline,
       if (states & RADV_DYNAMIC_VIEWPORT) {
          typed_memcpy(dynamic->viewport.viewports, pCreateInfo->pViewportState->pViewports,
                       pCreateInfo->pViewportState->viewportCount);
+         for (unsigned i = 0; i < dynamic->viewport.count; i++)
+            radv_get_viewport_xform(&dynamic->viewport.viewports[i],
+                                    dynamic->viewport.xform[i].scale, dynamic->viewport.xform[i].translate);
       }
    }
 
@@ -2021,7 +2024,7 @@ gfx10_get_ngg_info(const struct radv_pipeline_key *key, struct radv_pipeline *pi
    const unsigned min_esverts =
       pipeline->device->physical_device->rad_info.chip_class >= GFX10_3 ? 29 : 24;
    bool max_vert_out_per_gs_instance = false;
-   unsigned max_esverts_base = 256;
+   unsigned max_esverts_base = 128;
    unsigned max_gsprims_base = 128; /* default prim group size clamp */
 
    /* Hardware has the following non-natural restrictions on the value
@@ -2189,7 +2192,7 @@ gfx10_get_ngg_info(const struct radv_pipeline_key *key, struct radv_pipeline *pi
    ngg->prim_amp_factor = prim_amp_factor;
    ngg->max_vert_out_per_gs_instance = max_vert_out_per_gs_instance;
    ngg->ngg_emit_size = max_gsprims * gsprim_lds_size;
-   ngg->enable_vertex_grouping = false;
+   ngg->enable_vertex_grouping = true;
 
    /* Don't count unusable vertices. */
    ngg->esgs_ring_size = MIN2(max_esverts, max_gsprims * max_verts_per_prim) * esvert_lds_size * 4;

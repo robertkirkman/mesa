@@ -328,13 +328,17 @@ get_device_extensions(const struct anv_physical_device *device,
    };
 }
 
-static void
-anv_track_meminfo(struct anv_physical_device *device,
-                  const struct drm_i915_query_memory_regions *mem_regions)
+static bool
+anv_get_query_meminfo(struct anv_physical_device *device, int fd)
 {
+   struct drm_i915_query_memory_regions *mem_regions =
+      intel_i915_query_alloc(fd, DRM_I915_QUERY_MEMORY_REGIONS);
+   if (mem_regions == NULL)
+      return false;
+
    for(int i = 0; i < mem_regions->num_regions; i++) {
       switch(mem_regions->regions[i].region.memory_class) {
-         case I915_MEMORY_CLASS_SYSTEM:
+      case I915_MEMORY_CLASS_SYSTEM:
          device->sys.region = mem_regions->regions[i].region;
          device->sys.size = mem_regions->regions[i].probed_size;
          break;
@@ -346,32 +350,6 @@ anv_track_meminfo(struct anv_physical_device *device,
          break;
       }
    }
-}
-
-static bool
-anv_get_query_meminfo(struct anv_physical_device *device, int fd)
-{
-   struct drm_i915_query_item item = {
-      .query_id = DRM_I915_QUERY_MEMORY_REGIONS
-   };
-
-   struct drm_i915_query query = {
-      .num_items = 1,
-      .items_ptr = (uintptr_t) &item,
-   };
-
-   if (drmIoctl(fd, DRM_IOCTL_I915_QUERY, &query))
-      return false;
-
-   struct drm_i915_query_memory_regions *mem_regions = calloc(1, item.length);
-   item.data_ptr = (uintptr_t) mem_regions;
-
-   if (drmIoctl(fd, DRM_IOCTL_I915_QUERY, &query) || item.length <= 0) {
-      free(mem_regions);
-      return false;
-   }
-
-   anv_track_meminfo(device, mem_regions);
 
    free(mem_regions);
    return true;
@@ -741,8 +719,6 @@ anv_physical_device_try_create(struct anv_instance *instance,
       goto fail_fd;
    }
 
-   const char *device_name = intel_get_device_name(devinfo.chipset_id);
-
    if (devinfo.is_haswell) {
       mesa_logw("Haswell Vulkan support is incomplete");
    } else if (devinfo.ver == 7 && !devinfo.is_baytrail) {
@@ -753,7 +729,7 @@ anv_physical_device_try_create(struct anv_instance *instance,
       /* Gfx8-12 fully supported */
    } else {
       result = vk_errorfi(instance, NULL, VK_ERROR_INCOMPATIBLE_DRIVER,
-                          "Vulkan not yet supported on %s", device_name);
+                          "Vulkan not yet supported on %s", devinfo.name);
       goto fail_fd;
    }
 
@@ -782,7 +758,6 @@ anv_physical_device_try_create(struct anv_instance *instance,
    snprintf(device->path, ARRAY_SIZE(device->path), "%s", path);
 
    device->info = devinfo;
-   device->name = device_name;
 
    device->no_hw = device->info.no_hw;
    if (getenv("INTEL_NO_HW") != NULL)
@@ -911,17 +886,6 @@ anv_physical_device_try_create(struct anv_instance *instance,
 
    /* GENs prior to 8 do not support EU/Subslice info */
    device->subslice_total = intel_device_info_subslice_total(&device->info);
-   device->eu_total = intel_device_info_eu_total(&device->info);
-
-   if (device->info.is_cherryview) {
-      /* Logical CS threads = EUs per subslice * num threads per EU */
-      uint32_t max_cs_threads =
-         device->eu_total / device->subslice_total * device->info.num_thread_per_eu;
-
-      /* Fuse configurations may give more threads than expected, never less. */
-      if (max_cs_threads > device->info.max_cs_threads)
-         device->info.max_cs_threads = max_cs_threads;
-   }
 
    device->compiler = brw_compiler_create(NULL, &device->info);
    if (device->compiler == NULL) {
@@ -1913,8 +1877,7 @@ void anv_GetPhysicalDeviceProperties(
       pdevice->has_bindless_images && pdevice->has_a64_buffer_access
       ? UINT32_MAX : MAX_BINDING_TABLE_SIZE - MAX_RTS - 1;
 
-   /* Limit max_threads to 64 for the GPGPU_WALKER command */
-   const uint32_t max_workgroup_size = 32 * MIN2(64, devinfo->max_cs_threads);
+   const uint32_t max_workgroup_size = 32 * devinfo->max_cs_workgroup_threads;
 
    VkSampleCountFlags sample_counts =
       isl_device_get_sample_counts(&pdevice->isl_dev);
@@ -2026,11 +1989,12 @@ void anv_GetPhysicalDeviceProperties(
       .maxCombinedClipAndCullDistances          = 8,
       .discreteQueuePriorities                  = 2,
       .pointSizeRange                           = { 0.125, 255.875 },
-      .lineWidthRange                           = {
-         0.0,
-         (devinfo->ver >= 9 || devinfo->is_cherryview) ?
-            2047.9921875 : 7.9921875,
-      },
+      /* While SKL and up support much wider lines than we are setting here,
+       * in practice we run into conformance issues if we go past this limit.
+       * Since the Windows driver does the same, it's probably fair to assume
+       * that no one needs more than this.
+       */
+      .lineWidthRange                           = { 0.0, 7.9921875 },
       .pointSizeGranularity                     = (1.0 / 8.0),
       .lineWidthGranularity                     = (1.0 / 128.0),
       .strictLines                              = false,
@@ -2053,7 +2017,7 @@ void anv_GetPhysicalDeviceProperties(
    };
 
    snprintf(pProperties->deviceName, sizeof(pProperties->deviceName),
-            "%s", pdevice->name);
+            "%s", pdevice->info.name);
    memcpy(pProperties->pipelineCacheUUID,
           pdevice->pipeline_cache_uuid, VK_UUID_SIZE);
 }
@@ -2072,9 +2036,17 @@ anv_get_physical_device_properties_1_1(struct anv_physical_device *pdevice,
 
    p->subgroupSize = BRW_SUBGROUP_SIZE;
    VkShaderStageFlags scalar_stages = 0;
-   for (unsigned stage = 0; stage < MESA_VULKAN_SHADER_STAGES; stage++) {
+   for (unsigned stage = 0; stage < MESA_SHADER_STAGES; stage++) {
       if (pdevice->compiler->scalar_stage[stage])
          scalar_stages |= mesa_to_vk_shader_stage(stage);
+   }
+   if (pdevice->vk.supported_extensions.KHR_ray_tracing_pipeline) {
+      scalar_stages |= MESA_SHADER_RAYGEN |
+                       MESA_SHADER_ANY_HIT |
+                       MESA_SHADER_CLOSEST_HIT |
+                       MESA_SHADER_MISS |
+                       MESA_SHADER_INTERSECTION |
+                       MESA_SHADER_CALLABLE;
    }
    p->subgroupSupportedStages = scalar_stages;
    p->subgroupSupportedOperations = VK_SUBGROUP_FEATURE_BASIC_BIT |
@@ -2551,8 +2523,7 @@ void anv_GetPhysicalDeviceProperties2(
          STATIC_ASSERT(8 <= BRW_SUBGROUP_SIZE && BRW_SUBGROUP_SIZE <= 32);
          props->minSubgroupSize = 8;
          props->maxSubgroupSize = 32;
-         /* Limit max_threads to 64 for the GPGPU_WALKER command. */
-         props->maxComputeWorkgroupSubgroups = MIN2(64, pdevice->info.max_cs_threads);
+         props->maxComputeWorkgroupSubgroups = pdevice->info.max_cs_workgroup_threads;
          props->requiredSubgroupSizeStages = VK_SHADER_STAGE_COMPUTE_BIT;
          break;
       }
