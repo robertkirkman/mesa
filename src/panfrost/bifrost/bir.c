@@ -116,27 +116,25 @@ bi_writemask(bi_instr *ins, unsigned d)
 }
 
 bi_clause *
-bi_next_clause(bi_context *ctx, pan_block *block, bi_clause *clause)
+bi_next_clause(bi_context *ctx, bi_block *block, bi_clause *clause)
 {
         if (!block && !clause)
                 return NULL;
 
         /* Try the first clause in this block if we're starting from scratch */
-        if (!clause && !list_is_empty(&((bi_block *) block)->clauses))
-                return list_first_entry(&((bi_block *) block)->clauses, bi_clause, link);
+        if (!clause && !list_is_empty(&block->clauses))
+                return list_first_entry(&block->clauses, bi_clause, link);
 
         /* Try the next clause in this block */
-        if (clause && clause->link.next != &((bi_block *) block)->clauses)
+        if (clause && clause->link.next != &block->clauses)
                 return list_first_entry(&(clause->link), bi_clause, link);
 
         /* Try the next block, or the one after that if it's empty, etc .*/
-        pan_block *next_block = pan_next_block(block);
+        bi_block *next_block = bi_next_block(block);
 
         bi_foreach_block_from(ctx, next_block, block) {
-                bi_block *blk = (bi_block *) block;
-
-                if (!list_is_empty(&blk->clauses))
-                        return list_first_entry(&(blk->clauses), bi_clause, link);
+                if (!list_is_empty(&block->clauses))
+                        return list_first_entry(&block->clauses, bi_clause, link);
         }
 
         return NULL;
