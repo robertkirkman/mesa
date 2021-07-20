@@ -36,6 +36,7 @@
 #include "zink_screen.h"
 #include "zink_state.h"
 #include "zink_surface.h"
+#include "zink_inlines.h"
 
 #include "util/u_blitter.h"
 #include "util/u_debug.h"
@@ -1852,7 +1853,6 @@ zink_update_descriptor_refs(struct zink_context *ctx, bool compute)
       if (ctx->curr_program)
          zink_batch_reference_program(batch, &ctx->curr_program->base);
    }
-   ctx->descriptor_refs_dirty[compute] = false;
 }
 
 static void
@@ -1875,15 +1875,9 @@ flush_batch(struct zink_context *ctx, bool sync)
       zink_start_batch(ctx, batch);
       if (zink_screen(ctx->base.screen)->info.have_EXT_transform_feedback && ctx->num_so_targets)
          ctx->dirty_so_targets = true;
-      ctx->descriptor_refs_dirty[0] = ctx->descriptor_refs_dirty[1] = true;
       ctx->pipeline_changed[0] = ctx->pipeline_changed[1] = true;
-      ctx->sample_locations_changed |= ctx->gfx_pipeline_state.sample_locations_enabled;
-      ctx->vertex_buffers_dirty = true;
-      ctx->vp_state_changed = true;
-      ctx->scissor_changed = true;
-      ctx->rast_state_changed = true;
-      ctx->stencil_ref_changed = true;
-      ctx->dsa_state_changed = true;
+      zink_select_draw_vbo(ctx);
+      zink_select_launch_grid(ctx);
    }
 }
 
@@ -3416,9 +3410,13 @@ zink_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
       goto fail;
    ctx->have_timelines = screen->info.have_KHR_timeline_semaphore;
 
+   ctx->pipeline_changed[0] = ctx->pipeline_changed[1] = true;
    ctx->gfx_pipeline_state.dirty = true;
    ctx->compute_pipeline_state.dirty = true;
    ctx->fb_changed = ctx->rp_changed = true;
+
+   zink_init_draw_functions(ctx, screen);
+   zink_init_grid_functions(ctx);
 
    ctx->base.screen = pscreen;
    ctx->base.priv = priv;
@@ -3463,8 +3461,6 @@ zink_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    ctx->base.clear_render_target = zink_clear_render_target;
    ctx->base.clear_depth_stencil = zink_clear_depth_stencil;
 
-   ctx->base.draw_vbo = zink_draw_vbo;
-   ctx->base.launch_grid = zink_launch_grid;
    ctx->base.fence_server_sync = zink_fence_server_sync;
    ctx->base.flush = zink_flush;
    ctx->base.memory_barrier = zink_memory_barrier;
@@ -3566,6 +3562,9 @@ zink_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
       }
    }
    p_atomic_inc(&screen->base.num_contexts);
+
+   zink_select_draw_vbo(ctx);
+   zink_select_launch_grid(ctx);
 
    if (!(flags & PIPE_CONTEXT_PREFER_THREADED) || flags & PIPE_CONTEXT_COMPUTE_ONLY) {
       return &ctx->base;
