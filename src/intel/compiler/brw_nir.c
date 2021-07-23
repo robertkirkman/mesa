@@ -674,6 +674,7 @@ brw_nir_optimize(nir_shader *nir, const struct brw_compiler *compiler,
          OPT(nir_opt_loop_unroll, loop_indirect_mask);
       }
       OPT(nir_opt_remove_phis);
+      OPT(nir_opt_gcm, false);
       OPT(nir_opt_undef);
       OPT(nir_lower_pack);
    } while (progress);
@@ -1192,6 +1193,7 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
    OPT(nir_copy_prop);
    OPT(nir_opt_dce);
    OPT(nir_opt_move, nir_move_comparisons);
+   OPT(nir_opt_dead_cf);
 
    OPT(nir_lower_bool_to_int32);
    OPT(nir_copy_prop);

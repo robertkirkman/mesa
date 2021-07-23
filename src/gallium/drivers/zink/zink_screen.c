@@ -1084,12 +1084,14 @@ zink_destroy_screen(struct pipe_screen *pscreen)
    }
 #endif
    disk_cache_destroy(screen->disk_cache);
-   simple_mtx_lock(&screen->mem_cache_mtx);
-   hash_table_foreach(screen->resource_mem_cache, he)
-      resource_cache_entry_destroy(screen, he);
-   _mesa_hash_table_destroy(screen->resource_mem_cache, NULL);
-   simple_mtx_unlock(&screen->mem_cache_mtx);
-   simple_mtx_destroy(&screen->mem_cache_mtx);
+
+   for (uint32_t i = 0; i < screen->info.mem_props.memoryHeapCount; ++i) {
+      simple_mtx_lock(&screen->mem[i].mem_cache_mtx);
+      hash_table_foreach(&screen->mem[i].resource_mem_cache, he)
+         resource_cache_entry_destroy(screen, he);
+      simple_mtx_unlock(&screen->mem[i].mem_cache_mtx);
+      simple_mtx_destroy(&screen->mem[i].mem_cache_mtx);
+   }
 
    util_live_shader_cache_deinit(&screen->shaders);
 
@@ -1904,6 +1906,7 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
    screen->driconf.inline_uniforms = debug_get_bool_option("ZINK_INLINE_UNIFORMS", false);
 
    screen->total_video_mem = get_video_mem(screen);
+   screen->clamp_video_mem = screen->total_video_mem * 0.8;
    if (!os_get_total_physical_memory(&screen->total_mem))
       goto fail;
    if (screen->info.have_KHR_timeline_semaphore)

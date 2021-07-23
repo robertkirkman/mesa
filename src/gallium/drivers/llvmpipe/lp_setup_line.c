@@ -586,15 +586,8 @@ try_setup_line( struct lp_setup_context *setup,
       bbox.y1--;
    }
 
-   if (bbox.x1 < bbox.x0 ||
-       bbox.y1 < bbox.y0) {
-      if (0) debug_printf("empty bounding box\n");
-      LP_COUNT(nr_culled_tris);
-      return TRUE;
-   }
-
    if (!u_rect_test_intersection(&setup->draw_regions[viewport_index], &bbox)) {
-      if (0) debug_printf("offscreen\n");
+      if (0) debug_printf("no intersection\n");
       LP_COUNT(nr_culled_tris);
       return TRUE;
    }

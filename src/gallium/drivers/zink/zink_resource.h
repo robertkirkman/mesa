@@ -65,7 +65,7 @@ struct zink_resource_object {
       VkImage image;
    };
 
-   VkBuffer sbuffer;
+   struct util_dynarray tmp;
    bool storage_init; //layout was set for image
    bool transfer_dst;
    VkImageAspectFlags modifier_aspect;
@@ -73,7 +73,7 @@ struct zink_resource_object {
    VkDeviceMemory mem;
    uint32_t mem_hash;
    struct mem_key mkey;
-   VkDeviceSize offset, size;
+   VkDeviceSize offset, size, alignment;
 
    VkSampleLocationsInfoEXT zs_evaluate;
    bool needs_zs_evaluate;
@@ -105,7 +105,7 @@ struct zink_resource {
    union {
       struct {
          struct util_range valid_buffer_range;
-         uint16_t vbo_bind_count;
+         uint32_t vbo_bind_mask : PIPE_MAX_ATTRIBS;
          uint8_t ubo_bind_count[2];
          uint32_t ubo_bind_mask[PIPE_SHADER_TYPES];
          uint32_t ssbo_bind_mask[PIPE_SHADER_TYPES];
@@ -182,6 +182,9 @@ zink_resource_object_reference(struct zink_screen *screen,
       zink_destroy_resource_object(screen, old_dst);
    if (dst) *dst = src;
 }
+
+VkBuffer
+zink_resource_tmp_buffer(struct zink_screen *screen, struct zink_resource *res, unsigned offset_add, unsigned add_binds, unsigned *offset);
 
 bool
 zink_resource_object_init_storage(struct zink_context *ctx, struct zink_resource *res);

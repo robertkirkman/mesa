@@ -404,6 +404,7 @@ generate_compute(struct llvmpipe_context *lp,
       params.shared_ptr = shared_ptr;
       params.coro = &coro_info;
       params.kernel_args = kernel_args_ptr;
+      params.aniso_filter_table = lp_jit_cs_context_aniso_filter_table(gallivm, context_ptr);
 
       if (shader->base.type == PIPE_SHADER_IR_TGSI)
          lp_build_tgsi_soa(gallivm, shader->base.tokens, &params, NULL);
@@ -643,6 +644,7 @@ dump_cs_variant_key(const struct lp_compute_shader_variant_key *key)
       debug_printf("  .lod_bias_non_zero = %u\n", sampler->lod_bias_non_zero);
       debug_printf("  .apply_min_lod = %u\n", sampler->apply_min_lod);
       debug_printf("  .apply_max_lod = %u\n", sampler->apply_max_lod);
+      debug_printf("  .aniso = %u\n", sampler->aniso);
    }
    for (i = 0; i < key->nr_sampler_views; ++i) {
       const struct lp_static_texture_state *texture = &key->samplers[i].texture_state;
@@ -1048,6 +1050,7 @@ lp_csctx_set_sampler_state(struct lp_cs_context *csctx,
          jit_sam->min_lod = sampler->min_lod;
          jit_sam->max_lod = sampler->max_lod;
          jit_sam->lod_bias = sampler->lod_bias;
+         jit_sam->max_aniso = sampler->max_anisotropy;
          COPY_4V(jit_sam->border_color, sampler->border_color.f);
       }
    }
@@ -1252,8 +1255,9 @@ llvmpipe_cs_update_derived(struct llvmpipe_context *llvmpipe, void *input)
                               ARRAY_SIZE(llvmpipe->images[PIPE_SHADER_COMPUTE]),
                               llvmpipe->images[PIPE_SHADER_COMPUTE]);
 
+   struct lp_cs_context *csctx = llvmpipe->csctx;
+   csctx->cs.current.jit_context.aniso_filter_table = lp_build_sample_aniso_filter_table();
    if (input) {
-      struct lp_cs_context *csctx = llvmpipe->csctx;
       csctx->input = input;
       csctx->cs.current.jit_context.kernel_args = input;
    }

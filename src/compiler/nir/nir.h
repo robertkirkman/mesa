@@ -4914,6 +4914,12 @@ typedef struct nir_lower_tex_options {
    bool lower_txs_lod;
 
    /**
+    * If true, lower nir_texop_txs for cube arrays to a nir_texop_txs with a
+    * 2D array type followed by a nir_idiv by 6.
+    */
+   bool lower_txs_cube_array;
+
+   /**
     * If true, apply a .bagr swizzle on tg4 results to handle Broadcom's
     * mixed-up tg4 locations.
     */
@@ -4934,6 +4940,16 @@ typedef struct nir_lower_tex_options {
 
 bool nir_lower_tex(nir_shader *shader,
                    const nir_lower_tex_options *options);
+
+typedef struct nir_lower_image_options {
+   /**
+    * If true, lower cube size operations.
+    */
+   bool lower_cube_size;
+} nir_lower_image_options;
+
+bool nir_lower_image(nir_shader *nir,
+                     const nir_lower_image_options *options);
 
 bool nir_lower_readonly_images_to_tex(nir_shader *shader, bool per_variable);
 

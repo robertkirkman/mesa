@@ -899,8 +899,34 @@ update_existing_vbo(struct zink_context *ctx, unsigned slot)
    if (!ctx->vertex_buffers[slot].buffer.resource)
       return;
    struct zink_resource *res = zink_resource(ctx->vertex_buffers[slot].buffer.resource);
-   res->vbo_bind_count--;
+   res->vbo_bind_mask &= ~BITFIELD_BIT(slot);
+   ctx->vbufs[slot] = VK_NULL_HANDLE;
+   ctx->vbuf_offsets[slot] = 0;
    update_res_bind_count(ctx, res, false, true);
+}
+
+ALWAYS_INLINE static void
+set_vertex_buffer_clamped(struct zink_context *ctx, unsigned slot)
+{
+   const struct pipe_vertex_buffer *ctx_vb = &ctx->vertex_buffers[slot];
+   struct zink_resource *res = zink_resource(ctx_vb->buffer.resource);
+   struct zink_screen *screen = zink_screen(ctx->base.screen);
+   if (ctx_vb->buffer_offset > screen->info.props.limits.maxVertexInputAttributeOffset) {
+      /* buffer offset exceeds maximum: make a tmp buffer at this offset */
+      ctx->vbufs[slot] = zink_resource_tmp_buffer(screen, res, ctx_vb->buffer_offset, 0, &ctx->vbuf_offsets[slot]);
+      util_dynarray_append(&res->obj->tmp, VkBuffer, ctx->vbufs[slot]);
+      /* the driver is broken and sets a min alignment that's larger than its max offset: rebind as staging buffer */
+      if (unlikely(ctx->vbuf_offsets[slot] > screen->info.props.limits.maxVertexInputAttributeOffset)) {
+         static bool warned = false;
+         if (!warned)
+            debug_printf("zink: this vulkan driver is BROKEN! maxVertexInputAttributeOffset < VkMemoryRequirements::alignment\n");
+         warned = true;
+      }
+   } else {
+      ctx->vbufs[slot] = res->obj->buffer;
+      ctx->vbuf_offsets[slot] = ctx_vb->buffer_offset;
+   }
+   assert(ctx->vbufs[slot]);
 }
 
 static void
@@ -932,13 +958,15 @@ zink_set_vertex_buffers(struct pipe_context *pctx,
          }
          if (vb->buffer.resource) {
             struct zink_resource *res = zink_resource(vb->buffer.resource);
-            res->vbo_bind_count++;
+            res->vbo_bind_mask |= BITFIELD_BIT(start_slot + i);
             update_res_bind_count(ctx, res, false, false);
             ctx_vb->stride = vb->stride;
             ctx_vb->buffer_offset = vb->buffer_offset;
-            zink_batch_resource_usage_set(&ctx->batch, res, false);
+            /* always barrier before possible rebind */
             zink_resource_buffer_barrier(ctx, NULL, res, VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT,
                                          VK_PIPELINE_STAGE_VERTEX_INPUT_BIT);
+            set_vertex_buffer_clamped(ctx, start_slot + i);
+            zink_batch_resource_usage_set(&ctx->batch, res, false);
          }
       }
    } else {
@@ -1743,7 +1771,7 @@ zink_begin_render_pass(struct zink_context *ctx, struct zink_batch *batch)
    zink_clear_framebuffer(ctx, clear_buffers);
 }
 
-static void
+void
 zink_end_render_pass(struct zink_context *ctx, struct zink_batch *batch)
 {
    if (batch->in_rp) {
@@ -1878,27 +1906,12 @@ flush_batch(struct zink_context *ctx, bool sync)
       ctx->pipeline_changed[0] = ctx->pipeline_changed[1] = true;
       zink_select_draw_vbo(ctx);
       zink_select_launch_grid(ctx);
-   }
-}
 
-struct zink_batch *
-zink_batch_rp(struct zink_context *ctx)
-{
-   struct zink_batch *batch = &ctx->batch;
-   if (!batch->in_rp) {
-      zink_begin_render_pass(ctx, batch);
-      assert(ctx->framebuffer && ctx->framebuffer->rp);
+      if (ctx->oom_stall)
+         zink_fence_wait(&ctx->base);
+      ctx->oom_flush = false;
+      ctx->oom_stall = false;
    }
-   return batch;
-}
-
-struct zink_batch *
-zink_batch_no_rp(struct zink_context *ctx)
-{
-   struct zink_batch *batch = &ctx->batch;
-   zink_end_render_pass(ctx, batch);
-   assert(!batch->in_rp);
-   return batch;
 }
 
 void
@@ -2035,6 +2048,9 @@ zink_set_framebuffer_state(struct pipe_context *pctx,
 
    /* need to ensure we start a new rp on next draw */
    zink_batch_no_rp(ctx);
+   /* this is an ideal time to oom flush since it won't split a renderpass */
+   if (ctx->oom_flush)
+      flush_batch(ctx, false);
 }
 
 static void
@@ -2247,8 +2263,8 @@ resource_check_defer_buffer_barrier(struct zink_context *ctx, struct zink_resour
 {
    assert(res->obj->is_buffer);
    if (res->bind_count[0]) {
-      if ((res->obj->is_buffer && res->vbo_bind_count && !(pipeline & VK_PIPELINE_STAGE_VERTEX_INPUT_BIT)) ||
-          ((!res->obj->is_buffer || res->vbo_bind_count != res->bind_count[0]) && !is_shader_pipline_stage(pipeline)))
+      if ((res->obj->is_buffer && res->vbo_bind_mask && !(pipeline & VK_PIPELINE_STAGE_VERTEX_INPUT_BIT)) ||
+          ((!res->obj->is_buffer || util_bitcount(res->vbo_bind_mask) != res->bind_count[0]) && !is_shader_pipline_stage(pipeline)))
          /* gfx rebind */
          _mesa_set_add(ctx->need_barriers[0], res);
    }
@@ -2563,23 +2579,6 @@ zink_flush(struct pipe_context *pctx,
 }
 
 void
-zink_maybe_flush_or_stall(struct zink_context *ctx)
-{
-   struct zink_screen *screen = zink_screen(ctx->base.screen);
-   /* flush anytime our total batch memory usage is potentially >= 50% of total video memory */
-   if (ctx->batch.state->resource_size >= screen->total_video_mem / 2 ||
-       /* or if there's >100k draws+computes */
-       ctx->batch.state->draw_count + ctx->batch.state->compute_count >= 100000)
-      flush_batch(ctx, true);
-
-   if (ctx->resource_size >= screen->total_video_mem / 2 || _mesa_hash_table_num_entries(&ctx->batch_states) > 100) {
-      sync_flush(ctx, zink_batch_state(ctx->last_fence));
-      zink_vkfence_wait(screen, ctx->last_fence, PIPE_TIMEOUT_INFINITE);
-      zink_batch_reset_all(ctx);
-   }
-}
-
-void
 zink_fence_wait(struct pipe_context *pctx)
 {
    struct zink_context *ctx = zink_context(pctx);
@@ -2633,7 +2632,7 @@ zink_wait_on_batch(struct zink_context *ctx, uint32_t batch_id)
 }
 
 bool
-zink_check_batch_completion(struct zink_context *ctx, uint32_t batch_id)
+zink_check_batch_completion(struct zink_context *ctx, uint32_t batch_id, bool have_lock)
 {
    assert(ctx->batch.state);
    if (!batch_id)
@@ -2651,7 +2650,8 @@ zink_check_batch_completion(struct zink_context *ctx, uint32_t batch_id)
    }
    struct zink_fence *fence;
 
-   simple_mtx_lock(&ctx->batch_mtx);
+   if (!have_lock)
+      simple_mtx_lock(&ctx->batch_mtx);
 
    if (ctx->last_fence && batch_id == zink_batch_state(ctx->last_fence)->fence.batch_id)
       fence = ctx->last_fence;
@@ -2659,13 +2659,15 @@ zink_check_batch_completion(struct zink_context *ctx, uint32_t batch_id)
       struct hash_entry *he = _mesa_hash_table_search_pre_hashed(&ctx->batch_states, batch_id, (void*)(uintptr_t)batch_id);
       /* if we can't find it, it either must have finished already or is on a different context */
       if (!he) {
-         simple_mtx_unlock(&ctx->batch_mtx);
+         if (!have_lock)
+            simple_mtx_unlock(&ctx->batch_mtx);
          /* return compare against last_finished, since this has info from all contexts */
          return zink_screen_check_last_finished(zink_screen(ctx->base.screen), batch_id);
       }
       fence = he->data;
    }
-   simple_mtx_unlock(&ctx->batch_mtx);
+   if (!have_lock)
+      simple_mtx_unlock(&ctx->batch_mtx);
    assert(fence);
    if (zink_screen(ctx->base.screen)->threaded &&
        !util_queue_fence_is_signalled(&zink_batch_state(fence)->flush_completed))
@@ -3124,9 +3126,14 @@ rebind_buffer(struct zink_context *ctx, struct zink_resource *res)
    unsigned num_rebinds = 0, num_image_rebinds_remaining[2] = {res->image_bind_count[0], res->image_bind_count[1]};
    bool has_write = false;
 
-   if (res->vbo_bind_count) {
+   if (res->vbo_bind_mask) {
+      u_foreach_bit(slot, res->vbo_bind_mask) {
+         if (ctx->vertex_buffers[slot].buffer.resource != &res->base.b) //wrong context
+            return;
+         set_vertex_buffer_clamped(ctx, slot);
+         num_rebinds++;
+      }
       ctx->vertex_buffers_dirty = true;
-      num_rebinds += res->vbo_bind_count;
    }
    for (unsigned shader = 0; num_rebinds < total_rebinds && shader < PIPE_SHADER_TYPES; shader++) {
       u_foreach_bit(slot, res->ubo_bind_mask[shader]) {
@@ -3576,7 +3583,7 @@ zink_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
                                                      zink_context_is_resource_busy, true, &ctx->tc);
 
    if (tc && (struct zink_context*)tc != ctx) {
-      tc->bytes_mapped_limit = screen->total_mem / 4;
+      threaded_context_init_bytes_mapped_limit(tc, 4);
       ctx->base.set_context_param = zink_set_context_param;
    }
 

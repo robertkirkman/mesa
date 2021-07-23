@@ -117,8 +117,27 @@ anv_shader_compile_to_nir(struct anv_device *device,
          case 1:
             spec_entries[i].value.u8 = *(const uint8_t *)data;
             break;
+         case 0:
          default:
-            assert(!"Invalid spec constant size");
+            /* The Vulkan spec says:
+             *
+             *    "For a constantID specialization constant declared in a
+             *    shader, size must match the byte size of the constantID. If
+             *    the specialization constant is of type boolean, size must be
+             *    the byte size of VkBool32."
+             *
+             * Therefore, since only scalars can be decorated as
+             * specialization constants, we can assume that if it doesn't have
+             * a size of 1, 2, 4, or 8, any use in a shader would be invalid
+             * usage.  The spec further says:
+             *
+             *    "If a constantID value is not a specialization constant ID
+             *    used in the shader, that map entry does not affect the
+             *    behavior of the pipeline."
+             *
+             * so we should ignore any invalid specialization constants rather
+             * than crash or error out when we see one.
+             */
             break;
          }
       }
@@ -139,6 +158,7 @@ anv_shader_compile_to_nir(struct anv_device *device,
          .device_group = true,
          .draw_parameters = true,
          .float16 = pdevice->info.ver >= 8,
+         .float32_atomic_min_max = pdevice->info.ver >= 9,
          .float64 = pdevice->info.ver >= 8,
          .fragment_shader_sample_interlock = pdevice->info.ver >= 9,
          .fragment_shader_pixel_interlock = pdevice->info.ver >= 9,
@@ -857,7 +877,7 @@ anv_pipeline_lower_nir(struct anv_pipeline *pipeline,
 
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
 
-   NIR_PASS_V(nir, brw_nir_lower_image_load_store, compiler->devinfo, NULL);
+   NIR_PASS_V(nir, brw_nir_lower_storage_image, compiler->devinfo, NULL);
 
    NIR_PASS_V(nir, nir_lower_explicit_io, nir_var_mem_global,
               nir_address_format_64bit_global);

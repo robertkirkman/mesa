@@ -137,12 +137,13 @@ zink_bind_vertex_buffers(struct zink_batch *batch, struct zink_context *ctx)
       return;
 
    for (unsigned i = 0; i < elems->hw_state.num_bindings; i++) {
-      struct pipe_vertex_buffer *vb = ctx->vertex_buffers + ctx->element_state->binding_map[i];
+      const unsigned buffer_id = ctx->element_state->binding_map[i];
+      struct pipe_vertex_buffer *vb = ctx->vertex_buffers + buffer_id;
       assert(vb);
       if (vb->buffer.resource) {
-         struct zink_resource *res = zink_resource(vb->buffer.resource);
-         buffers[i] = res->obj->buffer;
-         buffer_offsets[i] = vb->buffer_offset;
+         buffers[i] = ctx->vbufs[buffer_id];
+         assert(buffers[i]);
+         buffer_offsets[i] = ctx->vbuf_offsets[buffer_id];
          buffer_strides[i] = vb->stride;
       } else {
          buffers[i] = zink_resource(ctx->dummy_vertex_buffer)->obj->buffer;
@@ -360,10 +361,10 @@ update_barriers(struct zink_context *ctx, bool is_compute)
                   access |= VK_ACCESS_UNIFORM_READ_BIT;
                   bind_count -= res->ubo_bind_count[is_compute];
                }
-               if (!is_compute && res->vbo_bind_count) {
+               if (!is_compute && res->vbo_bind_mask) {
                   access |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
                   pipeline |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
-                  bind_count -= res->vbo_bind_count;
+                  bind_count -= util_bitcount(res->vbo_bind_mask);
                }
             }
             if (bind_count)
@@ -419,6 +420,8 @@ zink_draw_vbo(struct pipe_context *pctx,
    bool mode_changed = ctx->gfx_pipeline_state.mode != dinfo->mode;
    bool reads_drawid = ctx->shader_reads_drawid;
    bool reads_basevertex = ctx->shader_reads_basevertex;
+   unsigned draw_count = ctx->batch.state->draw_count;
+   enum pipe_prim_type mode = dinfo->mode;
 
    update_barriers(ctx, false);
 
@@ -434,11 +437,11 @@ zink_draw_vbo(struct pipe_context *pctx,
       ctx->dirty_shader_stages |= BITFIELD_BIT(PIPE_SHADER_VERTEX);
    ctx->gfx_pipeline_state.vertices_per_patch = dinfo->vertices_per_patch;
    if (ctx->rast_state->base.point_quad_rasterization &&
-       ctx->gfx_prim_mode != dinfo->mode) {
-      if (ctx->gfx_prim_mode == PIPE_PRIM_POINTS || dinfo->mode == PIPE_PRIM_POINTS)
+       ctx->gfx_prim_mode != mode) {
+      if (ctx->gfx_prim_mode == PIPE_PRIM_POINTS || mode == PIPE_PRIM_POINTS)
          ctx->dirty_shader_stages |= BITFIELD_BIT(PIPE_SHADER_FRAGMENT);
    }
-   ctx->gfx_prim_mode = dinfo->mode;
+   ctx->gfx_prim_mode = mode;
    update_gfx_program(ctx);
 
    if (zink_program_has_descriptors(&ctx->curr_program->base)) {
@@ -500,7 +503,7 @@ zink_draw_vbo(struct pipe_context *pctx,
    VkPipeline prev_pipeline = ctx->gfx_pipeline_state.pipeline;
    VkPipeline pipeline = zink_get_gfx_pipeline(ctx, ctx->curr_program,
                                                &ctx->gfx_pipeline_state,
-                                               dinfo->mode);
+                                               mode);
    bool pipeline_changed = prev_pipeline != pipeline;
    if (BATCH_CHANGED || pipeline_changed)
       vkCmdBindPipeline(batch->state->cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
@@ -600,7 +603,7 @@ zink_draw_vbo(struct pipe_context *pctx,
       screen->vk.CmdSetFrontFaceEXT(batch->state->cmdbuf, ctx->gfx_pipeline_state.front_face);
 
    if (BATCH_CHANGED || ctx->rast_state_changed || mode_changed) {
-      enum pipe_prim_type reduced_prim = u_reduced_prim(dinfo->mode);
+      enum pipe_prim_type reduced_prim = u_reduced_prim(mode);
 
       bool depth_bias = false;
       switch (reduced_prim) {
@@ -642,8 +645,11 @@ zink_draw_vbo(struct pipe_context *pctx,
       ctx->sample_locations_changed = false;
    }
 
-   if (ctx->gfx_pipeline_state.blend_state->need_blend_constants)
+   if ((BATCH_CHANGED || ctx->blend_state_changed) &&
+       ctx->gfx_pipeline_state.blend_state->need_blend_constants) {
       vkCmdSetBlendConstants(batch->state->cmdbuf, ctx->blend_constants);
+   }
+   ctx->blend_state_changed = false;
 
    if (BATCH_CHANGED || ctx->vertex_buffers_dirty)
       zink_bind_vertex_buffers<HAS_DYNAMIC_STATE>(batch, ctx);
@@ -684,7 +690,7 @@ zink_draw_vbo(struct pipe_context *pctx,
    }
 
    bool needs_drawid = reads_drawid && ctx->drawid_broken;
-   batch->state->draw_count += num_draws;
+   draw_count += num_draws;
    if (index_size > 0) {
       if (dindirect && dindirect->buffer) {
          assert(num_draws == 1);
@@ -746,8 +752,11 @@ zink_draw_vbo(struct pipe_context *pctx,
       screen->vk.CmdEndTransformFeedbackEXT(batch->state->cmdbuf, 0, ctx->num_so_targets, counter_buffers, counter_buffer_offsets);
    }
    batch->has_work = true;
-   /* check memory usage and flush/stall as needed to avoid oom */
-   zink_maybe_flush_or_stall(ctx);
+   ctx->batch.state->draw_count = draw_count;
+   /* flush if there's >100k draws */
+   if (unlikely(ctx->batch.state->resource_size >= screen->total_video_mem / 2 ||
+                draw_count >= 100000))
+      pctx->flush(pctx, NULL, PIPE_FLUSH_ASYNC);
 }
 
 template <bool BATCH_CHANGED>
@@ -798,8 +807,10 @@ zink_launch_grid(struct pipe_context *pctx, const struct pipe_grid_info *info)
    } else
       vkCmdDispatch(batch->state->cmdbuf, info->grid[0], info->grid[1], info->grid[2]);
    batch->has_work = true;
-   /* check memory usage and flush/stall as needed to avoid oom */
-   zink_maybe_flush_or_stall(ctx);
+   /* flush if there's >100k computes */
+   if (unlikely(ctx->batch.state->resource_size >= zink_screen(ctx->base.screen)->total_video_mem / 2 ||
+                ctx->batch.state->compute_count >= 100000))
+      pctx->flush(pctx, NULL, PIPE_FLUSH_ASYNC);
 }
 
 template <zink_multidraw HAS_MULTIDRAW, zink_dynamic_state HAS_DYNAMIC_STATE, bool BATCH_CHANGED>
