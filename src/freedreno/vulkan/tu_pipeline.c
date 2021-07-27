@@ -113,6 +113,7 @@ tu6_load_state_size(struct tu_pipeline *pipeline, bool compute)
             count = stage_count * binding->array_size * 2;
             break;
          case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+         case VK_DESCRIPTOR_TYPE_MUTABLE_VALVE:
             break;
          default:
             unreachable("bad descriptor type");
@@ -189,6 +190,7 @@ tu6_emit_load_state(struct tu_pipeline *pipeline, bool compute)
             }
             break;
          case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+         case VK_DESCRIPTOR_TYPE_MUTABLE_VALVE:
             /* nothing - input attachment doesn't use bindless */
             break;
          case VK_DESCRIPTOR_TYPE_SAMPLER:
@@ -1439,10 +1441,9 @@ tu6_emit_fs_outputs(struct tu_cs *cs,
 
    tu_cs_emit_pkt4(cs, REG_A6XX_SP_FS_OUTPUT_REG(0), 8);
    for (uint32_t i = 0; i < ARRAY_SIZE(fragdata_regid); i++) {
-      // TODO we could have a mix of half and full precision outputs,
-      // we really need to figure out half-precision from IR3_REG_HALF
       tu_cs_emit(cs, A6XX_SP_FS_OUTPUT_REG_REGID(fragdata_regid[i]) |
-                        (false ? A6XX_SP_FS_OUTPUT_REG_HALF_PRECISION : 0));
+                     (COND(fragdata_regid[i] & HALF_REG_ID,
+                           A6XX_SP_FS_OUTPUT_REG_HALF_PRECISION)));
 
       if (VALIDREG(fragdata_regid[i])) {
          fs_render_components |= 0xf << (i * 4);

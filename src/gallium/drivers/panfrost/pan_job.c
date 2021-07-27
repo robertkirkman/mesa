@@ -51,7 +51,9 @@ panfrost_batch_init(struct panfrost_context *ctx,
                     const struct pipe_framebuffer_state *key,
                     struct panfrost_batch *batch)
 {
-        struct panfrost_device *dev = pan_device(ctx->base.screen);
+        struct pipe_screen *pscreen = ctx->base.screen;
+        struct panfrost_screen *screen = pan_screen(pscreen);
+        struct panfrost_device *dev = &screen->dev;
 
         batch->ctx = ctx;
 
@@ -79,24 +81,7 @@ panfrost_batch_init(struct panfrost_context *ctx,
 
         panfrost_batch_add_fbo_bos(batch);
 
-        /* Reserve the framebuffer and local storage descriptors */
-        batch->framebuffer =
-                (dev->quirks & MIDGARD_SFBD) ?
-                pan_pool_alloc_desc(&batch->pool.base, SINGLE_TARGET_FRAMEBUFFER) :
-                pan_pool_alloc_desc_aggregate(&batch->pool.base,
-                                              PAN_DESC(MULTI_TARGET_FRAMEBUFFER),
-                                              PAN_DESC(ZS_CRC_EXTENSION),
-                                              PAN_DESC_ARRAY(MAX2(key->nr_cbufs, 1), RENDER_TARGET));
-
-        /* Add the MFBD tag now, other tags will be added at submit-time */
-        if (!(dev->quirks & MIDGARD_SFBD))
-                batch->framebuffer.gpu |= MALI_FBD_TAG_IS_MFBD;
-
-        /* On Midgard, the TLS is embedded in the FB descriptor */
-        if (pan_is_bifrost(dev))
-                batch->tls = pan_pool_alloc_desc(&batch->pool.base, LOCAL_STORAGE);
-        else
-                batch->tls = batch->framebuffer;
+        screen->vtbl.init_batch(batch);
 }
 
 static void
@@ -497,34 +482,6 @@ panfrost_batch_get_shared_memory(struct panfrost_batch *batch,
         }
 
         return batch->shared_memory;
-}
-
-mali_ptr
-panfrost_batch_get_bifrost_tiler(struct panfrost_batch *batch, unsigned vertex_count)
-{
-        struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
-        assert(pan_is_bifrost(dev));
-
-        if (!vertex_count)
-                return 0;
-
-        if (batch->tiler_ctx.bifrost)
-                return batch->tiler_ctx.bifrost;
-
-        struct panfrost_ptr t =
-                pan_pool_alloc_desc(&batch->pool.base, BIFROST_TILER_HEAP);
-
-        pan_emit_bifrost_tiler_heap(dev, t.cpu);
-
-        mali_ptr heap = t.gpu;
-
-        t = pan_pool_alloc_desc(&batch->pool.base, BIFROST_TILER);
-        pan_emit_bifrost_tiler(dev, batch->key.width, batch->key.height,
-                               util_framebuffer_get_num_samples(&batch->key),
-                               heap, t.cpu);
-
-        batch->tiler_ctx.bifrost = t.gpu;
-        return batch->tiler_ctx.bifrost;
 }
 
 static void

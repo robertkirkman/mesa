@@ -70,6 +70,12 @@ struct panfrost_vtable {
 
         /* Preload framebuffer */
         void (*preload)(struct panfrost_batch *, struct pan_fb_info *);
+
+        /* Initialize a Gallium context */
+        void (*context_init)(struct pipe_context *pipe);
+
+        /* Device-dependent initialization of a panfrost_batch */
+        void (*init_batch)(struct panfrost_batch *batch);
 };
 
 struct panfrost_screen {
@@ -101,8 +107,10 @@ pan_device(struct pipe_screen *p)
 struct pipe_fence_handle *
 panfrost_fence_create(struct panfrost_context *ctx);
 
-void
-panfrost_cmdstream_screen_init(struct panfrost_screen *screen);
+void panfrost_cmdstream_screen_init_v4(struct panfrost_screen *screen);
+void panfrost_cmdstream_screen_init_v5(struct panfrost_screen *screen);
+void panfrost_cmdstream_screen_init_v6(struct panfrost_screen *screen);
+void panfrost_cmdstream_screen_init_v7(struct panfrost_screen *screen);
 
 #define perf_debug(dev, ...) \
         do { \

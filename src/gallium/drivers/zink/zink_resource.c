@@ -79,19 +79,6 @@ debug_describe_zink_resource_object(char *buf, const struct zink_resource_object
 }
 
 static uint32_t
-get_resource_usage(struct zink_resource *res)
-{
-   bool reads = zink_batch_usage_exists(res->obj->reads);
-   bool writes = zink_batch_usage_exists(res->obj->writes);
-   uint32_t batch_uses = 0;
-   if (reads)
-      batch_uses |= ZINK_RESOURCE_ACCESS_READ;
-   if (writes)
-      batch_uses |= ZINK_RESOURCE_ACCESS_WRITE;
-   return batch_uses;
-}
-
-static uint32_t
 mem_hash(const void *key)
 {
    const struct mem_key *mkey = key;
@@ -1031,7 +1018,7 @@ invalidate_buffer(struct zink_context *ctx, struct zink_resource *res)
    res->bind_history &= ~ZINK_RESOURCE_USAGE_STREAMOUT;
 
    util_range_set_empty(&res->valid_buffer_range);
-   if (!get_resource_usage(res))
+   if (!zink_resource_has_usage(res))
       return false;
 
    struct zink_resource_object *old_obj = res->obj;
@@ -1040,20 +1027,13 @@ invalidate_buffer(struct zink_context *ctx, struct zink_resource *res)
       debug_printf("new backing resource alloc failed!");
       return false;
    }
-   bool needs_unref = true;
-   if (zink_batch_usage_exists(old_obj->reads) ||
-       zink_batch_usage_exists(old_obj->writes)) {
-      zink_batch_reference_resource_move(&ctx->batch, res);
-      needs_unref = false;
-   }
    res->obj = new_obj;
    res->access_stage = 0;
    res->access = 0;
    res->unordered_barrier = false;
    zink_resource_rebind(ctx, res);
    zink_descriptor_set_refs_clear(&old_obj->desc_set_refs, old_obj);
-   if (needs_unref)
-      zink_resource_object_reference(screen, &old_obj, NULL);
+   zink_batch_reference_resource_move(&ctx->batch, res);
    return true;
 }
 
@@ -1088,13 +1068,6 @@ zink_transfer_copy_bufimage(struct zink_context *ctx,
       util_blitter_copy_texture(ctx->blitter, &dst->base.b, trans->base.b.level,
                                 x, box.y, box.z, &src->base.b,
                                 0, &box);
-}
-
-bool
-zink_resource_has_usage(struct zink_resource *res, enum zink_resource_access usage)
-{
-   uint32_t batch_uses = get_resource_usage(res);
-   return batch_uses & usage;
 }
 
 ALWAYS_INLINE static void
@@ -1186,15 +1159,13 @@ buffer_transfer_map(struct zink_context *ctx, struct zink_resource *res, unsigne
    }
 
    if ((usage & PIPE_MAP_WRITE) &&
-       (usage & PIPE_MAP_DISCARD_RANGE || (!(usage & PIPE_MAP_READ) && zink_resource_has_usage(res, ZINK_RESOURCE_ACCESS_RW))) &&
+       (usage & PIPE_MAP_DISCARD_RANGE || (!(usage & PIPE_MAP_READ) && zink_resource_has_usage(res))) &&
        ((!res->obj->host_visible) || !(usage & (PIPE_MAP_UNSYNCHRONIZED | PIPE_MAP_PERSISTENT)))) {
-
       /* Check if mapping this buffer would cause waiting for the GPU.
        */
 
       if (!res->obj->host_visible ||
-          !zink_batch_usage_check_completion(ctx, res->obj->reads) ||
-          !zink_batch_usage_check_completion(ctx, res->obj->writes)) {
+          !zink_resource_usage_check_completion(screen, res, ZINK_RESOURCE_ACCESS_RW)) {
          /* Do a wait-free write-only transfer using a temporary buffer. */
          unsigned offset;
 
@@ -1222,7 +1193,7 @@ buffer_transfer_map(struct zink_context *ctx, struct zink_resource *res, unsigne
          /* sparse/device-local will always need to wait since it has to copy */
          if (!res->obj->host_visible)
             return NULL;
-         if (!zink_batch_usage_check_completion(ctx, res->obj->writes))
+         if (!zink_resource_usage_check_completion(screen, res, ZINK_RESOURCE_ACCESS_WRITE))
             return NULL;
       } else if (!res->obj->host_visible) {
          trans->staging_res = pipe_buffer_create(&screen->base, PIPE_BIND_LINEAR, PIPE_USAGE_STAGING, box->x + box->width);
@@ -1233,7 +1204,7 @@ buffer_transfer_map(struct zink_context *ctx, struct zink_resource *res, unsigne
          res = staging_res;
          zink_fence_wait(&ctx->base);
       } else
-         zink_batch_usage_wait(ctx, res->obj->writes);
+         zink_resource_usage_wait(ctx, res, ZINK_RESOURCE_ACCESS_WRITE);
    }
 
    if (!ptr) {
@@ -1344,8 +1315,8 @@ zink_transfer_map(struct pipe_context *pctx,
 
          if (usage & PIPE_MAP_READ) {
             /* force multi-context sync */
-            if (zink_batch_usage_is_unflushed(res->obj->writes))
-               zink_batch_usage_wait(ctx, res->obj->writes);
+            if (zink_resource_usage_is_unflushed_write(res))
+               zink_resource_usage_wait(ctx, res, ZINK_RESOURCE_ACCESS_WRITE);
             zink_transfer_copy_bufimage(ctx, staging_res, res, trans);
             /* need to wait for rendering to finish */
             zink_fence_wait(pctx);
@@ -1359,11 +1330,11 @@ zink_transfer_map(struct pipe_context *pctx,
          base = map_resource(screen, res);
          if (!base)
             return NULL;
-         if (zink_resource_has_usage(res, ZINK_RESOURCE_ACCESS_RW)) {
+         if (zink_resource_has_usage(res)) {
             if (usage & PIPE_MAP_WRITE)
                zink_fence_wait(pctx);
             else
-               zink_batch_usage_wait(ctx, res->obj->writes);
+               zink_resource_usage_wait(ctx, res, ZINK_RESOURCE_ACCESS_WRITE);
          }
          VkImageSubresource isr = {
             res->obj->modifier_aspect ? res->obj->modifier_aspect : res->aspect,
@@ -1565,7 +1536,7 @@ zink_resource_object_init_storage(struct zink_context *ctx, struct zink_resource
       struct zink_resource staging = *res;
       staging.obj = old_obj;
       bool needs_unref = true;
-      if (get_resource_usage(res)) {
+      if (zink_resource_has_usage(res)) {
          zink_batch_reference_resource_move(&ctx->batch, res);
          needs_unref = false;
       }

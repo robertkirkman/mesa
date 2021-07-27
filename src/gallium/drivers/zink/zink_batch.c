@@ -36,8 +36,7 @@ zink_reset_batch_state(struct zink_context *ctx, struct zink_batch_state *bs)
    /* unref all used resources */
    set_foreach_remove(bs->resources, entry) {
       struct zink_resource_object *obj = (struct zink_resource_object *)entry->key;
-      zink_batch_usage_unset(&obj->reads, bs);
-      zink_batch_usage_unset(&obj->writes, bs);
+      zink_resource_object_usage_unset(obj, bs);
       zink_resource_object_reference(screen, &obj, NULL);
    }
 
@@ -102,7 +101,6 @@ zink_reset_batch_state(struct zink_context *ctx, struct zink_batch_state *bs)
    bs->submit_count++;
    bs->fence.batch_id = 0;
    bs->usage.usage = 0;
-   bs->draw_count = bs->compute_count = 0;
 }
 
 void
@@ -566,6 +564,7 @@ zink_end_batch(struct zink_context *ctx, struct zink_batch *batch)
       if (_mesa_hash_table_num_entries(&ctx->batch_states) > 50)
          ctx->oom_flush = true;
    }
+   batch->work_count = 0;
 
    if (screen->device_lost)
       return;
@@ -584,13 +583,9 @@ zink_end_batch(struct zink_context *ctx, struct zink_batch *batch)
 void
 zink_batch_resource_usage_set(struct zink_batch *batch, struct zink_resource *res, bool write)
 {
-   if (write) {
-      zink_batch_usage_set(&res->obj->writes, batch->state);
-      if (res->scanout_obj)
-         batch->state->scanout_flush = true;
-   } else {
-      zink_batch_usage_set(&res->obj->reads, batch->state);
-   }
+   zink_resource_usage_set(res, batch->state, write);
+   if (write && res->scanout_obj)
+      batch->state->scanout_flush = true;
    /* multiple array entries are fine */
    if (!res->obj->coherent && res->obj->persistent_maps)
       util_dynarray_append(&batch->state->persistent_resources, struct zink_resource_object*, res->obj);
@@ -707,6 +702,17 @@ zink_batch_reference_image_view(struct zink_batch *batch,
       zink_batch_reference_bufferview(batch, image_view->buffer_view);
    else
       zink_batch_reference_surface(batch, image_view->surface);
+}
+
+bool
+zink_screen_usage_check_completion(struct zink_screen *screen, const struct zink_batch_usage *u)
+{
+   if (!zink_batch_usage_exists(u))
+      return true;
+   if (zink_batch_usage_is_unflushed(u))
+      return false;
+
+   return zink_screen_batch_id_wait(screen, u->usage, 0);
 }
 
 bool

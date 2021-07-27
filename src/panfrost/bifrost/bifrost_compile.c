@@ -2457,7 +2457,6 @@ bi_tex_op(nir_texop op)
         case nir_texop_txf:
         case nir_texop_txf_ms:
         case nir_texop_txf_ms_fb:
-        case nir_texop_txf_ms_mcs:
         case nir_texop_tg4:
                 return BIFROST_TEX_OP_FETCH;
         case nir_texop_txs:
@@ -3191,7 +3190,6 @@ bi_optimize_nir(nir_shader *nir, unsigned gpu_id, bool is_blend)
         nir_lower_tex_options lower_tex_options = {
                 .lower_txs_lod = true,
                 .lower_txp = ~0,
-                .lower_tex_without_implicit_lod = true,
                 .lower_tg4_broadcom_swizzle = true,
                 .lower_txd = true,
         };

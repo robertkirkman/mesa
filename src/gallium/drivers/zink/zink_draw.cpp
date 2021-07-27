@@ -130,7 +130,7 @@ zink_bind_vertex_buffers(struct zink_batch *batch, struct zink_context *ctx)
    VkBuffer buffers[PIPE_MAX_ATTRIBS];
    VkDeviceSize buffer_offsets[PIPE_MAX_ATTRIBS];
    VkDeviceSize buffer_strides[PIPE_MAX_ATTRIBS];
-   const struct zink_vertex_elements_state *elems = ctx->element_state;
+   struct zink_vertex_elements_state *elems = ctx->element_state;
    struct zink_screen *screen = zink_screen(ctx->base.screen);
 
    if (!elems->hw_state.num_bindings)
@@ -143,12 +143,16 @@ zink_bind_vertex_buffers(struct zink_batch *batch, struct zink_context *ctx)
       if (vb->buffer.resource) {
          buffers[i] = ctx->vbufs[buffer_id];
          assert(buffers[i]);
+         if (screen->info.have_EXT_vertex_input_dynamic_state)
+            elems->hw_state.dynbindings[i].stride = vb->stride;
          buffer_offsets[i] = ctx->vbuf_offsets[buffer_id];
          buffer_strides[i] = vb->stride;
       } else {
          buffers[i] = zink_resource(ctx->dummy_vertex_buffer)->obj->buffer;
          buffer_offsets[i] = 0;
          buffer_strides[i] = 0;
+         if (screen->info.have_EXT_vertex_input_dynamic_state)
+            elems->hw_state.dynbindings[i].stride = 0;
       }
    }
 
@@ -160,6 +164,13 @@ zink_bind_vertex_buffers(struct zink_batch *batch, struct zink_context *ctx)
       vkCmdBindVertexBuffers(batch->state->cmdbuf, 0,
                              elems->hw_state.num_bindings,
                              buffers, buffer_offsets);
+
+   if (screen->info.have_EXT_vertex_input_dynamic_state)
+      screen->vk.CmdSetVertexInputEXT(batch->state->cmdbuf,
+                                      elems->hw_state.num_bindings, elems->hw_state.dynbindings,
+                                      elems->hw_state.num_attribs, elems->hw_state.dynattribs);
+
+   ctx->vertex_state_changed = false;
    ctx->vertex_buffers_dirty = false;
 }
 
@@ -420,7 +431,7 @@ zink_draw_vbo(struct pipe_context *pctx,
    bool mode_changed = ctx->gfx_pipeline_state.mode != dinfo->mode;
    bool reads_drawid = ctx->shader_reads_drawid;
    bool reads_basevertex = ctx->shader_reads_basevertex;
-   unsigned draw_count = ctx->batch.state->draw_count;
+   unsigned work_count = ctx->batch.work_count;
    enum pipe_prim_type mode = dinfo->mode;
 
    update_barriers(ctx, false);
@@ -690,7 +701,7 @@ zink_draw_vbo(struct pipe_context *pctx,
    }
 
    bool needs_drawid = reads_drawid && ctx->drawid_broken;
-   draw_count += num_draws;
+   work_count += num_draws;
    if (index_size > 0) {
       if (dindirect && dindirect->buffer) {
          assert(num_draws == 1);
@@ -752,11 +763,10 @@ zink_draw_vbo(struct pipe_context *pctx,
       screen->vk.CmdEndTransformFeedbackEXT(batch->state->cmdbuf, 0, ctx->num_so_targets, counter_buffers, counter_buffer_offsets);
    }
    batch->has_work = true;
-   ctx->batch.state->draw_count = draw_count;
+   ctx->batch.work_count = work_count;
    /* flush if there's >100k draws */
-   if (unlikely(ctx->batch.state->resource_size >= screen->total_video_mem / 2 ||
-                draw_count >= 100000))
-      pctx->flush(pctx, NULL, PIPE_FLUSH_ASYNC);
+   if (unlikely(work_count >= 30000) || ctx->oom_flush)
+      pctx->flush(pctx, NULL, 0);
 }
 
 template <bool BATCH_CHANGED>
@@ -800,7 +810,7 @@ zink_launch_grid(struct pipe_context *pctx, const struct pipe_grid_info *info)
                          offsetof(struct zink_cs_push_constant, work_dim), sizeof(uint32_t),
                          &info->work_dim);
 
-   batch->state->compute_count++;
+   batch->work_count++;
    if (info->indirect) {
       vkCmdDispatchIndirect(batch->state->cmdbuf, zink_resource(info->indirect)->obj->buffer, info->indirect_offset);
       zink_batch_reference_resource_rw(batch, zink_resource(info->indirect), false);
@@ -808,9 +818,8 @@ zink_launch_grid(struct pipe_context *pctx, const struct pipe_grid_info *info)
       vkCmdDispatch(batch->state->cmdbuf, info->grid[0], info->grid[1], info->grid[2]);
    batch->has_work = true;
    /* flush if there's >100k computes */
-   if (unlikely(ctx->batch.state->resource_size >= zink_screen(ctx->base.screen)->total_video_mem / 2 ||
-                ctx->batch.state->compute_count >= 100000))
-      pctx->flush(pctx, NULL, PIPE_FLUSH_ASYNC);
+   if (unlikely(ctx->batch.work_count >= 30000) || ctx->oom_flush)
+      pctx->flush(pctx, NULL, 0);
 }
 
 template <zink_multidraw HAS_MULTIDRAW, zink_dynamic_state HAS_DYNAMIC_STATE, bool BATCH_CHANGED>

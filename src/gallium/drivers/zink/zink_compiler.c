@@ -690,7 +690,10 @@ zink_shader_compile(struct zink_screen *screen, struct zink_shader *zs, nir_shad
    }
 
    /* TODO: use a separate mem ctx here for ralloc */
-   if (zs->nir->info.stage < MESA_SHADER_FRAGMENT) {
+   switch (zs->nir->info.stage) {
+   case MESA_SHADER_VERTEX:
+   case MESA_SHADER_TESS_EVAL:
+   case MESA_SHADER_GEOMETRY:
       if (zink_vs_key(key)->last_vertex_stage) {
          if (zs->streamout.have_xfb)
             streamout = &zs->streamout;
@@ -702,7 +705,8 @@ zink_shader_compile(struct zink_screen *screen, struct zink_shader *zs, nir_shad
             NIR_PASS_V(nir, lower_drawid);
          }
       }
-   } else if (zs->nir->info.stage == MESA_SHADER_FRAGMENT) {
+      break;
+   case MESA_SHADER_FRAGMENT:
       if (!zink_fs_key(key)->samples &&
           nir->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK)) {
          /* VK will always use gl_SampleMask[] values even if sample count is 0,
@@ -723,6 +727,8 @@ zink_shader_compile(struct zink_screen *screen, struct zink_shader *zs, nir_shad
          NIR_PASS_V(nir, nir_lower_texcoord_replace, zink_fs_key(key)->coord_replace_bits,
                     false, zink_fs_key(key)->coord_replace_yinvert);
       }
+      break;
+   default: break;
    }
    NIR_PASS_V(nir, nir_convert_from_ssa, true);
 
@@ -844,7 +850,7 @@ unbreak_bos(nir_shader *shader)
       const struct glsl_type *type = glsl_without_array(var->type);
       if (type_is_counter(type))
          continue;
-      unsigned size = glsl_count_attribute_slots(type, false);
+      unsigned size = glsl_count_attribute_slots(glsl_type_is_array(var->type) ? var->type : type, false);
       if (var->data.mode == nir_var_mem_ubo)
          max_ubo_size = MAX2(max_ubo_size, size);
       else

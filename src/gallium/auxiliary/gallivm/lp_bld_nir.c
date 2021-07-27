@@ -1021,7 +1021,7 @@ static void visit_alu(struct lp_build_nir_context *bld_base, const nir_alu_instr
          result[i] = cast_type(bld_base, src[i], nir_op_infos[instr->op].input_types[i], src_bit_size[i]);
       }
    } else if (instr->op == nir_op_fsum4 || instr->op == nir_op_fsum3 || instr->op == nir_op_fsum2) {
-      for (unsigned c = 0; c < nir_src_num_components(instr->src[0].src); c++) {
+      for (unsigned c = 0; c < nir_op_infos[instr->op].input_sizes[0]; c++) {
          LLVMValueRef temp_chan = LLVMBuildExtractValue(gallivm->builder,
                                                           src[0], c, "");
          temp_chan = cast_type(bld_base, temp_chan, nir_op_infos[instr->op].input_types[0], src_bit_size[0]);
@@ -2349,7 +2349,7 @@ void lp_build_opt_nir(struct nir_shader *nir)
       NIR_PASS(progress, nir, nir_opt_algebraic);
       NIR_PASS(progress, nir, nir_lower_pack);
 
-      nir_lower_tex_options options = { .lower_tex_without_implicit_lod = true };
+      nir_lower_tex_options options = { 0, };
       NIR_PASS_V(nir, nir_lower_tex, &options);
 
       const nir_lower_subgroups_options subgroups_options = {
