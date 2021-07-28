@@ -327,6 +327,9 @@ panvk_EndCommandBuffer(VkCommandBuffer commandBuffer)
 {
    VK_FROM_HANDLE(panvk_cmd_buffer, cmdbuf, commandBuffer);
 
+   if (cmdbuf->state.batch)
+      panvk_cmd_close_batch(cmdbuf);
+
    cmdbuf->status = PANVK_CMD_BUFFER_STATUS_EXECUTABLE;
 
    return cmdbuf->record_result;
@@ -804,10 +807,11 @@ panvk_cmd_close_batch(struct panvk_cmd_buffer *cmdbuf)
 
    list_addtail(&cmdbuf->state.batch->node, &cmdbuf->batches);
 
-   struct pan_tls_info tlsinfo = {
-      .tls.size = cmdbuf->state.pipeline->tls_size,
-      .wls.size = cmdbuf->state.pipeline->wls_size,
-   };
+   struct pan_tls_info tlsinfo = {};
+   if (cmdbuf->state.pipeline) {
+      tlsinfo.tls.size = cmdbuf->state.pipeline->tls_size;
+      tlsinfo.wls.size = cmdbuf->state.pipeline->wls_size;
+   }
 
    if (tlsinfo.tls.size) {
       tlsinfo.tls.ptr =
@@ -847,7 +851,6 @@ panvk_cmd_close_batch(struct panvk_cmd_buffer *cmdbuf)
          panvk_emit_fb(cmdbuf->device,
                        cmdbuf->state.batch,
                        cmdbuf->state.subpass,
-                       cmdbuf->state.pipeline,
                        cmdbuf->state.framebuffer,
                        cmdbuf->state.clear,
                        &tlsinfo, &cmdbuf->state.batch->tiler.ctx,
@@ -905,12 +908,9 @@ panvk_CmdNextSubpass(VkCommandBuffer cmd, VkSubpassContents contents)
 }
 
 
-static void
+void
 panvk_cmd_alloc_fb_desc(struct panvk_cmd_buffer *cmdbuf)
 {
-   if (!cmdbuf->state.pipeline->fs.required)
-      return;
-
    struct panvk_batch *batch = cmdbuf->state.batch;
 
    if (batch->fb.desc.gpu)
@@ -931,7 +931,7 @@ panvk_cmd_alloc_fb_desc(struct panvk_cmd_buffer *cmdbuf)
    batch->fb.desc.gpu |= tags;
 }
 
-static void
+void
 panvk_cmd_alloc_tls_desc(struct panvk_cmd_buffer *cmdbuf)
 {
    const struct panfrost_device *pdev =
@@ -1340,7 +1340,18 @@ panvk_CmdDraw(VkCommandBuffer commandBuffer,
 
    struct panvk_batch *batch = cmdbuf->state.batch;
 
-   panvk_cmd_alloc_fb_desc(cmdbuf);
+   /* There are only 16 bits in the descriptor for the job ID, make sure all
+    * the 3 (2 in Bifrost) jobs in this draw are in the same batch.
+    */
+   if (batch->scoreboard.job_index >= (UINT16_MAX - 3)) {
+      panvk_cmd_close_batch(cmdbuf);
+      panvk_cmd_open_batch(cmdbuf);
+      batch = cmdbuf->state.batch;
+   }
+
+   if (cmdbuf->state.pipeline->fs.required)
+      panvk_cmd_alloc_fb_desc(cmdbuf);
+
    panvk_cmd_alloc_tls_desc(cmdbuf);
    panvk_cmd_prepare_ubos(cmdbuf);
    panvk_cmd_prepare_textures(cmdbuf);

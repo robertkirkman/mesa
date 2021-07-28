@@ -468,31 +468,6 @@ bi_update_worklist(struct bi_worklist st, unsigned idx)
         free(st.dependents[idx]);
 }
 
-/* To work out the back-to-back flag, we need to detect branches and
- * "fallthrough" branches, implied in the last clause of a block that falls
- * through to another block with *multiple predecessors*. */
-
-static bool
-bi_back_to_back(bi_block *block)
-{
-        /* Last block of a program */
-        if (!block->successors[0]) {
-                assert(!block->successors[1]);
-                return false;
-        }
-
-        /* Multiple successors? We're branching */
-        if (block->successors[1])
-                return false;
-
-        struct bi_block *succ = block->successors[0];
-        assert(succ->predecessors);
-        unsigned count = succ->predecessors->entries;
-
-        /* Back to back only if the successor has only a single predecessor */
-        return (count == 1);
-}
-
 /* Scheduler predicates */
 
 /* IADDC.i32 can implement IADD.u32 if no saturation or swizzling is in use */
@@ -614,8 +589,8 @@ bi_reads_temps(bi_instr *ins, unsigned src)
 {
         switch (ins->op) {
         /* Cannot permute a temporary */
+        case BI_OPCODE_CLPER_I32:
         case BI_OPCODE_CLPER_V6_I32:
-        case BI_OPCODE_CLPER_V7_I32:
                 return src != 0;
         case BI_OPCODE_IMULD:
                 return false;
@@ -1776,7 +1751,7 @@ bi_schedule_block(bi_context *ctx, bi_block *block)
          * the rest are implicitly true */
         if (!list_is_empty(&block->clauses)) {
                 bi_clause *last_clause = list_last_entry(&block->clauses, bi_clause, link);
-                if (!bi_back_to_back(block))
+                if (bi_reconverge_branches(block))
                         last_clause->flow_control = BIFROST_FLOW_NBTB_UNCONDITIONAL;
         }
 
@@ -1905,7 +1880,7 @@ bi_add_nop_for_atest(bi_context *ctx)
          * execute */
 
         bi_instr *I = rzalloc(ctx, bi_instr);
-        I->op = BI_OPCODE_NOP_I32;
+        I->op = BI_OPCODE_NOP;
         I->dest[0] = bi_null();
 
         bi_clause *new_clause = ralloc(ctx, bi_clause);
@@ -1937,27 +1912,7 @@ bi_schedule(bi_context *ctx)
 
 #ifndef NDEBUG
 
-static bi_builder *
-bit_builder(void *memctx)
-{
-        bi_context *ctx = rzalloc(memctx, bi_context);
-        list_inithead(&ctx->blocks);
-
-        bi_block *blk = rzalloc(ctx, bi_block);
-
-        blk->predecessors = _mesa_set_create(blk,
-                        _mesa_hash_pointer,
-                        _mesa_key_pointer_equal);
-
-        list_addtail(&blk->link, &ctx->blocks);
-        list_inithead(&blk->instructions);
-
-        bi_builder *b = rzalloc(memctx, bi_builder);
-        b->shader = ctx;
-        b->cursor = bi_after_block(blk);
-        return b;
-}
-
+#include "bi_test.h"
 #define TMP() bi_temp(b->shader)
 
 static void

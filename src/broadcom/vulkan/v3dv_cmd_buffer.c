@@ -398,6 +398,13 @@ cmd_buffer_can_merge_subpass(struct v3dv_cmd_buffer *cmd_buffer,
    struct v3dv_subpass *prev_subpass = &state->pass->subpasses[state->subpass_idx];
    struct v3dv_subpass *subpass = &state->pass->subpasses[subpass_idx];
 
+   /* Don't merge if the subpasses have different view masks, since in that
+    * case the framebuffer setup is different and we need to emit different
+    * RCLs.
+    */
+   if (subpass->view_mask != prev_subpass->view_mask)
+      return false;
+
    /* Because the list of subpass attachments can include VK_ATTACHMENT_UNUSED,
     * we need to check that for each subpass all its used attachments are
     * used by the other subpass.
@@ -1497,10 +1504,26 @@ cmd_buffer_subpass_create_job(struct v3dv_cmd_buffer *cmd_buffer,
       v3dv_X(job->device, framebuffer_compute_internal_bpp_msaa)
          (framebuffer, subpass, &internal_bpp, &msaa);
 
+      /* From the Vulkan spec:
+       *
+       *    "If the render pass uses multiview, then layers must be one and
+       *     each attachment requires a number of layers that is greater than
+       *     the maximum bit index set in the view mask in the subpasses in
+       *     which it is used."
+       *
+       * So when multiview is enabled, we take the number of layers from the
+       * last bit set in the view mask.
+       */
+      uint32_t layers = framebuffer->layers;
+      if (subpass->view_mask != 0) {
+         assert(framebuffer->layers == 1);
+         layers = util_last_bit(subpass->view_mask);
+      }
+
       v3dv_job_start_frame(job,
                            framebuffer->width,
                            framebuffer->height,
-                           framebuffer->layers,
+                           layers,
                            true,
                            subpass->color_count,
                            internal_bpp,
@@ -2096,6 +2119,7 @@ update_gfx_uniform_state(struct v3dv_cmd_buffer *cmd_buffer,
    const bool has_new_viewport = dirty_uniform_state & V3DV_CMD_DIRTY_VIEWPORT;
    const bool has_new_push_constants = dirty_uniform_state & V3DV_CMD_DIRTY_PUSH_CONSTANTS;
    const bool has_new_descriptors = dirty_uniform_state & V3DV_CMD_DIRTY_DESCRIPTOR_SETS;
+   const bool has_new_view_index = dirty_uniform_state & V3DV_CMD_DIRTY_VIEW_INDEX;
 
    /* VK_SHADER_STAGE_FRAGMENT_BIT */
    const bool has_new_descriptors_fs =
@@ -2107,8 +2131,10 @@ update_gfx_uniform_state(struct v3dv_cmd_buffer *cmd_buffer,
       (cmd_buffer->state.dirty_push_constants_stages & VK_SHADER_STAGE_FRAGMENT_BIT);
 
    const bool needs_fs_update = has_new_pipeline ||
+                                has_new_view_index ||
                                 has_new_push_constants_fs ||
-                                has_new_descriptors_fs;
+                                has_new_descriptors_fs ||
+                                has_new_view_index;
 
    if (needs_fs_update) {
       struct v3dv_shader_variant *fs_variant =
@@ -2131,6 +2157,7 @@ update_gfx_uniform_state(struct v3dv_cmd_buffer *cmd_buffer,
           VK_SHADER_STAGE_GEOMETRY_BIT);
 
       const bool needs_gs_update = has_new_viewport ||
+                                   has_new_view_index ||
                                    has_new_pipeline ||
                                    has_new_push_constants_gs ||
                                    has_new_descriptors_gs;
@@ -2160,6 +2187,7 @@ update_gfx_uniform_state(struct v3dv_cmd_buffer *cmd_buffer,
       (cmd_buffer->state.dirty_push_constants_stages & VK_SHADER_STAGE_VERTEX_BIT);
 
    const bool needs_vs_update = has_new_viewport ||
+                                has_new_view_index ||
                                 has_new_pipeline ||
                                 has_new_push_constants_vs ||
                                 has_new_descriptors_vs;
@@ -2177,6 +2205,8 @@ update_gfx_uniform_state(struct v3dv_cmd_buffer *cmd_buffer,
       cmd_buffer->state.uniforms.vs_bin =
          v3dv_write_uniforms(cmd_buffer, pipeline, vs_bin_variant);
    }
+
+   cmd_buffer->state.dirty &= ~V3DV_CMD_DIRTY_VIEW_INDEX;
 }
 
 /* This stores command buffer state that we might be about to stomp for
@@ -2462,7 +2492,8 @@ v3dv_cmd_buffer_emit_pre_draw(struct v3dv_cmd_buffer *cmd_buffer)
       *dirty & (V3DV_CMD_DIRTY_PIPELINE |
                 V3DV_CMD_DIRTY_PUSH_CONSTANTS |
                 V3DV_CMD_DIRTY_DESCRIPTOR_SETS |
-                V3DV_CMD_DIRTY_VIEWPORT);
+                V3DV_CMD_DIRTY_VIEWPORT |
+                V3DV_CMD_DIRTY_VIEW_INDEX);
 
    if (dirty_uniform_state)
       update_gfx_uniform_state(cmd_buffer, dirty_uniform_state);
@@ -2513,12 +2544,32 @@ v3dv_cmd_buffer_emit_pre_draw(struct v3dv_cmd_buffer *cmd_buffer)
    cmd_buffer->state.dirty &= ~V3DV_CMD_DIRTY_PIPELINE;
 }
 
+static inline void
+cmd_buffer_set_view_index(struct v3dv_cmd_buffer *cmd_buffer,
+                          uint32_t view_index)
+{
+   cmd_buffer->state.view_index = view_index;
+   cmd_buffer->state.dirty |= V3DV_CMD_DIRTY_VIEW_INDEX;
+}
+
 static void
 cmd_buffer_draw(struct v3dv_cmd_buffer *cmd_buffer,
                 struct v3dv_draw_info *info)
 {
-   v3dv_cmd_buffer_emit_pre_draw(cmd_buffer);
-   v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw)(cmd_buffer, info);
+
+   struct v3dv_render_pass *pass = cmd_buffer->state.pass;
+   if (likely(!pass->multiview_enabled)) {
+      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer);
+      v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw)(cmd_buffer, info);
+      return;
+   }
+
+   uint32_t view_mask = pass->subpasses[cmd_buffer->state.subpass_idx].view_mask;
+   while (view_mask) {
+      cmd_buffer_set_view_index(cmd_buffer, u_bit_scan(&view_mask));
+      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer);
+      v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw)(cmd_buffer, info);
+   }
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -2554,9 +2605,23 @@ v3dv_CmdDrawIndexed(VkCommandBuffer commandBuffer,
 
    V3DV_FROM_HANDLE(v3dv_cmd_buffer, cmd_buffer, commandBuffer);
 
-   v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw_indexed)
-      (cmd_buffer, indexCount, instanceCount,
-       firstIndex, vertexOffset, firstInstance);
+   struct v3dv_render_pass *pass = cmd_buffer->state.pass;
+   if (likely(!pass->multiview_enabled)) {
+      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer);
+      v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw_indexed)
+         (cmd_buffer, indexCount, instanceCount,
+          firstIndex, vertexOffset, firstInstance);
+      return;
+   }
+
+   uint32_t view_mask = pass->subpasses[cmd_buffer->state.subpass_idx].view_mask;
+   while (view_mask) {
+      cmd_buffer_set_view_index(cmd_buffer, u_bit_scan(&view_mask));
+      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer);
+      v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw_indexed)
+         (cmd_buffer, indexCount, instanceCount,
+          firstIndex, vertexOffset, firstInstance);
+   }
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -2573,8 +2638,21 @@ v3dv_CmdDrawIndirect(VkCommandBuffer commandBuffer,
    V3DV_FROM_HANDLE(v3dv_cmd_buffer, cmd_buffer, commandBuffer);
    V3DV_FROM_HANDLE(v3dv_buffer, buffer, _buffer);
 
-   v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw_indirect)
-      (cmd_buffer, buffer, offset, drawCount, stride);
+   struct v3dv_render_pass *pass = cmd_buffer->state.pass;
+   if (likely(!pass->multiview_enabled)) {
+      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer);
+      v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw_indirect)
+         (cmd_buffer, buffer, offset, drawCount, stride);
+      return;
+   }
+
+   uint32_t view_mask = pass->subpasses[cmd_buffer->state.subpass_idx].view_mask;
+   while (view_mask) {
+      cmd_buffer_set_view_index(cmd_buffer, u_bit_scan(&view_mask));
+      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer);
+      v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw_indirect)
+         (cmd_buffer, buffer, offset, drawCount, stride);
+   }
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -2591,8 +2669,21 @@ v3dv_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer,
    V3DV_FROM_HANDLE(v3dv_cmd_buffer, cmd_buffer, commandBuffer);
    V3DV_FROM_HANDLE(v3dv_buffer, buffer, _buffer);
 
-   v3dv_X(cmd_buffer->device, cmd_buffer_emit_indexed_indirect)
-      (cmd_buffer, buffer, offset, drawCount, stride);
+   struct v3dv_render_pass *pass = cmd_buffer->state.pass;
+   if (likely(!pass->multiview_enabled)) {
+      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer);
+      v3dv_X(cmd_buffer->device, cmd_buffer_emit_indexed_indirect)
+         (cmd_buffer, buffer, offset, drawCount, stride);
+      return;
+   }
+
+   uint32_t view_mask = pass->subpasses[cmd_buffer->state.subpass_idx].view_mask;
+   while (view_mask) {
+      cmd_buffer_set_view_index(cmd_buffer, u_bit_scan(&view_mask));
+      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer);
+      v3dv_X(cmd_buffer->device, cmd_buffer_emit_indexed_indirect)
+         (cmd_buffer, buffer, offset, drawCount, stride);
+   }
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -2970,6 +3061,27 @@ v3dv_cmd_buffer_end_query(struct v3dv_cmd_buffer *cmd_buffer,
 
       info->pool = pool;
       info->query = query;
+
+      /* From the Vulkan spec:
+       *
+       *   "If queries are used while executing a render pass instance that has
+       *    multiview enabled, the query uses N consecutive query indices in
+       *    the query pool (starting at query) where N is the number of bits set
+       *    in the view mask in the subpass the query is used in. How the
+       *    numerical results of the query are distributed among the queries is
+       *    implementation-dependent."
+       *
+       * In our case, only the first query is used but this means we still need
+       * to flag the other queries as available so we don't emit errors when
+       * the applications attempt to retrive values from them.
+       */
+      struct v3dv_render_pass *pass = cmd_buffer->state.pass;
+      if (!pass->multiview_enabled) {
+         info->count = 1;
+      } else {
+         struct v3dv_subpass *subpass = &pass->subpasses[state->subpass_idx];
+         info->count = util_bitcount(subpass->view_mask);
+      }
    } else {
       /* Otherwise, schedule the CPU job immediately */
       struct v3dv_job *job =
@@ -2980,6 +3092,10 @@ v3dv_cmd_buffer_end_query(struct v3dv_cmd_buffer *cmd_buffer,
 
       job->cpu.query_end.pool = pool;
       job->cpu.query_end.query = query;
+
+      /* Multiview queries cannot cross subpass boundaries */
+      job->cpu.query_end.count = 1;
+
       list_addtail(&job->list_link, &cmd_buffer->jobs);
    }
 
@@ -3158,7 +3274,8 @@ v3dv_CmdWriteTimestamp(VkCommandBuffer commandBuffer,
    /* If this is called inside a render pass we need to finish the current
     * job here...
     */
-   if (cmd_buffer->state.pass)
+   struct v3dv_render_pass *pass = cmd_buffer->state.pass;
+   if (pass)
       v3dv_cmd_buffer_finish_job(cmd_buffer);
 
    struct v3dv_job *job =
@@ -3169,6 +3286,14 @@ v3dv_CmdWriteTimestamp(VkCommandBuffer commandBuffer,
 
    job->cpu.query_timestamp.pool = query_pool;
    job->cpu.query_timestamp.query = query;
+
+   if (!pass || !pass->multiview_enabled) {
+      job->cpu.query_timestamp.count = 1;
+   } else {
+      struct v3dv_subpass *subpass =
+         &pass->subpasses[cmd_buffer->state.subpass_idx];
+      job->cpu.query_timestamp.count = util_bitcount(subpass->view_mask);
+   }
 
    list_addtail(&job->list_link, &cmd_buffer->jobs);
    cmd_buffer->state.job = NULL;

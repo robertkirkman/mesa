@@ -28,36 +28,30 @@
  * adding a new pattern here, check why you need it and whether we can avoid
  * generating the constant BIR at all. */
 
-static uint32_t
+uint32_t
 bi_fold_constant(bi_instr *I, bool *unsupported)
 {
-        uint32_t a = I->src[0].value;
-        uint32_t b = I->src[1].value;
+        /* We can only fold instructions where all sources are constant */
+        bi_foreach_src(I, s) {
+                enum bi_index_type type = I->src[s].type;
 
+                if (!(type == BI_INDEX_NULL || type == BI_INDEX_CONSTANT)) {
+                        *unsupported = true;
+                        return 0;
+                }
+        }
+
+        /* Grab the sources */
+        uint32_t a = bi_apply_swizzle(I->src[0].value, I->src[0].swizzle);
+        uint32_t b = bi_apply_swizzle(I->src[1].value, I->src[1].swizzle);
+
+        /* Evaluate the instruction */
         switch (I->op) {
         case BI_OPCODE_SWZ_V2I16:
-        {
-                uint16_t lo = (a & 0xFFFF);
-                uint16_t hi = (a >> 16);
-
-                enum bi_swizzle swz = I->src[0].swizzle;
-                assert(swz < BI_SWIZZLE_H11);
-
-                /* Note order is H00, H01, H10, H11 */
-                return (((swz & (1 << 1)) ? hi : lo) << 0) |
-                        (((swz & (1 << 0)) ? hi : lo) << 16);
-        }
+                return a;
 
         case BI_OPCODE_MKVEC_V2I16:
-        {
-                bool hi_a = I->src[0].swizzle & BI_SWIZZLE_H11;
-                bool hi_b = I->src[1].swizzle & BI_SWIZZLE_H11;
-
-                uint16_t lo = (hi_a ? (a >> 16) : (a & 0xFFFF));
-                uint16_t hi = (hi_b ? (b >> 16) : (b & 0xFFFF));
-
-                return (hi << 16) | lo;
-        }
+                return (b << 16) | (a & 0xFFFF);
 
         default:
                 *unsupported = true;
@@ -65,25 +59,10 @@ bi_fold_constant(bi_instr *I, bool *unsupported)
         }
 }
 
-static bool
-bi_all_srcs_const(bi_instr *I)
-{
-        bi_foreach_src(I, s) {
-                enum bi_index_type type = I->src[s].type;
-
-                if (!(type == BI_INDEX_NULL || type == BI_INDEX_CONSTANT))
-                        return false;
-        }
-
-        return true;
-}
-
 void
 bi_opt_constant_fold(bi_context *ctx)
 {
         bi_foreach_instr_global_safe(ctx, ins) {
-                if (!bi_all_srcs_const(ins)) continue;
-
                 bool unsupported = false;
                 uint32_t replace = bi_fold_constant(ins, &unsupported);
                 if (unsupported) continue;

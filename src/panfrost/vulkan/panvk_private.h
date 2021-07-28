@@ -145,6 +145,11 @@ struct panvk_meta {
       struct panvk_pool bin_pool;
       struct panvk_pool desc_pool;
    } blitter;
+
+   struct {
+      mali_ptr shader;
+      struct pan_shader_info shader_info;
+   } clear_attachment[MAX_RTS][3]; /* 3 base types */
 };
 
 struct panvk_physical_device {
@@ -672,6 +677,12 @@ panvk_cmd_get_midgard_polygon_list(struct panvk_cmd_buffer *cmdbuf,
 void
 panvk_cmd_get_bifrost_tiler_context(struct panvk_cmd_buffer *cmdbuf,
                                     unsigned width, unsigned height);
+
+void
+panvk_cmd_alloc_fb_desc(struct panvk_cmd_buffer *cmdbuf);
+
+void
+panvk_cmd_alloc_tls_desc(struct panvk_cmd_buffer *cmdbuf);
 
 void
 panvk_pack_color(struct panvk_clear_value *out,
