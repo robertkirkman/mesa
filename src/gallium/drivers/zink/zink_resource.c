@@ -1027,13 +1027,14 @@ invalidate_buffer(struct zink_context *ctx, struct zink_resource *res)
       debug_printf("new backing resource alloc failed!");
       return false;
    }
+   /* this ref must be transferred before rebind or else BOOM */
+   zink_batch_reference_resource_move(&ctx->batch, res);
    res->obj = new_obj;
    res->access_stage = 0;
    res->access = 0;
    res->unordered_barrier = false;
    zink_resource_rebind(ctx, res);
    zink_descriptor_set_refs_clear(&old_obj->desc_set_refs, old_obj);
-   zink_batch_reference_resource_move(&ctx->batch, res);
    return true;
 }
 
@@ -1190,7 +1191,8 @@ buffer_transfer_map(struct zink_context *ctx, struct zink_resource *res, unsigne
          /* At this point, the buffer is always idle (we checked it above). */
          usage |= PIPE_MAP_UNSYNCHRONIZED;
       }
-   } else if (((usage & PIPE_MAP_READ) && !(usage & PIPE_MAP_PERSISTENT) && res->base.b.usage != PIPE_USAGE_STAGING) || !res->obj->host_visible) {
+   } else if (!(usage & PIPE_MAP_UNSYNCHRONIZED) &&
+              (((usage & PIPE_MAP_READ) && !(usage & PIPE_MAP_PERSISTENT) && res->base.b.usage != PIPE_USAGE_STAGING) || !res->obj->host_visible)) {
       assert(!(usage & (TC_TRANSFER_MAP_THREADED_UNSYNC | PIPE_MAP_THREAD_SAFE)));
       if (!res->obj->host_visible || !(usage & PIPE_MAP_ONCE)) {
          trans->offset = box->x % screen->info.props.limits.minMemoryMapAlignment;

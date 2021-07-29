@@ -479,7 +479,7 @@ bi_can_iaddc(bi_instr *ins)
                 ins->src[1].swizzle == BI_SWIZZLE_H01);
 }
 
-ASSERTED static bool
+bool
 bi_can_fma(bi_instr *ins)
 {
         /* Errata: *V2F32_TO_V2F16 with distinct sources raises
@@ -507,7 +507,7 @@ bi_impacted_fadd_widens(bi_instr *I)
                 (swz0 == BI_SWIZZLE_H11 && swz1 == BI_SWIZZLE_H00);
 }
 
-ASSERTED static bool
+bool
 bi_can_add(bi_instr *ins)
 {
         /* +FADD.v2f16 lacks clamp modifier, use *FADD.v2f16 instead */
@@ -524,12 +524,6 @@ bi_can_add(bi_instr *ins)
 
         /* TODO: some additional fp16 constraints */
         return bi_opcode_props[ins->op].add;
-}
-
-ASSERTED static bool
-bi_must_last(bi_instr *ins)
-{
-        return bi_opcode_props[ins->op].last;
 }
 
 /* Architecturally, no single instruction has a "not last" constraint. However,
@@ -550,7 +544,7 @@ bi_must_not_last(bi_instr *ins)
  * be raised for unknown reasons (possibly an errata).
  */
 
-ASSERTED static bool
+bool
 bi_must_message(bi_instr *ins)
 {
         return (bi_opcode_props[ins->op].message != BIFROST_MESSAGE_NONE) ||
@@ -578,13 +572,13 @@ bi_fma_atomic(enum bi_opcode op)
         }
 }
 
-ASSERTED static bool
+bool
 bi_reads_zero(bi_instr *ins)
 {
         return !(bi_fma_atomic(ins->op) || ins->op == BI_OPCODE_IMULD);
 }
 
-static bool
+bool
 bi_reads_temps(bi_instr *ins, unsigned src)
 {
         switch (ins->op) {
@@ -599,7 +593,7 @@ bi_reads_temps(bi_instr *ins, unsigned src)
         }
 }
 
-ASSERTED static bool
+bool
 bi_reads_t(bi_instr *ins, unsigned src)
 {
         /* Branch offset cannot come from passthrough */
@@ -903,7 +897,7 @@ bi_instr_schedulable(bi_instr *instr,
                 return false;
 
         /* Some instructions have placement requirements */
-        if (bi_must_last(instr) && !tuple->last)
+        if (bi_opcode_props[instr->op].last && !tuple->last)
                 return false;
 
         if (bi_must_not_last(instr) && tuple->last)
@@ -1012,7 +1006,7 @@ bi_instr_cost(bi_instr *instr, struct bi_tuple_state *tuple)
                 cost--;
 
         /* Last instructions are big constraints (XXX: no effect on shader-db) */
-        if (bi_must_last(instr))
+        if (bi_opcode_props[instr->op].last)
                 cost -= 2;
 
         return cost;
@@ -1909,64 +1903,3 @@ bi_schedule(bi_context *ctx)
         bi_opt_dce_post_ra(ctx);
         bi_add_nop_for_atest(ctx);
 }
-
-#ifndef NDEBUG
-
-#include "bi_test.h"
-#define TMP() bi_temp(b->shader)
-
-static void
-bi_test_units(bi_builder *b)
-{
-        bi_instr *mov = bi_mov_i32_to(b, TMP(), TMP());
-        assert(bi_can_fma(mov));
-        assert(bi_can_add(mov));
-        assert(!bi_must_last(mov));
-        assert(!bi_must_message(mov));
-        assert(bi_reads_zero(mov));
-        assert(bi_reads_temps(mov, 0));
-        assert(bi_reads_t(mov, 0));
-
-        bi_instr *fma = bi_fma_f32_to(b, TMP(), TMP(), TMP(), bi_zero(), BI_ROUND_NONE);
-        assert(bi_can_fma(fma));
-        assert(!bi_can_add(fma));
-        assert(!bi_must_last(fma));
-        assert(!bi_must_message(fma));
-        assert(bi_reads_zero(fma));
-        for (unsigned i = 0; i < 3; ++i) {
-                assert(bi_reads_temps(fma, i));
-                assert(bi_reads_t(fma, i));
-        }
-
-        bi_instr *load = bi_load_i128_to(b, TMP(), TMP(), TMP(), BI_SEG_UBO);
-        assert(!bi_can_fma(load));
-        assert(bi_can_add(load));
-        assert(!bi_must_last(load));
-        assert(bi_must_message(load));
-        for (unsigned i = 0; i < 2; ++i) {
-                assert(bi_reads_temps(load, i));
-                assert(bi_reads_t(load, i));
-        }
-
-        bi_instr *blend = bi_blend_to(b, TMP(), TMP(), TMP(), TMP(), TMP(), 4);
-        assert(!bi_can_fma(load));
-        assert(bi_can_add(load));
-        assert(bi_must_last(blend));
-        assert(bi_must_message(blend));
-        for (unsigned i = 0; i < 4; ++i)
-                assert(bi_reads_temps(blend, i));
-        assert(!bi_reads_t(blend, 0));
-        assert(bi_reads_t(blend, 1));
-        assert(!bi_reads_t(blend, 2));
-        assert(!bi_reads_t(blend, 3));
-}
-
-int bi_test_scheduler(void)
-{
-        void *memctx = NULL;
-
-        bi_test_units(bit_builder(memctx));
-
-        return 0;
-}
-#endif
