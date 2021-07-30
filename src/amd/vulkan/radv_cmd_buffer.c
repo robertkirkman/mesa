@@ -1465,8 +1465,9 @@ radv_emit_depth_bounds(struct radv_cmd_buffer *cmd_buffer)
 {
    struct radv_dynamic_state *d = &cmd_buffer->state.dynamic;
 
-   radeon_set_context_reg(cmd_buffer->cs, R_028020_DB_DEPTH_BOUNDS_MIN, fui(d->depth_bounds.min));
-   radeon_set_context_reg(cmd_buffer->cs, R_028024_DB_DEPTH_BOUNDS_MAX, fui(d->depth_bounds.max));
+   radeon_set_context_reg_seq(cmd_buffer->cs, R_028020_DB_DEPTH_BOUNDS_MIN, 2);
+   radeon_emit(cmd_buffer->cs, fui(d->depth_bounds.min));
+   radeon_emit(cmd_buffer->cs, fui(d->depth_bounds.max));
 }
 
 static void
@@ -1727,8 +1728,7 @@ radv_emit_fb_color_state(struct radv_cmd_buffer *cmd_buffer, int index,
       radeon_emit(cmd_buffer->cs, cb->cb_color_fmask);
       radeon_emit(cmd_buffer->cs, 0);
 
-      radeon_set_context_reg_seq(cmd_buffer->cs, R_028C94_CB_COLOR0_DCC_BASE + index * 0x3c, 1);
-      radeon_emit(cmd_buffer->cs, cb->cb_dcc_base);
+      radeon_set_context_reg(cmd_buffer->cs, R_028C94_CB_COLOR0_DCC_BASE + index * 0x3c, cb->cb_dcc_base);
 
       radeon_set_context_reg(cmd_buffer->cs, R_028E40_CB_COLOR0_BASE_EXT + index * 4,
                              cb->cb_color_base >> 32);
@@ -1955,12 +1955,10 @@ radv_update_bound_fast_clear_ds(struct radv_cmd_buffer *cmd_buffer,
       radeon_emit(cs, ds_clear_value.stencil);
       radeon_emit(cs, fui(ds_clear_value.depth));
    } else if (aspects == VK_IMAGE_ASPECT_DEPTH_BIT) {
-      radeon_set_context_reg_seq(cs, R_02802C_DB_DEPTH_CLEAR, 1);
-      radeon_emit(cs, fui(ds_clear_value.depth));
+      radeon_set_context_reg(cs, R_02802C_DB_DEPTH_CLEAR, fui(ds_clear_value.depth));
    } else {
       assert(aspects == VK_IMAGE_ASPECT_STENCIL_BIT);
-      radeon_set_context_reg_seq(cs, R_028028_DB_STENCIL_CLEAR, 1);
-      radeon_emit(cs, ds_clear_value.stencil);
+      radeon_set_context_reg(cs, R_028028_DB_STENCIL_CLEAR, ds_clear_value.stencil);
    }
 
    /* Update the ZRANGE_PRECISION value for the TC-compat bug. This is

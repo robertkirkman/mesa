@@ -503,13 +503,13 @@ si_emit_graphics(struct radv_device *device, struct radeon_cmdbuf *cs)
    if (physical_device->rad_info.chip_class >= GFX9) {
       radeon_set_context_reg(cs, R_028B50_VGT_TESS_DISTRIBUTION,
                              S_028B50_ACCUM_ISOLINE(40) | S_028B50_ACCUM_TRI(30) |
-                                S_028B50_ACCUM_QUAD(24) | S_028B50_DONUT_SPLIT(24) |
+                                S_028B50_ACCUM_QUAD(24) | S_028B50_DONUT_SPLIT_GFX9(24) |
                                 S_028B50_TRAP_SPLIT(6));
    } else if (physical_device->rad_info.chip_class >= GFX8) {
       uint32_t vgt_tess_distribution;
 
       vgt_tess_distribution = S_028B50_ACCUM_ISOLINE(32) | S_028B50_ACCUM_TRI(11) |
-                              S_028B50_ACCUM_QUAD(11) | S_028B50_DONUT_SPLIT(16);
+                              S_028B50_ACCUM_QUAD(11) | S_028B50_DONUT_SPLIT_GFX81(16);
 
       if (physical_device->rad_info.family == CHIP_FIJI ||
           physical_device->rad_info.family >= CHIP_POLARIS10)
@@ -542,11 +542,11 @@ si_emit_graphics(struct radv_device *device, struct radeon_cmdbuf *cs)
    }
 
    unsigned tmp = (unsigned)(1.0 * 8.0);
-   radeon_set_context_reg_seq(cs, R_028A00_PA_SU_POINT_SIZE, 1);
-   radeon_emit(cs, S_028A00_HEIGHT(tmp) | S_028A00_WIDTH(tmp));
-   radeon_set_context_reg_seq(cs, R_028A04_PA_SU_POINT_MINMAX, 1);
-   radeon_emit(cs, S_028A04_MIN_SIZE(radv_pack_float_12p4(0)) |
-                      S_028A04_MAX_SIZE(radv_pack_float_12p4(8191.875 / 2)));
+   radeon_set_context_reg(cs, R_028A00_PA_SU_POINT_SIZE,
+                              S_028A00_HEIGHT(tmp) | S_028A00_WIDTH(tmp));
+   radeon_set_context_reg(cs, R_028A04_PA_SU_POINT_MINMAX,
+                              S_028A04_MIN_SIZE(radv_pack_float_12p4(0)) |
+                              S_028A04_MAX_SIZE(radv_pack_float_12p4(8191.875 / 2)));
 
    if (!has_clear_state) {
       radeon_set_context_reg(cs, R_028004_DB_COUNT_CONTROL, S_028004_ZPASS_INCREMENT_DISABLE(1));

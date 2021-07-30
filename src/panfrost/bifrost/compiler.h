@@ -862,6 +862,12 @@ bi_next_block(bi_block *block)
         return list_first_entry(&(block->link), bi_block, link);
 }
 
+static inline bi_block *
+bi_entry_block(bi_context *ctx)
+{
+        return list_first_entry(&ctx->blocks, bi_block, link);
+}
+
 /* BIR manipulation */
 
 bool bi_has_arg(const bi_instr *ins, bi_index arg);
@@ -903,6 +909,14 @@ bool bi_must_message(bi_instr *ins);
 bool bi_reads_zero(bi_instr *ins);
 bool bi_reads_temps(bi_instr *ins, unsigned src);
 bool bi_reads_t(bi_instr *ins, unsigned src);
+
+#ifndef NDEBUG
+bool bi_validate_initialization(bi_context *ctx);
+void bi_validate(bi_context *ctx, const char *after_str);
+#else
+static inline bool bi_validate_initialization(UNUSED bi_context *ctx) { return true; }
+static inline void bi_validate(UNUSED bi_context *ctx, UNUSED const char *after_str) { return; }
+#endif
 
 uint32_t bi_fold_constant(bi_instr *I, bool *unsupported);
 void bi_opt_constant_fold(bi_context *ctx);

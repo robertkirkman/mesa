@@ -45,6 +45,7 @@ static const struct debug_named_value bifrost_debug_options[] = {
         {"internal",  BIFROST_DBG_INTERNAL,	"Dump even internal shaders"},
         {"nosched",   BIFROST_DBG_NOSCHED, 	"Force trivial bundling"},
         {"inorder",   BIFROST_DBG_INORDER, 	"Force in-order bundling"},
+        {"novalidate",BIFROST_DBG_NOVALIDATE,   "Skip IR validation"},
         DEBUG_NAMED_VALUE_END
 };
 
@@ -3179,6 +3180,62 @@ nir_invalidate_divergence(struct nir_builder *b, nir_instr *instr,
         return nir_foreach_ssa_def(instr, nir_invalidate_divergence_ssa, NULL);
 }
 
+/* Ensure we write exactly 4 components */
+static nir_ssa_def *
+bifrost_nir_valid_channel(nir_builder *b, nir_ssa_def *in,
+                          unsigned channel, unsigned first, unsigned mask)
+{
+        if (!(mask & BITFIELD_BIT(channel)))
+                channel = first;
+
+        return nir_channel(b, in, channel);
+}
+
+/* Lower fragment store_output instructions to always write 4 components,
+ * matching the hardware semantic. This may require additional moves. Skipping
+ * these moves is possible in theory, but invokes undefined behaviour in the
+ * compiler. The DDK inserts these moves, so we will as well. */
+
+static bool
+bifrost_nir_lower_blend_components(struct nir_builder *b,
+                                   nir_instr *instr, void *data)
+{
+        if (instr->type != nir_instr_type_intrinsic)
+                return false;
+
+        nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+
+        if (intr->intrinsic != nir_intrinsic_store_output)
+                return false;
+
+        nir_ssa_def *in = intr->src[0].ssa;
+        unsigned first = nir_intrinsic_component(intr);
+        unsigned mask = nir_intrinsic_write_mask(intr);
+
+        assert(first == 0 && "shouldn't get nonzero components");
+
+        /* Nothing to do */
+        if (mask == BITFIELD_MASK(4))
+                return false;
+
+        b->cursor = nir_before_instr(&intr->instr);
+
+        /* Replicate the first valid component instead */
+        nir_ssa_def *replicated =
+                nir_vec4(b, bifrost_nir_valid_channel(b, in, 0, first, mask),
+                            bifrost_nir_valid_channel(b, in, 1, first, mask),
+                            bifrost_nir_valid_channel(b, in, 2, first, mask),
+                            bifrost_nir_valid_channel(b, in, 3, first, mask));
+
+        /* Rewrite to use our replicated version */
+        nir_instr_rewrite_src_ssa(instr, &intr->src[0], replicated);
+        nir_intrinsic_set_component(intr, 0);
+        nir_intrinsic_set_write_mask(intr, 0xF);
+        intr->num_components = 4;
+
+        return true;
+}
+
 static void
 bi_optimize_nir(nir_shader *nir, unsigned gpu_id, bool is_blend)
 {
@@ -3280,6 +3337,13 @@ bi_optimize_nir(nir_shader *nir, unsigned gpu_id, bool is_blend)
         /* Prepass to simplify instruction selection */
         NIR_PASS(progress, nir, bifrost_nir_lower_algebraic_late);
         NIR_PASS(progress, nir, nir_opt_dce);
+
+        if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+                NIR_PASS_V(nir, nir_shader_instructions_pass,
+                           bifrost_nir_lower_blend_components,
+                           nir_metadata_block_index | nir_metadata_dominance,
+                           NULL);
+        }
 
         /* Backend scheduler is purely local, so do some global optimizations
          * to reduce register pressure. */
@@ -3596,6 +3660,8 @@ bifrost_compile_shader_nir(nir_shader *nir,
                 block->name = block_source_count++;
         }
 
+        bi_validate(ctx, "NIR -> BIR");
+
         /* If the shader doesn't write any colour or depth outputs, it may
          * still need an ATEST at the very end! */
         bool need_dummy_atest =
@@ -3611,6 +3677,7 @@ bifrost_compile_shader_nir(nir_shader *nir,
 
         /* Runs before constant folding */
         bi_lower_swizzle(ctx);
+        bi_validate(ctx, "Early lowering");
 
         /* Runs before copy prop */
         bi_opt_push_ubo(ctx);
@@ -3622,6 +3689,7 @@ bifrost_compile_shader_nir(nir_shader *nir,
         bi_opt_dead_code_eliminate(ctx);
         bi_opt_cse(ctx);
         bi_opt_dead_code_eliminate(ctx);
+        bi_validate(ctx, "Optimization passes");
 
         bi_foreach_block(ctx, block) {
                 bi_lower_branch(block);
@@ -3635,6 +3703,7 @@ bifrost_compile_shader_nir(nir_shader *nir,
          * skip bit is a function of only the data flow graph and is invariant
          * under valid scheduling. */
         bi_analyze_helper_requirements(ctx);
+        bi_validate(ctx, "Late lowering");
 
         bi_register_allocate(ctx);
         bi_opt_post_ra(ctx);
