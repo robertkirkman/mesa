@@ -1021,6 +1021,7 @@ system_value("hs_patch_stride_ir3", 1)
 system_value("tess_factor_base_ir3", 2)
 system_value("tess_param_base_ir3", 2)
 system_value("tcs_header_ir3", 1)
+system_value("rel_patch_id_ir3", 1)
 
 # System values for freedreno compute shaders.
 system_value("subgroup_id_shift_ir3", 1)
@@ -1196,8 +1197,8 @@ intrinsic("load_cull_small_primitives_enabled_amd", dest_comp=1, bit_sizes=[1], 
 intrinsic("load_cull_any_enabled_amd", dest_comp=1, bit_sizes=[1], flags=[CAN_ELIMINATE])
 # Small primitive culling precision
 intrinsic("load_cull_small_prim_precision_amd", dest_comp=1, bit_sizes=[32], flags=[CAN_ELIMINATE, CAN_REORDER])
-# Initial edge flag in a Vertex Shader. src = {vertex index}.
-intrinsic("load_initial_edgeflag_amd", src_comp=[1], dest_comp=1, indices=[])
+# Initial edge flags in a Vertex Shader, packed into the format the HW needs for primitive export.
+intrinsic("load_initial_edgeflags_amd", src_comp=[], dest_comp=1, bit_sizes=[32], indices=[])
 # Exports the current invocation's vertex. This is a placeholder where all vertex attribute export instructions should be emitted.
 intrinsic("export_vertex_amd", src_comp=[], indices=[])
 # Exports the current invocation's primitive. src[] = {packed_primitive_data}.
@@ -1208,8 +1209,6 @@ intrinsic("alloc_vertices_and_primitives_amd", src_comp=[1, 1], indices=[])
 intrinsic("overwrite_vs_arguments_amd", src_comp=[1, 1], indices=[])
 # Overwrites TES input registers, for use with vertex compaction after culling. src = {tes_u, tes_v, rel_patch_id, patch_id}.
 intrinsic("overwrite_tes_arguments_amd", src_comp=[1, 1, 1, 1], indices=[])
-# Overwrites the input vertex and primitive count in the current subgroup after culling. src = {num_vertices, num_primitives}.
-intrinsic("overwrite_subgroup_num_vertices_and_primitives_amd", src_comp=[1, 1], indices=[])
 
 # src = [index] BINDING = which table BASE = offset within handle
 intrinsic("load_sbt_amd", src_comp=[-1], dest_comp=0, indices=[BINDING, BASE],

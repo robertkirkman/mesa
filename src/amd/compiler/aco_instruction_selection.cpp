@@ -6028,12 +6028,12 @@ adjust_sample_index_using_fmask(isel_context* ctx, bool da, std::vector<Temp>& c
 }
 
 static std::vector<Temp>
-get_image_coords(isel_context* ctx, const nir_intrinsic_instr* instr, const struct glsl_type* type)
+get_image_coords(isel_context* ctx, const nir_intrinsic_instr* instr)
 {
 
    Temp src0 = get_ssa_temp(ctx, instr->src[1].ssa);
-   enum glsl_sampler_dim dim = glsl_get_sampler_dim(type);
-   bool is_array = glsl_sampler_type_is_array(type);
+   enum glsl_sampler_dim dim = nir_intrinsic_image_dim(instr);
+   bool is_array = nir_intrinsic_image_array(instr);
    ASSERTED bool add_frag_pos =
       (dim == GLSL_SAMPLER_DIM_SUBPASS || dim == GLSL_SAMPLER_DIM_SUBPASS_MS);
    assert(!add_frag_pos && "Input attachments should be lowered.");
@@ -6134,9 +6134,8 @@ visit_image_load(isel_context* ctx, nir_intrinsic_instr* instr)
    Builder bld(ctx->program, ctx->block);
    const nir_variable* var =
       nir_deref_instr_get_variable(nir_instr_as_deref(instr->src[0].ssa->parent_instr));
-   const struct glsl_type* type = glsl_without_array(var->type);
-   const enum glsl_sampler_dim dim = glsl_get_sampler_dim(type);
-   bool is_array = glsl_sampler_type_is_array(type);
+   const enum glsl_sampler_dim dim = nir_intrinsic_image_dim(instr);
+   bool is_array = nir_intrinsic_image_array(instr);
    bool is_sparse = instr->intrinsic == nir_intrinsic_image_deref_sparse_load;
    Temp dst = get_ssa_temp(ctx, &instr->dest.ssa);
 
@@ -6195,7 +6194,7 @@ visit_image_load(isel_context* ctx, nir_intrinsic_instr* instr)
          load->operands[3] = emit_tfe_init(bld, tmp);
       ctx->block->instructions.emplace_back(std::move(load));
    } else {
-      std::vector<Temp> coords = get_image_coords(ctx, instr, type);
+      std::vector<Temp> coords = get_image_coords(ctx, instr);
 
       bool level_zero = nir_src_is_const(instr->src[3]) && nir_src_as_uint(instr->src[3]) == 0;
       aco_opcode opcode = level_zero ? aco_opcode::image_load : aco_opcode::image_load_mip;
@@ -6208,7 +6207,7 @@ visit_image_load(isel_context* ctx, nir_intrinsic_instr* instr)
       load->dim = ac_get_image_dim(ctx->options->chip_class, dim, is_array);
       load->dmask = dmask;
       load->unrm = true;
-      load->da = should_declare_array(ctx, dim, glsl_sampler_type_is_array(type));
+      load->da = should_declare_array(ctx, dim, is_array);
       load->sync = sync;
       load->tfe = is_sparse;
    }
@@ -6229,9 +6228,8 @@ visit_image_store(isel_context* ctx, nir_intrinsic_instr* instr)
 {
    const nir_variable* var =
       nir_deref_instr_get_variable(nir_instr_as_deref(instr->src[0].ssa->parent_instr));
-   const struct glsl_type* type = glsl_without_array(var->type);
-   const enum glsl_sampler_dim dim = glsl_get_sampler_dim(type);
-   bool is_array = glsl_sampler_type_is_array(type);
+   const enum glsl_sampler_dim dim = nir_intrinsic_image_dim(instr);
+   bool is_array = nir_intrinsic_image_array(instr);
    Temp data = get_ssa_temp(ctx, instr->src[3].ssa);
 
    /* only R64_UINT and R64_SINT supported */
@@ -6275,7 +6273,7 @@ visit_image_store(isel_context* ctx, nir_intrinsic_instr* instr)
    }
 
    assert(data.type() == RegType::vgpr);
-   std::vector<Temp> coords = get_image_coords(ctx, instr, type);
+   std::vector<Temp> coords = get_image_coords(ctx, instr);
    Temp resource = get_sampler_desc(ctx, nir_instr_as_deref(instr->src[0].ssa->parent_instr),
                                     ACO_DESC_IMAGE, nullptr, true);
 
@@ -6290,7 +6288,7 @@ visit_image_store(isel_context* ctx, nir_intrinsic_instr* instr)
    store->dim = ac_get_image_dim(ctx->options->chip_class, dim, is_array);
    store->dmask = (1 << data.size()) - 1;
    store->unrm = true;
-   store->da = should_declare_array(ctx, dim, glsl_sampler_type_is_array(type));
+   store->da = should_declare_array(ctx, dim, is_array);
    store->disable_wqm = true;
    store->sync = sync;
    ctx->program->needs_exact = true;
@@ -6301,11 +6299,8 @@ void
 visit_image_atomic(isel_context* ctx, nir_intrinsic_instr* instr)
 {
    bool return_previous = !nir_ssa_def_is_unused(&instr->dest.ssa);
-   const nir_variable* var =
-      nir_deref_instr_get_variable(nir_instr_as_deref(instr->src[0].ssa->parent_instr));
-   const struct glsl_type* type = glsl_without_array(var->type);
-   const enum glsl_sampler_dim dim = glsl_get_sampler_dim(type);
-   bool is_array = glsl_sampler_type_is_array(type);
+   const enum glsl_sampler_dim dim = nir_intrinsic_image_dim(instr);
+   bool is_array = nir_intrinsic_image_array(instr);
    Builder bld(ctx->program, ctx->block);
 
    Temp data = as_vgpr(ctx, get_ssa_temp(ctx, instr->src[3].ssa));
@@ -6411,7 +6406,7 @@ visit_image_atomic(isel_context* ctx, nir_intrinsic_instr* instr)
       return;
    }
 
-   std::vector<Temp> coords = get_image_coords(ctx, instr, type);
+   std::vector<Temp> coords = get_image_coords(ctx, instr);
    Temp resource = get_sampler_desc(ctx, nir_instr_as_deref(instr->src[0].ssa->parent_instr),
                                     ACO_DESC_IMAGE, nullptr, true);
    Definition def = return_previous ? Definition(dst) : Definition();
@@ -6422,7 +6417,7 @@ visit_image_atomic(isel_context* ctx, nir_intrinsic_instr* instr)
    mimg->dim = ac_get_image_dim(ctx->options->chip_class, dim, is_array);
    mimg->dmask = (1 << data.size()) - 1;
    mimg->unrm = true;
-   mimg->da = should_declare_array(ctx, dim, glsl_sampler_type_is_array(type));
+   mimg->da = should_declare_array(ctx, dim, is_array);
    mimg->disable_wqm = true;
    mimg->sync = sync;
    ctx->program->needs_exact = true;
@@ -6465,14 +6460,11 @@ get_buffer_size(isel_context* ctx, Temp desc, Temp dst)
 void
 visit_image_size(isel_context* ctx, nir_intrinsic_instr* instr)
 {
-   const nir_variable* var =
-      nir_deref_instr_get_variable(nir_instr_as_deref(instr->src[0].ssa->parent_instr));
-   const struct glsl_type* type = glsl_without_array(var->type);
-   const enum glsl_sampler_dim dim = glsl_get_sampler_dim(type);
-   bool is_array = glsl_sampler_type_is_array(type);
+   const enum glsl_sampler_dim dim = nir_intrinsic_image_dim(instr);
+   bool is_array = nir_intrinsic_image_array(instr);
    Builder bld(ctx->program, ctx->block);
 
-   if (glsl_get_sampler_dim(type) == GLSL_SAMPLER_DIM_BUF) {
+   if (dim == GLSL_SAMPLER_DIM_BUF) {
       Temp desc = get_sampler_desc(ctx, nir_instr_as_deref(instr->src[0].ssa->parent_instr),
                                    ACO_DESC_BUFFER, NULL, false);
       return get_buffer_size(ctx, desc, get_ssa_temp(ctx, &instr->dest.ssa));
@@ -6493,11 +6485,9 @@ visit_image_size(isel_context* ctx, nir_intrinsic_instr* instr)
    uint8_t& dmask = mimg->dmask;
    mimg->dim = ac_get_image_dim(ctx->options->chip_class, dim, is_array);
    mimg->dmask = (1 << instr->dest.ssa.num_components) - 1;
-   mimg->da = glsl_sampler_type_is_array(type);
+   mimg->da = is_array;
 
-   if (ctx->options->chip_class == GFX9 &&
-       glsl_get_sampler_dim(type) == GLSL_SAMPLER_DIM_1D &&
-       glsl_sampler_type_is_array(type)) {
+   if (ctx->options->chip_class == GFX9 && dim == GLSL_SAMPLER_DIM_1D && is_array) {
       assert(instr->dest.ssa.num_components == 2);
       dmask = 0x5;
    }
@@ -8938,14 +8928,16 @@ visit_intrinsic(isel_context* ctx, nir_intrinsic_instr* instr)
                Operand::c32(pos | (9u << 16u)));
       break;
    }
-   case nir_intrinsic_load_initial_edgeflag_amd: {
+   case nir_intrinsic_load_initial_edgeflags_amd: {
       assert(ctx->stage.hw == HWStage::NGG);
-      assert(nir_src_is_const(instr->src[0]));
-      unsigned i = nir_src_as_uint(instr->src[0]);
 
       Temp gs_invocation_id = get_arg(ctx, ctx->args->ac.gs_invocation_id);
-      bld.vop3(aco_opcode::v_bfe_u32, Definition(get_ssa_temp(ctx, &instr->dest.ssa)),
-               gs_invocation_id, Operand::c32(8u + i), Operand::c32(1u));
+      /* Get initial edgeflags for each vertex at bits 8, 9, 10 of gs_invocation_id. */
+      Temp flags = bld.vop2(aco_opcode::v_and_b32, bld.def(v1), Operand::c32(0x700u), gs_invocation_id);
+      /* Move the bits to their desired position: 8->9, 9->19, 10->29. */
+      flags = bld.vop2(aco_opcode::v_mul_u32_u24, bld.def(v1), Operand::c32(0x80402u), flags);
+      /* Remove garbage bits that are a byproduct of the multiplication. */
+      bld.vop2(aco_opcode::v_and_b32, Definition(get_ssa_temp(ctx, &instr->dest.ssa)), Operand::c32(0x20080200), flags);
       break;
    }
    case nir_intrinsic_load_packed_passthrough_primitive_amd: {
@@ -9066,17 +9058,6 @@ visit_intrinsic(isel_context* ctx, nir_intrinsic_instr* instr)
       ctx->arg_temps[ctx->args->ac.tes_rel_patch_id.arg_index] =
          get_ssa_temp(ctx, instr->src[2].ssa);
       ctx->arg_temps[ctx->args->ac.tes_patch_id.arg_index] = get_ssa_temp(ctx, instr->src[3].ssa);
-      break;
-   }
-   case nir_intrinsic_overwrite_subgroup_num_vertices_and_primitives_amd: {
-      Temp old_merged_wave_info = get_arg(ctx, ctx->args->ac.merged_wave_info);
-      Temp num_vertices = bld.as_uniform(get_ssa_temp(ctx, instr->src[0].ssa));
-      Temp num_primitives = bld.as_uniform(get_ssa_temp(ctx, instr->src[1].ssa));
-      Temp tmp = bld.sop2(aco_opcode::s_lshl_b32, bld.def(s1), bld.def(s1, scc), num_primitives,
-                          Operand::c32(8u));
-      tmp = bld.sop2(aco_opcode::s_or_b32, bld.def(s1), bld.def(s1, scc), tmp, num_vertices);
-      ctx->arg_temps[ctx->args->ac.merged_wave_info.arg_index] =
-         bld.sop2(aco_opcode::s_pack_lh_b32_b16, bld.def(s1), tmp, old_merged_wave_info);
       break;
    }
    default:
@@ -11577,8 +11558,11 @@ ngg_emit_sendmsg_gs_alloc_req(isel_context* ctx, Temp vtx_cnt, Temp prm_cnt)
    Builder bld(ctx->program, ctx->block);
    Temp prm_cnt_0;
 
-   if (ctx->program->chip_class == GFX10 && ctx->stage.has(SWStage::GS)) {
-      /* Navi 1x workaround: make sure to always export at least 1 vertex and triangle */
+   if (ctx->program->chip_class == GFX10 &&
+       (ctx->stage.has(SWStage::GS) || ctx->program->info->has_ngg_culling)) {
+      /* Navi 1x workaround: check whether the workgroup has no output.
+       * If so, change the number of exported vertices and primitives to 1.
+       */
       prm_cnt_0 = bld.sopc(aco_opcode::s_cmp_eq_u32, bld.def(s1, scc), prm_cnt, Operand::zero());
       prm_cnt = bld.sop2(aco_opcode::s_cselect_b32, bld.def(s1), Operand::c32(1u), prm_cnt,
                          bld.scc(prm_cnt_0));
@@ -11592,11 +11576,12 @@ ngg_emit_sendmsg_gs_alloc_req(isel_context* ctx, Temp vtx_cnt, Temp prm_cnt)
    tmp = bld.sop2(aco_opcode::s_or_b32, bld.m0(bld.def(s1)), bld.def(s1, scc), tmp, vtx_cnt);
 
    /* Request the SPI to allocate space for the primitives and vertices
-    * that will be exported by the threadgroup. */
+    * that will be exported by the threadgroup.
+    */
    bld.sopp(aco_opcode::s_sendmsg, bld.m0(tmp), -1, sendmsg_gs_alloc_req);
 
    if (prm_cnt_0.id()) {
-      /* Navi 1x workaround: export a triangle with NaN coordinates when GS has no output.
+      /* Navi 1x workaround: export a triangle with NaN coordinates when NGG has no output.
        * It can't have all-zero positions because that would render an undesired pixel with
        * conservative rasterization.
        */

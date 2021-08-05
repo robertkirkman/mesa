@@ -247,7 +247,7 @@ kernel::exec_context::bind(intrusive_ptr<command_queue> _q,
       case module::argument::constant_buffer: {
          auto arg = argument::create(marg);
          cl_mem buf = kern._constant_buffers.at(&q->device()).get();
-         arg->set(q->device().address_bits() / 8, &buf);
+         arg->set(sizeof(buf), &buf);
          arg->bind(*this, marg);
          break;
       }
@@ -523,11 +523,12 @@ kernel::local_argument::set(size_t size, const void *value) {
 void
 kernel::local_argument::bind(exec_context &ctx,
                              const module::argument &marg) {
+   ctx.mem_local = ::align(ctx.mem_local, marg.target_align);
    auto v = bytes(ctx.mem_local);
 
    extend(v, module::argument::zero_ext, marg.target_size);
    byteswap(v, ctx.q->device().endianness());
-   align(ctx.input, marg.target_align);
+   align(ctx.input, ctx.q->device().address_bits() / 8);
    insert(ctx.input, v);
 
    ctx.mem_local += _storage;

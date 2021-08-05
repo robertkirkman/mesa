@@ -717,25 +717,23 @@ iris_get_default_l3_config(const struct intel_device_info *devinfo,
 }
 
 static void
-iris_shader_debug_log(void *data, const char *fmt, ...)
+iris_shader_debug_log(void *data, unsigned *id, const char *fmt, ...)
 {
    struct pipe_debug_callback *dbg = data;
-   unsigned id = 0;
    va_list args;
 
    if (!dbg->debug_message)
       return;
 
    va_start(args, fmt);
-   dbg->debug_message(dbg->data, &id, PIPE_DEBUG_TYPE_SHADER_INFO, fmt, args);
+   dbg->debug_message(dbg->data, id, PIPE_DEBUG_TYPE_SHADER_INFO, fmt, args);
    va_end(args);
 }
 
 static void
-iris_shader_perf_log(void *data, const char *fmt, ...)
+iris_shader_perf_log(void *data, unsigned *id, const char *fmt, ...)
 {
    struct pipe_debug_callback *dbg = data;
-   unsigned id = 0;
    va_list args;
    va_start(args, fmt);
 
@@ -747,7 +745,7 @@ iris_shader_perf_log(void *data, const char *fmt, ...)
    }
 
    if (dbg->debug_message) {
-      dbg->debug_message(dbg->data, &id, PIPE_DEBUG_TYPE_PERF_INFO, fmt, args);
+      dbg->debug_message(dbg->data, id, PIPE_DEBUG_TYPE_PERF_INFO, fmt, args);
    }
 
    va_end(args);
@@ -770,7 +768,7 @@ iris_init_identifier_bo(struct iris_screen *screen)
    if (!bo_map)
       return false;
 
-   screen->workaround_bo->kflags |= EXEC_OBJECT_CAPTURE;
+   screen->workaround_bo->kflags |= EXEC_OBJECT_CAPTURE | EXEC_OBJECT_ASYNC;
    screen->workaround_address = (struct iris_address) {
       .bo = screen->workaround_bo,
       .offset = ALIGN(
@@ -812,6 +810,9 @@ iris_screen_create(int fd, const struct pipe_screen_config *config)
 
    if (screen->devinfo.ver < 8 || screen->devinfo.is_cherryview)
       return NULL;
+
+   driParseConfigFiles(config->options, config->options_info, 0, "iris",
+                       NULL, NULL, NULL, 0, NULL, 0);
 
    bool bo_reuse = false;
    int bo_reuse_mode = driQueryOptioni(config->options, "bo_reuse");

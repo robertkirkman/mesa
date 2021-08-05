@@ -5,6 +5,7 @@ glx@glx-swap-pixmap-bad,Fail
 glx@glx-visuals-depth -pixmap,Crash
 glx@glx-visuals-stencil -pixmap,Crash
 glx@glx_arb_create_context_es2_profile@invalid opengl es version,Fail
+glx@glx_arb_create_context_no_error@no error,Fail
 glx@glx_arb_create_context_robustness@invalid reset notification strategy,Fail
 glx@glx_arb_sync_control@swapbuffersmsc-divisor-zero,Fail
 glx@glx_arb_sync_control@waitformsc,Fail
@@ -122,6 +123,8 @@ spec@arb_map_buffer_alignment@arb_map_buffer_alignment-map-invalidate-range,Fail
 spec@arb_multi_draw_indirect@gl-3.0-multidrawarrays-vertexid -indirect,Crash
 spec@arb_occlusion_query@occlusion_query_order,Fail
 spec@arb_point_sprite@arb_point_sprite-interactions 1.0,Fail
+spec@arb_separate_shader_objects@400 combinations by location,Fail
+spec@arb_separate_shader_objects@400 combinations by name,Fail
 spec@arb_texture_buffer_object@formats (fs- arb),Fail
 spec@arb_texture_buffer_object@formats (fs- arb)@GL_ALPHA16F_ARB,Fail
 spec@arb_texture_buffer_object@formats (fs- arb)@GL_ALPHA32F_ARB,Fail
@@ -169,8 +172,6 @@ spec@egl_khr_gl_image@egl_khr_gl_renderbuffer_image-clear-shared-image gl_depth_
 spec@egl_khr_gl_image@egl_khr_gl_renderbuffer_image-clear-shared-image gl_rgba,Fail
 spec@egl_khr_surfaceless_context@viewport,Fail
 spec@egl_mesa_configless_context@basic,Fail
-spec@ext_direct_state_access@vao@VertexArrayVertexOffsetEXT,Fail
-spec@ext_external_objects@semaphore-api-errors@gen-semaphores-bad-value,Fail
 spec@ext_framebuffer_blit@fbo-blit-check-limits,Fail
 spec@ext_framebuffer_object@fbo-alphatest-nocolor,Fail
 spec@ext_framebuffer_object@fbo-alphatest-nocolor-ff,Fail
@@ -211,10 +212,6 @@ spec@ext_texture_snorm@fbo-blending-formats@GL_INTENSITY8_SNORM,Fail
 spec@ext_texture_snorm@fbo-blending-formats@GL_INTENSITY_SNORM,Fail
 spec@ext_texture_snorm@fbo-blending-formats@GL_LUMINANCE8_SNORM,Fail
 spec@ext_texture_snorm@fbo-blending-formats@GL_LUMINANCE_SNORM,Fail
-spec@ext_transform_feedback@api-errors bind_base_active,Crash
-spec@ext_transform_feedback@api-errors bind_pipeline,Fail
-spec@ext_transform_feedback@api-errors bind_range_active,Fail
-spec@ext_transform_feedback@api-errors useprogstage_active,Crash
 spec@ext_transform_feedback2@draw-auto,Fail
 spec@ext_transform_feedback@generatemipmap prims_generated,Fail
 spec@ext_transform_feedback@immediate-reuse,Fail
@@ -266,6 +263,11 @@ spec@ext_transform_feedback@tessellation triangles flat_last,Fail
 spec@ext_transform_feedback@tessellation triangles monochrome,Fail
 spec@ext_transform_feedback@tessellation triangles smooth,Fail
 spec@ext_transform_feedback@tessellation triangles wireframe,Fail
+
+# MESA: error: ir3_ra() failed!
+spec@glsl-1.10@execution@temp-array-indexing@glsl-fs-giant-temp-array,Fail
+spec@glsl-1.10@execution@temp-array-indexing@glsl-vs-giant-temp-array,Fail
+
 spec@glsl-1.30@execution@texelfetch fs sampler3d 1x129x9-98x129x9,Fail
 spec@glsl-1.30@execution@texelfetch fs sampler3d 98x129x1-98x129x9,Fail
 spec@glsl-1.30@execution@texelfetch fs sampler3d 98x1x9-98x129x9,Fail
@@ -319,7 +321,6 @@ spec@nv_copy_depth_to_color@nv_copy_depth_to_color 1 0x223344ff,Crash
 spec@nv_copy_depth_to_color@nv_copy_depth_to_color 1 0x76356278,Crash
 spec@nv_copy_image@nv_copy_image-formats,Fail
 spec@nv_copy_image@nv_copy_image-formats@Source: GL_DEPTH32F_STENCIL8/Destination: GL_DEPTH32F_STENCIL8,Fail
-spec@nv_image_formats@nv_image_formats-gles3,Crash
 spec@oes_egl_image_external_essl3@oes_egl_image_external_essl3,Crash
 spec@oes_egl_image_external_essl3@oes_egl_image_external_essl3@oes_egl_image_external_essl3_imageLoad,Fail
 spec@glsl-1.30@execution@clipping@fs-clip-distance-interpolated,Crash

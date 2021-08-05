@@ -85,7 +85,7 @@ static const driOptionDescription anv_dri_options[] = {
 #endif
 
 static void
-compiler_debug_log(void *data, const char *fmt, ...)
+compiler_debug_log(void *data, UNUSED unsigned *id, const char *fmt, ...)
 {
    char str[MAX_DEBUG_MESSAGE_LENGTH];
    struct anv_device *device = (struct anv_device *)data;
@@ -105,7 +105,7 @@ compiler_debug_log(void *data, const char *fmt, ...)
 }
 
 static void
-compiler_perf_log(void *data, const char *fmt, ...)
+compiler_perf_log(UNUSED void *data, UNUSED unsigned *id, const char *fmt, ...)
 {
    va_list args;
    va_start(args, fmt);
@@ -1036,7 +1036,7 @@ anv_init_dri_options(struct anv_instance *instance)
    driParseOptionInfo(&instance->available_dri_options, anv_dri_options,
                       ARRAY_SIZE(anv_dri_options));
    driParseConfigFiles(&instance->dri_options,
-                       &instance->available_dri_options, 0, "anv", NULL,
+                       &instance->available_dri_options, 0, "anv", NULL, NULL,
                        instance->vk.app_info.app_name,
                        instance->vk.app_info.app_version,
                        instance->vk.app_info.engine_name,

@@ -2938,6 +2938,17 @@ nir_block_ends_in_jump(nir_block *block)
           nir_block_last_instr(block)->type == nir_instr_type_jump;
 }
 
+static inline bool
+nir_block_ends_in_break(nir_block *block)
+{
+   if (exec_list_is_empty(&block->instr_list))
+      return false;
+
+   nir_instr *instr = nir_block_last_instr(block);
+   return instr->type == nir_instr_type_jump &&
+      nir_instr_as_jump(instr)->type == nir_jump_break;
+}
+
 #define nir_foreach_instr(instr, block) \
    foreach_list_typed(nir_instr, instr, node, &(block)->instr_list)
 #define nir_foreach_instr_reverse(instr, block) \
@@ -3089,7 +3100,8 @@ typedef enum {
     *   - nir_block::live_out
     *
     * A pass can preserve this metadata type if it never adds or removes any
-    * SSA defs (most passes shouldn't preserve this metadata type).
+    * SSA defs or uses of SSA defs (most passes shouldn't preserve this
+    * metadata type).
     */
    nir_metadata_live_ssa_defs = 0x4,
 
@@ -3689,6 +3701,12 @@ typedef struct nir_shader_compiler_options {
     * different precisions when passing data between stages and use
     * vectorized IO can pack more varyings when linking. */
    bool linker_ignore_precision;
+
+   /**
+    * Specifies which type of indirectly accessed variables should force
+    * loop unrolling.
+    */
+   nir_variable_mode force_indirect_unrolling;
 
    nir_lower_int64_options lower_int64_options;
    nir_lower_doubles_options lower_doubles_options;
@@ -5436,7 +5454,7 @@ bool nir_opt_large_constants(nir_shader *shader,
                              glsl_type_size_align_func size_align,
                              unsigned threshold);
 
-bool nir_opt_loop_unroll(nir_shader *shader, nir_variable_mode indirect_mask);
+bool nir_opt_loop_unroll(nir_shader *shader);
 
 typedef enum {
     nir_move_const_undef = (1 << 0),

@@ -974,8 +974,6 @@ struct tu_cmd_state
    const struct tu_framebuffer *framebuffer;
    VkRect2D render_area;
 
-   struct tu_cs_entry tile_store_ib;
-
    bool xfb_used;
    bool has_tess;
    bool has_subpass_predication;
@@ -1034,6 +1032,7 @@ struct tu_cmd_buffer
 
    struct tu_cs cs;
    struct tu_cs draw_cs;
+   struct tu_cs tile_store_cs;
    struct tu_cs draw_epilogue_cs;
    struct tu_cs sub_cs;
 
@@ -1239,6 +1238,8 @@ void tu6_emit_msaa(struct tu_cs *cs, VkSampleCountFlagBits samples);
 void tu6_emit_window_scissor(struct tu_cs *cs, uint32_t x1, uint32_t y1, uint32_t x2, uint32_t y2);
 
 void tu6_emit_window_offset(struct tu_cs *cs, uint32_t x1, uint32_t y1);
+
+void tu_disable_draw_states(struct tu_cmd_buffer *cmd, struct tu_cs *cs);
 
 struct tu_pvtmem_config {
    uint64_t iova;

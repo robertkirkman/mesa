@@ -56,9 +56,11 @@ const __DRIconfigOptionsExtension gallium_config_options = {
 
 #define false 0
 
-static void
-dri_fill_st_options(struct dri_screen *screen)
+void
+dri_init_options(struct dri_screen *screen)
 {
+   pipe_loader_config_options(screen->dev);
+
    struct st_config_options *options = &screen->options;
    const struct driOptionCache *optionCache = &screen->dev->option_cache;
 
@@ -114,6 +116,10 @@ dri_fill_st_options(struct dri_screen *screen)
    /* not an empty string */
    if (*vendor_str)
       options->force_gl_vendor = strdup(vendor_str);
+
+   char *renderer_str = driQueryOptionstr(optionCache, "force_gl_renderer");
+   if (*renderer_str)
+      options->force_gl_renderer = strdup(renderer_str);
 
    driComputeOptionsSha1(optionCache, options->config_options_sha1);
 }
@@ -546,6 +552,7 @@ dri_destroy_screen(__DRIscreen * sPriv)
    pipe_loader_release(&screen->dev, 1);
 
    free(screen->options.force_gl_vendor);
+   free(screen->options.force_gl_renderer);
 
    /* The caller in dri_util preserves the fd ownership */
    free(screen);
@@ -581,14 +588,6 @@ dri_set_background_context(struct st_context_iface *st,
 
    if (ctx->hud)
       hud_add_queue_for_monitoring(ctx->hud, queue_info);
-}
-
-void
-dri_init_options(struct dri_screen *screen)
-{
-   pipe_loader_load_options(screen->dev);
-
-   dri_fill_st_options(screen);
 }
 
 const __DRIconfig **

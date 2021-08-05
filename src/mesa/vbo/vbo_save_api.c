@@ -83,6 +83,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "main/varray.h"
 #include "util/bitscan.h"
 #include "util/u_memory.h"
+#include "util/hash_table.h"
 
 #include "gallium/include/pipe/p_state.h"
 
@@ -146,13 +147,15 @@ alloc_vertex_store(struct gl_context *ctx, int vertex_count)
     */
    vertex_store->bufferobj = ctx->Driver.NewBufferObject(ctx, VBO_BUF_ID);
    if (vertex_store->bufferobj) {
+      vertex_store->buffer_in_ram_size = size * sizeof(GLfloat);
+      vertex_store->buffer_in_ram = malloc(vertex_store->buffer_in_ram_size);
+      save->out_of_memory = vertex_store->buffer_in_ram == NULL;
       save->out_of_memory =
          !ctx->Driver.BufferData(ctx,
                                  GL_ARRAY_BUFFER_ARB,
                                  size * sizeof(GLfloat),
                                  NULL, GL_STATIC_DRAW_ARB,
-                                 GL_MAP_WRITE_BIT |
-                                 GL_DYNAMIC_STORAGE_BIT,
+                                 GL_MAP_WRITE_BIT,
                                  vertex_store->bufferobj);
    }
    else {
@@ -164,7 +167,6 @@ alloc_vertex_store(struct gl_context *ctx, int vertex_count)
       _mesa_install_save_vtxfmt(ctx, &save->vtxfmt_noop);
    }
 
-   vertex_store->buffer_map = NULL;
    vertex_store->used = 0;
 
    return vertex_store;
@@ -175,72 +177,13 @@ static void
 free_vertex_store(struct gl_context *ctx,
                   struct vbo_save_vertex_store *vertex_store)
 {
-   assert(!vertex_store->buffer_map);
+   free(vertex_store->buffer_in_ram);
 
    if (vertex_store->bufferobj) {
       _mesa_reference_buffer_object(ctx, &vertex_store->bufferobj, NULL);
    }
 
    free(vertex_store);
-}
-
-
-fi_type *
-vbo_save_map_vertex_store(struct gl_context *ctx,
-                          struct vbo_save_vertex_store *vertex_store)
-{
-   const GLbitfield access = (GL_MAP_WRITE_BIT |
-                              GL_MAP_INVALIDATE_RANGE_BIT |
-                              GL_MAP_UNSYNCHRONIZED_BIT |
-                              GL_MAP_FLUSH_EXPLICIT_BIT |
-                              MESA_MAP_ONCE);
-
-   assert(vertex_store->bufferobj);
-   assert(!vertex_store->buffer_map);  /* the buffer should not be mapped */
-
-   if (vertex_store->bufferobj->Size > 0) {
-      /* Map the remaining free space in the VBO */
-      GLintptr offset = vertex_store->used * sizeof(GLfloat);
-      GLsizeiptr size = vertex_store->bufferobj->Size - offset;
-      fi_type *range = (fi_type *)
-         ctx->Driver.MapBufferRange(ctx, offset, size, access,
-                                    vertex_store->bufferobj,
-                                    MAP_INTERNAL);
-      if (range) {
-         /* compute address of start of whole buffer (needed elsewhere) */
-         vertex_store->buffer_map = range - vertex_store->used;
-         assert(vertex_store->buffer_map);
-         return range;
-      }
-      else {
-         vertex_store->buffer_map = NULL;
-         return NULL;
-      }
-   }
-   else {
-      /* probably ran out of memory for buffers */
-      return NULL;
-   }
-}
-
-
-void
-vbo_save_unmap_vertex_store(struct gl_context *ctx,
-                            struct vbo_save_vertex_store *vertex_store)
-{
-   if (vertex_store->bufferobj->Size > 0) {
-      GLintptr offset = 0;
-      GLsizeiptr length = vertex_store->used * sizeof(GLfloat)
-         - vertex_store->bufferobj->Mappings[MAP_INTERNAL].Offset;
-
-      /* Explicitly flush the region we wrote to */
-      ctx->Driver.FlushMappedBufferRange(ctx, offset, length,
-                                         vertex_store->bufferobj,
-                                         MAP_INTERNAL);
-
-      ctx->Driver.UnmapBuffer(ctx, vertex_store->bufferobj, MAP_INTERNAL);
-   }
-   vertex_store->buffer_map = NULL;
 }
 
 
@@ -263,7 +206,7 @@ reset_counters(struct gl_context *ctx)
    struct vbo_save_context *save = &vbo_context(ctx)->save;
 
    save->prims = save->prim_store->prims + save->prim_store->used;
-   save->buffer_map = save->vertex_store->buffer_map + save->vertex_store->used;
+   save->buffer_map = save->vertex_store->buffer_in_ram + save->vertex_store->used;
 
    assert(save->buffer_map == save->buffer_ptr);
 
@@ -482,10 +425,6 @@ realloc_storage(struct gl_context *ctx, int prim_count, int vertex_count)
 {
    struct vbo_save_context *save = &vbo_context(ctx)->save;
    if (vertex_count >= 0) {
-      /* Unmap old store:
-       */
-      vbo_save_unmap_vertex_store(ctx, save->vertex_store);
-
       /* Release old reference:
        */
       free_vertex_store(ctx, save->vertex_store);
@@ -497,7 +436,7 @@ realloc_storage(struct gl_context *ctx, int prim_count, int vertex_count)
       /* Allocate and map new store:
        */
       save->vertex_store = alloc_vertex_store(ctx, vertex_count);
-      save->buffer_ptr = vbo_save_map_vertex_store(ctx, save->vertex_store);
+      save->buffer_ptr = save->vertex_store->buffer_in_ram + save->vertex_store->used;
       save->out_of_memory = save->buffer_ptr == NULL;
    }
 
@@ -507,6 +446,85 @@ realloc_storage(struct gl_context *ctx, int prim_count, int vertex_count)
          free(save->prim_store);
       }
       save->prim_store = alloc_prim_store(prim_count);
+   }
+}
+
+struct vertex_key {
+   unsigned vertex_size;
+   fi_type *vertex_attributes;
+};
+
+static uint32_t _hash_vertex_key(const void *key)
+{
+   struct vertex_key *k = (struct vertex_key*)key;
+   unsigned sz = k->vertex_size;
+   assert(sz);
+   return _mesa_hash_data(k->vertex_attributes, sz * sizeof(float));
+}
+
+static bool _compare_vertex_key(const void *key1, const void *key2)
+{
+   struct vertex_key *k1 = (struct vertex_key*)key1;
+   struct vertex_key *k2 = (struct vertex_key*)key2;
+   /* All the compared vertices are going to be drawn with the same VAO,
+    * so we can compare the attributes. */
+   assert (k1->vertex_size == k2->vertex_size);
+   return memcmp(k1->vertex_attributes,
+                 k2->vertex_attributes,
+                 k1->vertex_size * sizeof(float)) == 0;
+}
+
+static void _free_entry(struct hash_entry *entry)
+{
+   free((void*)entry->key);
+}
+
+/* Add vertex to the vertex buffer and return its index. If this vertex is a duplicate
+ * of an existing vertex, return the original index instead.
+ */
+static uint32_t
+add_vertex(struct vbo_save_context *save, struct hash_table *hash_to_index,
+           uint32_t index, uint32_t offset_in_bytes, uint32_t base_index, fi_type *new_buffer,
+           uint32_t *max_index)
+{
+   /* If vertex deduplication is disabled return the original index. */
+   if (!hash_to_index)
+      return index;
+
+   /* Apply the offset into buffer_in_ram ... */
+   fi_type *vert = save->vertex_store->buffer_in_ram + offset_in_bytes / sizeof(float);
+   /* ... and cancel the start_offset trick.
+    * This way we get the correct offset in all cases (= start_offset being 0 or not).
+    */
+   vert += save->vertex_size * (index - base_index);
+
+   struct vertex_key *key = malloc(sizeof(struct vertex_key));
+   key->vertex_size = save->vertex_size;
+   key->vertex_attributes = vert;
+
+   struct hash_entry *entry = _mesa_hash_table_search(hash_to_index, key);
+   if (entry) {
+      free(key);
+      /* We found an existing vertex with the same hash, return its index. */
+      return (uintptr_t) entry->data;
+   } else {
+      /* This is a new vertex. Determine a new index and copy its attributes to the vertex
+       * buffer. Note that 'new_buffer' is created at each list compilation so we write vertices
+       * starting at index 0.
+       */
+      uint32_t n = _mesa_hash_table_num_entries(hash_to_index);
+      *max_index = MAX2(n + base_index, *max_index);
+
+      memcpy(&new_buffer[save->vertex_size * n],
+             vert,
+             save->vertex_size * sizeof(fi_type));
+
+      _mesa_hash_table_insert(hash_to_index, key, (void*)(uintptr_t)(n + base_index));
+
+      /* The index buffer is shared between list compilations, so add the base index to get
+       * the final index.
+       */
+      return n + base_index;
    }
 }
 
@@ -545,7 +563,8 @@ compile_vertex_list(struct gl_context *ctx)
    }
    const GLsizei stride = save->vertex_size*sizeof(GLfloat);
    GLintptr buffer_offset =
-       (save->buffer_map - save->vertex_store->buffer_map) * sizeof(GLfloat);
+       (save->buffer_map - save->vertex_store->buffer_in_ram) * sizeof(GLfloat);
+   const GLintptr original_buffer_offset = buffer_offset;
    assert(old_offset <= buffer_offset);
    const GLintptr offset_diff = buffer_offset - old_offset;
    GLuint start_offset = 0;
@@ -675,6 +694,18 @@ compile_vertex_list(struct gl_context *ctx)
    struct _mesa_prim *merged_prims = NULL;
 
    int idx = 0;
+   struct hash_table *vertex_to_index = NULL;
+   fi_type *temp_vertices_buffer = NULL;
+
+   /* The loopback replay code doesn't use the index buffer, so we can't
+    * dedup vertices in this case.
+    */
+   if (!ctx->ListState.Current.UseLoopback) {
+      vertex_to_index = _mesa_hash_table_create(NULL, _hash_vertex_key, _compare_vertex_key);
+      temp_vertices_buffer = malloc(save->vertex_store->buffer_in_ram_size);
+   }
+
+   uint32_t max_index = 0;
 
    int last_valid_prim = -1;
    /* Construct indices array. */
@@ -708,13 +739,17 @@ compile_vertex_list(struct gl_context *ctx)
          unsigned tri_count = merged_prims[last_valid_prim].count - 2;
 
          indices[idx] = indices[idx - 1];
-         indices[idx + 1] = original_prims[i].start;
+         indices[idx + 1] = add_vertex(save, vertex_to_index, original_prims[i].start,
+                                       original_buffer_offset, start_offset,
+                                       temp_vertices_buffer, &max_index);
          idx += 2;
          merged_prims[last_valid_prim].count += 2;
 
          if (tri_count % 2) {
             /* Add another index to preserve winding order */
-            indices[idx++] = original_prims[i].start;
+            indices[idx++] = add_vertex(save, vertex_to_index, original_prims[i].start,
+                                        original_buffer_offset, start_offset,
+                                        temp_vertices_buffer, &max_index);
             merged_prims[last_valid_prim].count++;
          }
       }
@@ -731,10 +766,14 @@ compile_vertex_list(struct gl_context *ctx)
             (original_prims[i + 1].mode == GL_LINE_STRIP ||
              original_prims[i + 1].mode == GL_LINES)))) {
          for (unsigned j = 0; j < vertex_count; j++) {
-            indices[idx++] = original_prims[i].start + j;
+            indices[idx++] = add_vertex(save, vertex_to_index, original_prims[i].start + j,
+                                        original_buffer_offset, start_offset,
+                                        temp_vertices_buffer, &max_index);
             /* Repeat all but the first/last indices. */
             if (j && j != vertex_count - 1) {
-               indices[idx++] = original_prims[i].start + j;
+               indices[idx++] = add_vertex(save, vertex_to_index, original_prims[i].start + j,
+                                           original_buffer_offset, start_offset,
+                                           temp_vertices_buffer, &max_index);
             }
          }
       } else {
@@ -742,7 +781,9 @@ compile_vertex_list(struct gl_context *ctx)
          mode = original_prims[i].mode;
 
          for (unsigned j = 0; j < vertex_count; j++) {
-            indices[idx++] = original_prims[i].start + j;
+            indices[idx++] = add_vertex(save, vertex_to_index, original_prims[i].start + j,
+                                        original_buffer_offset, start_offset,
+                                        temp_vertices_buffer, &max_index);
          }
       }
 
@@ -773,11 +814,11 @@ compile_vertex_list(struct gl_context *ctx)
       _mesa_reference_buffer_object(ctx, &save->previous_ib, NULL);
       save->previous_ib = ctx->Driver.NewBufferObject(ctx, VBO_BUF_ID + 1);
       bool success = ctx->Driver.BufferData(ctx,
-                                         GL_ELEMENT_ARRAY_BUFFER_ARB,
-                                         MAX2(VBO_SAVE_INDEX_SIZE, idx) * sizeof(uint32_t),
-                                         NULL,
-                                         GL_STATIC_DRAW_ARB, GL_MAP_WRITE_BIT,
-                                         save->previous_ib);
+                                            GL_ELEMENT_ARRAY_BUFFER_ARB,
+                                            MAX2(VBO_SAVE_INDEX_SIZE, idx) * sizeof(uint32_t),
+                                            NULL,
+                                            GL_STATIC_DRAW_ARB, GL_MAP_WRITE_BIT,
+                                            save->previous_ib);
       if (!success) {
          _mesa_reference_buffer_object(ctx, &save->previous_ib, NULL);
          _mesa_error(ctx, GL_OUT_OF_MEMORY, "IB allocation");
@@ -796,6 +837,24 @@ compile_vertex_list(struct gl_context *ctx)
    } else {
       node->cold->vertex_count = 0;
       node->cold->prim_count = 0;
+   }
+
+
+  if (vertex_to_index) {
+      ctx->Driver.BufferSubData(ctx,
+                                original_buffer_offset,
+                                (max_index - start_offset + 1) * save->vertex_size * sizeof(fi_type),
+                                temp_vertices_buffer,
+                                save->vertex_store->bufferobj);
+
+      _mesa_hash_table_destroy(vertex_to_index, _free_entry);
+      free(temp_vertices_buffer);
+   } else {
+      ctx->Driver.BufferSubData(ctx,
+                                original_buffer_offset,
+                                idx * save->vertex_size * sizeof(fi_type),
+                                &save->vertex_store->buffer_in_ram[original_buffer_offset / sizeof(float)],
+                                save->vertex_store->bufferobj);
    }
 
    /* Prepare for DrawGallium */
@@ -846,7 +905,7 @@ end:
       _glapi_set_dispatch(ctx->Exec);
 
       /* Note that the range of referenced vertices must be mapped already */
-      _vbo_loopback_vertex_list(ctx, node);
+      _vbo_loopback_vertex_list(ctx, node, save->vertex_store->buffer_in_ram);
 
       _glapi_set_dispatch(dispatch);
    }
@@ -860,7 +919,7 @@ end:
    }
    else {
       /* update buffer_ptr for next vertex */
-      save->buffer_ptr = save->vertex_store->buffer_map
+      save->buffer_ptr = save->vertex_store->buffer_in_ram
          + save->vertex_store->used;
    }
 
@@ -1882,7 +1941,7 @@ vbo_save_NewList(struct gl_context *ctx, GLuint list, GLenum mode)
    if (!save->vertex_store)
       save->vertex_store = alloc_vertex_store(ctx, 0);
 
-   save->buffer_ptr = vbo_save_map_vertex_store(ctx, save->vertex_store);
+   save->buffer_ptr = save->vertex_store->buffer_in_ram + save->vertex_store->used;
 
    reset_vertex(ctx);
    reset_counters(ctx);
@@ -1921,8 +1980,6 @@ vbo_save_EndList(struct gl_context *ctx)
       _mesa_install_save_vtxfmt(ctx, &ctx->ListState.ListVtxfmt);
    }
 
-   vbo_save_unmap_vertex_store(ctx, save->vertex_store);
-
    assert(save->vertex_size == 0);
 }
 
@@ -1935,7 +1992,7 @@ current_init(struct gl_context *ctx)
    struct vbo_save_context *save = &vbo_context(ctx)->save;
    GLint i;
 
-   for (i = VBO_ATTRIB_POS; i <= VBO_ATTRIB_GENERIC15; i++) {
+   for (i = VBO_ATTRIB_POS; i <= VBO_ATTRIB_EDGEFLAG; i++) {
       const GLuint j = i - VBO_ATTRIB_POS;
       assert(j < VERT_ATTRIB_MAX);
       save->currentsz[i] = &ctx->ListState.ActiveAttribSize[j];

@@ -369,10 +369,7 @@ optimise_nir(nir_shader *nir, unsigned quirks, bool is_blend)
                 NIR_PASS(progress, nir, nir_opt_undef);
                 NIR_PASS(progress, nir, nir_lower_undef_to_zero);
 
-                NIR_PASS(progress, nir, nir_opt_loop_unroll,
-                         nir_var_shader_in |
-                         nir_var_shader_out |
-                         nir_var_function_temp);
+                NIR_PASS(progress, nir, nir_opt_loop_unroll);
 
                 NIR_PASS(progress, nir, nir_opt_vectorize,
                          midgard_vectorize_filter, NULL);
@@ -3173,12 +3170,14 @@ midgard_compile_shader_nir(nir_shader *nir,
 
         /* Analyze now that the code is known but before scheduling creates
          * pipeline registers which are harder to track */
-        mir_analyze_helper_terminate(ctx);
         mir_analyze_helper_requirements(ctx);
 
         /* Schedule! */
         midgard_schedule_program(ctx);
         mir_ra(ctx);
+
+        /* Analyze after scheduling since this is order-dependent */
+        mir_analyze_helper_terminate(ctx);
 
         /* Emit flat binary from the instruction arrays. Iterate each block in
          * sequence. Save instruction boundaries such that lookahead tags can

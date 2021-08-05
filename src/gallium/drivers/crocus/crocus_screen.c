@@ -674,25 +674,23 @@ crocus_get_default_l3_config(const struct intel_device_info *devinfo,
 }
 
 static void
-crocus_shader_debug_log(void *data, const char *fmt, ...)
+crocus_shader_debug_log(void *data, unsigned *id, const char *fmt, ...)
 {
    struct pipe_debug_callback *dbg = data;
-   unsigned id = 0;
    va_list args;
 
    if (!dbg->debug_message)
       return;
 
    va_start(args, fmt);
-   dbg->debug_message(dbg->data, &id, PIPE_DEBUG_TYPE_SHADER_INFO, fmt, args);
+   dbg->debug_message(dbg->data, id, PIPE_DEBUG_TYPE_SHADER_INFO, fmt, args);
    va_end(args);
 }
 
 static void
-crocus_shader_perf_log(void *data, const char *fmt, ...)
+crocus_shader_perf_log(void *data, unsigned *id, const char *fmt, ...)
 {
    struct pipe_debug_callback *dbg = data;
-   unsigned id = 0;
    va_list args;
    va_start(args, fmt);
 
@@ -704,7 +702,7 @@ crocus_shader_perf_log(void *data, const char *fmt, ...)
    }
 
    if (dbg->debug_message) {
-      dbg->debug_message(dbg->data, &id, PIPE_DEBUG_TYPE_PERF_INFO, fmt, args);
+      dbg->debug_message(dbg->data, id, PIPE_DEBUG_TYPE_PERF_INFO, fmt, args);
    }
 
    va_end(args);
@@ -766,6 +764,9 @@ crocus_screen_create(int fd, const struct pipe_screen_config *config)
 
    if (getenv("INTEL_NO_HW") != NULL)
       screen->no_hw = true;
+
+   driParseConfigFiles(config->options, config->options_info, 0, "crocus",
+                       NULL, NULL, NULL, 0, NULL, 0);
 
    bool bo_reuse = false;
    int bo_reuse_mode = driQueryOptioni(config->options, "bo_reuse");
