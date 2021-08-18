@@ -878,12 +878,26 @@ bind_stage(struct zink_context *ctx, enum pipe_shader_type stage,
            struct zink_shader *shader)
 {
    if (stage == PIPE_SHADER_COMPUTE) {
+      if (shader && shader != ctx->compute_stage) {
+         struct hash_entry *entry = _mesa_hash_table_search(ctx->compute_program_cache, shader);
+         if (entry) {
+            ctx->compute_pipeline_state.dirty = true;
+            ctx->curr_compute = entry->data;
+         } else
+            ctx->dirty_shader_stages |= 1 << stage;
+      } else if (!shader)
+         ctx->curr_compute = NULL;
       ctx->compute_stage = shader;
-      if (shader)
-         zink_select_launch_grid(ctx);
-   } else
+      zink_select_launch_grid(ctx);
+   } else {
       ctx->gfx_stages[stage] = shader;
-   ctx->dirty_shader_stages |= 1 << stage;
+      ctx->gfx_pipeline_state.combined_dirty = true;
+      if (!shader) {
+         ctx->gfx_pipeline_state.modules[stage] = VK_NULL_HANDLE;
+         ctx->curr_program = NULL;
+      }
+      ctx->dirty_shader_stages |= 1 << stage;
+   }
    if (shader && shader->nir->info.num_inlinable_uniforms)
       ctx->shader_has_inlinable_uniforms_mask |= 1 << stage;
    else
