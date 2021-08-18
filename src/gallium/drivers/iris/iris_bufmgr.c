@@ -207,8 +207,10 @@ struct iris_bufmgr {
    struct iris_memregion vram, sys;
 
    bool has_llc:1;
+   bool has_local_mem:1;
    bool has_mmap_offset:1;
    bool has_tiling_uapi:1;
+   bool has_userptr_probe:1;
    bool bo_reuse:1;
 
    struct intel_aux_map_context *aux_map_ctx;
@@ -449,7 +451,7 @@ alloc_bo_from_cache(struct iris_bufmgr *bufmgr,
          continue;
 
       /* Try a little harder to find one that's already in the right memzone */
-      if (match_zone && memzone != iris_memzone_for_address(cur->gtt_offset))
+      if (match_zone && memzone != iris_memzone_for_address(cur->address))
          continue;
 
       /* If the last BO in the cache is busy, there are no idle BOs.  Bail,
@@ -483,7 +485,7 @@ alloc_bo_from_cache(struct iris_bufmgr *bufmgr,
        * removed from the aux-map.
        */
       if (bo->bufmgr->aux_map_ctx)
-         intel_aux_map_unmap_range(bo->bufmgr->aux_map_ctx, bo->gtt_offset,
+         intel_aux_map_unmap_range(bo->bufmgr->aux_map_ctx, bo->address,
                                    bo->size);
       bo->aux_map_address = 0;
    }
@@ -491,10 +493,10 @@ alloc_bo_from_cache(struct iris_bufmgr *bufmgr,
    /* If the cached BO isn't in the right memory zone, or the alignment
     * isn't sufficient, free the old memory and assign it a new address.
     */
-   if (memzone != iris_memzone_for_address(bo->gtt_offset) ||
-       bo->gtt_offset % alignment != 0) {
-      vma_free(bufmgr, bo->gtt_offset, bo->size);
-      bo->gtt_offset = 0ull;
+   if (memzone != iris_memzone_for_address(bo->address) ||
+       bo->address % alignment != 0) {
+      vma_free(bufmgr, bo->address, bo->size);
+      bo->address = 0ull;
    }
 
    /* Zero the contents if necessary.  If this fails, fall back to
@@ -575,19 +577,18 @@ alloc_fresh_bo(struct iris_bufmgr *bufmgr, uint64_t bo_size, bool local)
    bo->idle = true;
    bo->local = local;
 
-   /* Calling set_domain() will allocate pages for the BO outside of the
-    * struct mutex lock in the kernel, which is more efficient than waiting
-    * to create them during the first execbuf that uses the BO.
-    */
-   struct drm_i915_gem_set_domain sd = {
-      .handle = bo->gem_handle,
-      .read_domains = I915_GEM_DOMAIN_CPU,
-      .write_domain = 0,
-   };
+   if (bufmgr->vram.size == 0) {
+      /* Calling set_domain() will allocate pages for the BO outside of the
+       * struct mutex lock in the kernel, which is more efficient than waiting
+       * to create them during the first execbuf that uses the BO.
+       */
+      struct drm_i915_gem_set_domain sd = {
+         .handle = bo->gem_handle,
+         .read_domains = I915_GEM_DOMAIN_CPU,
+         .write_domain = 0,
+      };
 
-   if (intel_ioctl(bo->bufmgr->fd, DRM_IOCTL_I915_GEM_SET_DOMAIN, &sd) != 0) {
-      bo_free(bo);
-      return NULL;
+      intel_ioctl(bo->bufmgr->fd, DRM_IOCTL_I915_GEM_SET_DOMAIN, &sd);
    }
 
    return bo;
@@ -613,7 +614,9 @@ iris_bo_alloc(struct iris_bufmgr *bufmgr,
    uint64_t bo_size =
       bucket ? bucket->size : MAX2(ALIGN(size, page_size), page_size);
 
-   bool is_coherent = bufmgr->has_llc || (flags & BO_ALLOC_COHERENT);
+   bool is_coherent = bufmgr->has_llc ||
+                      (bufmgr->vram.size > 0 && !local) ||
+                      (flags & BO_ALLOC_COHERENT);
    enum iris_mmap_mode mmap_mode =
       !local && is_coherent ? IRIS_MMAP_WB : IRIS_MMAP_WC;
 
@@ -639,12 +642,12 @@ iris_bo_alloc(struct iris_bufmgr *bufmgr,
          return NULL;
    }
 
-   if (bo->gtt_offset == 0ull) {
+   if (bo->address == 0ull) {
       simple_mtx_lock(&bufmgr->lock);
-      bo->gtt_offset = vma_alloc(bufmgr, memzone, bo->size, alignment);
+      bo->address = vma_alloc(bufmgr, memzone, bo->size, alignment);
       simple_mtx_unlock(&bufmgr->lock);
 
-      if (bo->gtt_offset == 0ull)
+      if (bo->address == 0ull)
          goto err_free;
    }
 
@@ -704,18 +707,21 @@ iris_bo_create_userptr(struct iris_bufmgr *bufmgr, const char *name,
    struct drm_i915_gem_userptr arg = {
       .user_ptr = (uintptr_t)ptr,
       .user_size = size,
+      .flags = bufmgr->has_userptr_probe ? I915_USERPTR_PROBE : 0,
    };
    if (intel_ioctl(bufmgr->fd, DRM_IOCTL_I915_GEM_USERPTR, &arg))
       goto err_free;
    bo->gem_handle = arg.handle;
 
-   /* Check the buffer for validity before we try and use it in a batch */
-   struct drm_i915_gem_set_domain sd = {
-      .handle = bo->gem_handle,
-      .read_domains = I915_GEM_DOMAIN_CPU,
-   };
-   if (intel_ioctl(bufmgr->fd, DRM_IOCTL_I915_GEM_SET_DOMAIN, &sd))
-      goto err_close;
+   if (!bufmgr->has_userptr_probe) {
+      /* Check the buffer for validity before we try and use it in a batch */
+      struct drm_i915_gem_set_domain sd = {
+         .handle = bo->gem_handle,
+         .read_domains = I915_GEM_DOMAIN_CPU,
+      };
+      if (intel_ioctl(bufmgr->fd, DRM_IOCTL_I915_GEM_SET_DOMAIN, &sd))
+         goto err_close;
+   }
 
    bo->name = name;
    bo->size = size;
@@ -725,10 +731,10 @@ iris_bo_create_userptr(struct iris_bufmgr *bufmgr, const char *name,
    bo->kflags = EXEC_OBJECT_SUPPORTS_48B_ADDRESS | EXEC_OBJECT_PINNED;
 
    simple_mtx_lock(&bufmgr->lock);
-   bo->gtt_offset = vma_alloc(bufmgr, memzone, size, 1);
+   bo->address = vma_alloc(bufmgr, memzone, size, 1);
    simple_mtx_unlock(&bufmgr->lock);
 
-   if (bo->gtt_offset == 0ull)
+   if (bo->address == 0ull)
       goto err_close;
 
    p_atomic_set(&bo->refcount, 1);
@@ -799,9 +805,9 @@ iris_bo_gem_create_from_name(struct iris_bufmgr *bufmgr,
    bo->global_name = handle;
    bo->reusable = false;
    bo->imported = true;
-   bo->mmap_mode = IRIS_MMAP_WC;
+   bo->mmap_mode = IRIS_MMAP_NONE;
    bo->kflags = EXEC_OBJECT_SUPPORTS_48B_ADDRESS | EXEC_OBJECT_PINNED;
-   bo->gtt_offset = vma_alloc(bufmgr, IRIS_MEMZONE_OTHER, bo->size, 1);
+   bo->address = vma_alloc(bufmgr, IRIS_MEMZONE_OTHER, bo->size, 1);
 
    _mesa_hash_table_insert(bufmgr->handle_table, &bo->gem_handle, bo);
    _mesa_hash_table_insert(bufmgr->name_table, &bo->global_name, bo);
@@ -849,12 +855,12 @@ bo_close(struct iris_bo *bo)
    }
 
    if (bo->aux_map_address && bo->bufmgr->aux_map_ctx) {
-      intel_aux_map_unmap_range(bo->bufmgr->aux_map_ctx, bo->gtt_offset,
+      intel_aux_map_unmap_range(bo->bufmgr->aux_map_ctx, bo->address,
                                 bo->size);
    }
 
    /* Return the VMA for reuse */
-   vma_free(bo->bufmgr, bo->gtt_offset, bo->size);
+   vma_free(bo->bufmgr, bo->address, bo->size);
 
    free(bo);
 }
@@ -1015,6 +1021,9 @@ iris_bo_gem_mmap_legacy(struct pipe_debug_callback *dbg, struct iris_bo *bo)
 {
    struct iris_bufmgr *bufmgr = bo->bufmgr;
 
+   assert(bufmgr->vram.size == 0);
+   assert(bo->mmap_mode == IRIS_MMAP_WB || bo->mmap_mode == IRIS_MMAP_WC);
+
    struct drm_i915_gem_mmap mmap_arg = {
       .handle = bo->gem_handle,
       .size = bo->size,
@@ -1041,12 +1050,34 @@ iris_bo_gem_mmap_offset(struct pipe_debug_callback *dbg, struct iris_bo *bo)
       .handle = bo->gem_handle,
    };
 
-   if (bo->mmap_mode == IRIS_MMAP_WB)
-      mmap_arg.flags = I915_MMAP_OFFSET_WB;
-   else if (bo->mmap_mode == IRIS_MMAP_WC)
-      mmap_arg.flags = I915_MMAP_OFFSET_WC;
-   else
-      mmap_arg.flags = I915_MMAP_OFFSET_UC;
+   if (bufmgr->has_local_mem) {
+      /* On discrete memory platforms, we cannot control the mmap caching mode
+       * at mmap time.  Instead, it's fixed when the object is created (this
+       * is a limitation of TTM).
+       *
+       * On DG1, our only currently enabled discrete platform, there is no
+       * control over what mode we get.  For SMEM, we always get WB because
+       * it's fast (probably what we want) and when the device views SMEM
+       * across PCIe, it's always snooped.  The only caching mode allowed by
+       * DG1 hardware for LMEM is WC.
+       */
+      if (bo->local)
+         assert(bo->mmap_mode == IRIS_MMAP_WC);
+      else
+         assert(bo->mmap_mode == IRIS_MMAP_WB);
+
+      mmap_arg.flags = I915_MMAP_OFFSET_FIXED;
+   } else {
+      /* Only integrated platforms get to select a mmap caching mode here */
+      static const uint32_t mmap_offset_for_mode[] = {
+         [IRIS_MMAP_UC]    = I915_MMAP_OFFSET_UC,
+         [IRIS_MMAP_WC]    = I915_MMAP_OFFSET_WC,
+         [IRIS_MMAP_WB]    = I915_MMAP_OFFSET_WB,
+      };
+      assert(bo->mmap_mode != IRIS_MMAP_NONE);
+      assert(bo->mmap_mode < ARRAY_SIZE(mmap_offset_for_mode));
+      mmap_arg.flags = mmap_offset_for_mode[bo->mmap_mode];
+   }
 
    /* Get the fake offset back */
    int ret = intel_ioctl(bufmgr->fd, DRM_IOCTL_I915_GEM_MMAP_OFFSET, &mmap_arg);
@@ -1073,6 +1104,10 @@ iris_bo_map(struct pipe_debug_callback *dbg,
             struct iris_bo *bo, unsigned flags)
 {
    struct iris_bufmgr *bufmgr = bo->bufmgr;
+
+   assert(bo->mmap_mode != IRIS_MMAP_NONE);
+   if (bo->mmap_mode == IRIS_MMAP_NONE)
+      return NULL;
 
    if (!bo->map) {
       DBG("iris_bo_map: %d (%s)\n", bo->gem_handle, bo->name);
@@ -1300,7 +1335,7 @@ iris_bo_import_dmabuf(struct iris_bufmgr *bufmgr, int prime_fd)
    bo->name = "prime";
    bo->reusable = false;
    bo->imported = true;
-   bo->mmap_mode = IRIS_MMAP_WC;
+   bo->mmap_mode = IRIS_MMAP_NONE;
    bo->kflags = EXEC_OBJECT_SUPPORTS_48B_ADDRESS | EXEC_OBJECT_PINNED;
 
    /* From the Bspec, Memory Compression - Gfx12:
@@ -1313,7 +1348,7 @@ iris_bo_import_dmabuf(struct iris_bufmgr *bufmgr, int prime_fd)
     * in case. We always align to 64KB even on platforms where we don't need
     * to, because it's a fairly reasonable thing to do anyway.
     */
-   bo->gtt_offset =
+   bo->address =
       vma_alloc(bufmgr, IRIS_MEMZONE_OTHER, bo->size, 64 * 1024);
 
    bo->gem_handle = handle;
@@ -1644,7 +1679,7 @@ intel_aux_map_buffer_alloc(void *driver_ctx, uint32_t size)
                     IRIS_MEMZONE_OTHER, 0);
 
    buf->driver_bo = bo;
-   buf->gpu = bo->gtt_offset;
+   buf->gpu = bo->address;
    buf->gpu_end = buf->gpu + bo->size;
    buf->map = iris_bo_map(NULL, bo, MAP_WRITE | MAP_RAW);
    return buf;
@@ -1738,9 +1773,12 @@ iris_bufmgr_create(struct intel_device_info *devinfo, int fd, bool bo_reuse)
    list_inithead(&bufmgr->zombie_list);
 
    bufmgr->has_llc = devinfo->has_llc;
+   bufmgr->has_local_mem = devinfo->has_local_mem;
    bufmgr->has_tiling_uapi = devinfo->has_tiling_uapi;
    bufmgr->bo_reuse = bo_reuse;
    bufmgr->has_mmap_offset = gem_param(fd, I915_PARAM_MMAP_GTT_VERSION) >= 4;
+   bufmgr->has_userptr_probe =
+      gem_param(fd, I915_PARAM_HAS_USERPTR_PROBE) >= 1;
    iris_bufmgr_query_meminfo(bufmgr);
 
    STATIC_ASSERT(IRIS_MEMZONE_SHADER_START == 0ull);

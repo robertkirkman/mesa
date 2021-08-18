@@ -109,10 +109,8 @@ llvmpipe_get_vendor(struct pipe_screen *screen)
 static const char *
 llvmpipe_get_name(struct pipe_screen *screen)
 {
-   static char buf[100];
-   snprintf(buf, sizeof(buf), "llvmpipe (LLVM " MESA_LLVM_VERSION_STRING ", %u bits)",
-            lp_native_vector_width );
-   return buf;
+   struct llvmpipe_screen *lscreen = llvmpipe_screen(screen);
+   return lscreen->renderer_string;
 }
 
 
@@ -209,12 +207,11 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_VERTEX_COLOR_UNCLAMPED:
    case PIPE_CAP_VERTEX_COLOR_CLAMPED:
       return 1;
+   case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
    case PIPE_CAP_GLSL_FEATURE_LEVEL: {
       struct llvmpipe_screen *lscreen = llvmpipe_screen(screen);
       return lscreen->use_tgsi ? 330 : 450;
    }
-   case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
-      return 140;
    case PIPE_CAP_COMPUTE:
       return GALLIVM_HAVE_CORO;
    case PIPE_CAP_USER_VERTEX_BUFFERS:
@@ -348,6 +345,7 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
    case PIPE_CAP_TGSI_TG4_COMPONENT_IN_SWIZZLE:
    case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
+   case PIPE_CAP_RESOURCE_FROM_USER_MEMORY:
       return 1;
    case PIPE_CAP_SAMPLER_REDUCTION_MINMAX:
    case PIPE_CAP_TGSI_TXQS:
@@ -517,7 +515,7 @@ llvmpipe_get_compute_param(struct pipe_screen *_screen,
    case PIPE_COMPUTE_CAP_MAX_INPUT_SIZE:
       if (ret) {
          uint64_t *max_input = ret;
-         *max_input = 4096;
+         *max_input = 1576;
       }
       return sizeof(uint64_t);
    case PIPE_COMPUTE_CAP_IMAGES_SUPPORTED:
@@ -595,7 +593,6 @@ static const struct nir_shader_compiler_options gallivm_nir_options = {
    .max_unroll_iterations = 32,
    .use_interpolated_input_intrinsics = true,
    .lower_to_scalar = true,
-   .lower_cs_local_index_from_id = true,
    .lower_uniforms_to_ubo = true,
    .lower_vector_cmp = true,
    .lower_device_index_to_zero = true,
@@ -605,8 +602,7 @@ static const struct nir_shader_compiler_options gallivm_nir_options = {
 
 static void
 llvmpipe_finalize_nir(struct pipe_screen *screen,
-                      void *nirptr,
-                      bool optimize)
+                      void *nirptr)
 {
    struct nir_shader *nir = (struct nir_shader *)nirptr;
    lp_build_opt_nir(nir);
@@ -1038,6 +1034,10 @@ llvmpipe_create_screen(struct sw_winsys *winsys)
 #endif
    screen->num_threads = debug_get_num_option("LP_NUM_THREADS", screen->num_threads);
    screen->num_threads = MIN2(screen->num_threads, LP_MAX_THREADS);
+
+   lp_build_init(); /* get lp_native_vector_width initialised */
+
+   snprintf(screen->renderer_string, sizeof(screen->renderer_string), "llvmpipe (LLVM " MESA_LLVM_VERSION_STRING ", %u bits)", lp_native_vector_width );
 
    (void) mtx_init(&screen->cs_mutex, mtx_plain);
    (void) mtx_init(&screen->rast_mutex, mtx_plain);

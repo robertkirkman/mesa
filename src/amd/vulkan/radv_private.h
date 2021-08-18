@@ -485,6 +485,11 @@ struct radv_meta_state {
    VkPipelineLayout copy_vrs_htile_p_layout;
    VkDescriptorSetLayout copy_vrs_htile_ds_layout;
 
+   /* Clear DCC with comp-to-single. */
+   VkPipeline clear_dcc_comp_to_single_pipeline;
+   VkPipelineLayout clear_dcc_comp_to_single_p_layout;
+   VkDescriptorSetLayout clear_dcc_comp_to_single_ds_layout;
+
    struct {
       VkRenderPass render_pass[NUM_META_FS_KEYS][RADV_META_DST_LAYOUT_COUNT];
 
@@ -1581,6 +1586,9 @@ bool radv_image_use_dcc_image_stores(const struct radv_device *device,
                                      const struct radv_image *image);
 bool radv_image_use_dcc_predication(const struct radv_device *device,
                                     const struct radv_image *image);
+bool radv_image_use_comp_to_single(const struct radv_device *device,
+                                   const struct radv_image *image);
+
 void radv_update_fce_metadata(struct radv_cmd_buffer *cmd_buffer, struct radv_image *image,
                               const VkImageSubresourceRange *range, bool value);
 
@@ -1865,7 +1873,7 @@ bool radv_is_storage_image_format_supported(struct radv_physical_device *physica
                                             VkFormat format);
 bool radv_is_colorbuffer_format_supported(const struct radv_physical_device *pdevice,
                                           VkFormat format, bool *blendable);
-bool radv_dcc_formats_compatible(VkFormat format1, VkFormat format2);
+bool radv_dcc_formats_compatible(VkFormat format1, VkFormat format2, bool *sign_reinterpret);
 bool radv_is_atomic_format_supported(VkFormat format);
 bool radv_device_supports_etc(struct radv_physical_device *physical_device);
 
@@ -1893,6 +1901,7 @@ struct radv_image {
    bool exclusive;
    bool shareable;
    bool l2_coherent;
+   bool dcc_sign_reinterpret;
 
    /* Set when bound */
    struct radeon_winsys_bo *bo;
@@ -2235,7 +2244,8 @@ VkResult radv_image_create(VkDevice _device, const struct radv_image_create_info
                            const VkAllocationCallbacks *alloc, VkImage *pImage);
 
 bool radv_are_formats_dcc_compatible(const struct radv_physical_device *pdev, const void *pNext,
-                                     VkFormat format, VkImageCreateFlags flags);
+                                     VkFormat format, VkImageCreateFlags flags,
+                                     bool *sign_reinterpret);
 
 bool vi_alpha_is_on_msb(struct radv_device *device, VkFormat format);
 

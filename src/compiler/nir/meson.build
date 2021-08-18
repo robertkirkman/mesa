@@ -223,6 +223,7 @@ files_libnir = files(
   'nir_opt_dead_cf.c',
   'nir_opt_dead_write_vars.c',
   'nir_opt_find_array_copies.c',
+  'nir_opt_fragdepth.c',
   'nir_opt_gcm.c',
   'nir_opt_idiv_const.c',
   'nir_opt_if.c',
@@ -512,6 +513,19 @@ if with_tests
     executable(
       'ssa_def_bits_used',
       files('tests/ssa_def_bits_used_tests.cpp'),
+      c_args : [c_msvc_compat_args, no_override_init_args],
+      gnu_symbol_visibility : 'hidden',
+      include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
+      dependencies : [dep_thread, idep_gtest, idep_nir, idep_mesautil],
+    ),
+    suite : ['compiler', 'nir'],
+  )
+
+  test(
+    'algebraic',
+    executable(
+      'algebraic',
+      files('tests/algebraic_tests.cpp'),
       c_args : [c_msvc_compat_args, no_override_init_args],
       gnu_symbol_visibility : 'hidden',
       include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],

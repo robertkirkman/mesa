@@ -396,6 +396,9 @@ struct v3dv_pipeline_cache {
 
    struct hash_table *cache;
    struct v3dv_pipeline_cache_stats stats;
+
+   /* For VK_EXT_pipeline_creation_cache_control. */
+   bool externally_synchronized;
 };
 
 struct v3dv_device {
@@ -797,7 +800,8 @@ enum v3dv_dynamic_state_bits {
    V3DV_DYNAMIC_BLEND_CONSTANTS           = 1 << 5,
    V3DV_DYNAMIC_DEPTH_BIAS                = 1 << 6,
    V3DV_DYNAMIC_LINE_WIDTH                = 1 << 7,
-   V3DV_DYNAMIC_ALL                       = (1 << 8) - 1,
+   V3DV_DYNAMIC_COLOR_WRITE_ENABLE        = 1 << 8,
+   V3DV_DYNAMIC_ALL                       = (1 << 9) - 1,
 };
 
 /* Flags for dirty pipeline state.
@@ -820,6 +824,7 @@ enum v3dv_cmd_dirty_bits {
    V3DV_CMD_DIRTY_DEPTH_BIAS                = 1 << 14,
    V3DV_CMD_DIRTY_LINE_WIDTH                = 1 << 15,
    V3DV_CMD_DIRTY_VIEW_INDEX                = 1 << 16,
+   V3DV_CMD_DIRTY_COLOR_WRITE_ENABLE        = 1 << 17,
 };
 
 struct v3dv_dynamic_state {
@@ -857,6 +862,8 @@ struct v3dv_dynamic_state {
    } depth_bias;
 
    float line_width;
+
+   uint32_t color_write_enable;
 };
 
 extern const struct v3dv_dynamic_state default_dynamic_state;
@@ -2013,6 +2020,7 @@ v3dv_immutable_samplers(const struct v3dv_descriptor_set_layout *set,
 
 void v3dv_pipeline_cache_init(struct v3dv_pipeline_cache *cache,
                               struct v3dv_device *device,
+                              VkPipelineCacheCreateFlags,
                               bool cache_enabled);
 
 void v3dv_pipeline_cache_finish(struct v3dv_pipeline_cache *cache);

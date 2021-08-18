@@ -530,6 +530,7 @@ st_glsl_to_nir_post_opts(struct st_context *st, struct gl_program *prog,
       NIR_PASS_V(nir, gl_nir_lower_atomics, shader_program, true);
 
    NIR_PASS_V(nir, nir_opt_intrinsics);
+   NIR_PASS_V(nir, nir_opt_fragdepth);
 
    /* Lower 64-bit ops. */
    if (nir->options->lower_int64_options ||
@@ -1068,7 +1069,7 @@ st_finalize_nir(struct st_context *st, struct gl_program *prog,
       NIR_PASS_V(nir, gl_nir_lower_images, false);
 
    if (finalize_by_driver && screen->finalize_nir)
-      screen->finalize_nir(screen, nir, false);
+      screen->finalize_nir(screen, nir);
 }
 
 } /* extern "C" */

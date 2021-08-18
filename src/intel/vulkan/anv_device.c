@@ -890,6 +890,9 @@ anv_physical_device_try_create(struct anv_instance *instance,
    device->has_mmap_offset =
       anv_gem_get_param(fd, I915_PARAM_MMAP_GTT_VERSION) >= 4;
 
+   device->has_userptr_probe =
+      anv_gem_get_param(fd, I915_PARAM_HAS_USERPTR_PROBE);
+
    /* GENs prior to 8 do not support EU/Subslice info */
    device->subslice_total = intel_device_info_subslice_total(&device->info);
 
@@ -4073,7 +4076,7 @@ VkResult anv_AllocateMemory(
       /* Some legacy (non-modifiers) consumers need the tiling to be set on
        * the BO.  In this case, we have a dedicated allocation.
        */
-      if (image->needs_set_tiling) {
+      if (image->vk.wsi_legacy_scanout) {
          const uint32_t i915_tiling =
             isl_tiling_to_i915_tiling(image->planes[0].primary_surface.isl.tiling);
          int ret = anv_gem_set_tiling(device, mem->bo->gem_handle,

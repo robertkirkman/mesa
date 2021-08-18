@@ -327,9 +327,11 @@ panfrost_delete_shader_state(
 {
         struct panfrost_shader_variants *cso = (struct panfrost_shader_variants *) so;
 
-        if (cso->base.type == PIPE_SHADER_IR_TGSI) {
-                /* TODO: leaks TGSI tokens! */
-        }
+        if (!cso->is_compute && cso->base.type == PIPE_SHADER_IR_NIR)
+                ralloc_free(cso->base.ir.nir);
+
+        if (cso->base.type == PIPE_SHADER_IR_TGSI)
+                tgsi_free_tokens(cso->base.tokens);
 
         for (unsigned i = 0; i < cso->variant_count; ++i) {
                 struct panfrost_shader_state *shader_state = &cso->variants[i];
@@ -801,6 +803,8 @@ panfrost_destroy(struct pipe_context *pipe)
 
         panfrost_pool_cleanup(&panfrost->descs);
         panfrost_pool_cleanup(&panfrost->shaders);
+
+        util_primconvert_destroy(panfrost->primconvert);
 
         ralloc_free(pipe);
 }

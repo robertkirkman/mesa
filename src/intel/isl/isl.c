@@ -2655,7 +2655,7 @@ isl_surf_get_image_offset_B_tile_sa(const struct isl_surf *surf,
                                     uint32_t level,
                                     uint32_t logical_array_layer,
                                     uint32_t logical_z_offset_px,
-                                    uint32_t *offset_B,
+                                    uint64_t *offset_B,
                                     uint32_t *x_offset_sa,
                                     uint32_t *y_offset_sa)
 {
@@ -2687,7 +2687,7 @@ isl_surf_get_image_offset_B_tile_el(const struct isl_surf *surf,
                                     uint32_t level,
                                     uint32_t logical_array_layer,
                                     uint32_t logical_z_offset_px,
-                                    uint32_t *offset_B,
+                                    uint64_t *offset_B,
                                     uint32_t *x_offset_el,
                                     uint32_t *y_offset_el)
 {
@@ -2724,8 +2724,8 @@ isl_surf_get_image_range_B_tile(const struct isl_surf *surf,
                                 uint32_t level,
                                 uint32_t logical_array_layer,
                                 uint32_t logical_z_offset_px,
-                                uint32_t *start_tile_B,
-                                uint32_t *end_tile_B)
+                                uint64_t *start_tile_B,
+                                uint64_t *end_tile_B)
 {
    uint32_t start_x_offset_el, start_y_offset_el;
    uint32_t start_z_offset_el, start_array_slice;
@@ -2793,7 +2793,7 @@ isl_surf_get_image_surf(const struct isl_device *dev,
                         uint32_t logical_array_layer,
                         uint32_t logical_z_offset_px,
                         struct isl_surf *image_surf,
-                        uint32_t *offset_B,
+                        uint64_t *offset_B,
                         uint32_t *x_offset_sa,
                         uint32_t *y_offset_sa)
 {
@@ -2833,7 +2833,7 @@ isl_surf_get_uncompressed_surf(const struct isl_device *dev,
                                const struct isl_view *view,
                                struct isl_surf *ucompr_surf,
                                struct isl_view *ucompr_view,
-                               uint32_t *offset_B,
+                               uint64_t *offset_B,
                                uint32_t *x_offset_el,
                                uint32_t *y_offset_el)
 {
@@ -2847,13 +2847,14 @@ isl_surf_get_uncompressed_surf(const struct isl_device *dev,
    assert(isl_format_get_layout(view->format)->bpb == fmtl->bpb);
    assert(view->levels == 1);
 
-   const uint32_t view_width =
+   const uint32_t view_width_px =
       isl_minify(surf->logical_level0_px.width, view->base_level);
-   const uint32_t view_height =
+   const uint32_t view_height_px =
       isl_minify(surf->logical_level0_px.height, view->base_level);
 
-   const uint32_t ucompr_width = isl_align_div_npot(view_width, fmtl->bw);
-   const uint32_t ucompr_height = isl_align_div_npot(view_height, fmtl->bh);
+   assert(surf->samples == 1);
+   const uint32_t view_width_el = isl_align_div_npot(view_width_px, fmtl->bw);
+   const uint32_t view_height_el = isl_align_div_npot(view_height_px, fmtl->bh);
 
    /* If we ever enable 3D block formats, we'll need to re-think this */
    assert(fmtl->bd == 1);
@@ -2892,6 +2893,9 @@ isl_surf_get_uncompressed_surf(const struct isl_device *dev,
       *ucompr_surf = *surf;
       ucompr_surf->levels = 1;
 
+      /* The surface mostly stays as-is; there is no offset */
+      *offset_B = 0;
+
       /* The view remains the same */
       *ucompr_view = *view;
    } else {
@@ -2923,10 +2927,10 @@ isl_surf_get_uncompressed_surf(const struct isl_device *dev,
    /* We're making an uncompressed view here.  The image dimensions
     * need to be scaled down by the block size.
     */
-   assert(ucompr_surf->logical_level0_px.width == view_width);
-   assert(ucompr_surf->logical_level0_px.height == view_height);
-   ucompr_surf->logical_level0_px.width = ucompr_width;
-   ucompr_surf->logical_level0_px.height = ucompr_height;
+   assert(ucompr_surf->logical_level0_px.width == view_width_px);
+   assert(ucompr_surf->logical_level0_px.height == view_height_px);
+   ucompr_surf->logical_level0_px.width = view_width_el;
+   ucompr_surf->logical_level0_px.height = view_height_el;
    ucompr_surf->phys_level0_sa = isl_surf_get_phys_level0_el(surf);
 
    *x_offset_el = isl_assert_div(x_offset_sa, fmtl->bw);
@@ -2944,7 +2948,7 @@ isl_tiling_get_intratile_offset_el(enum isl_tiling tiling,
                                    uint32_t total_y_offset_el,
                                    uint32_t total_z_offset_el,
                                    uint32_t total_array_offset,
-                                   uint32_t *base_address_offset,
+                                   uint64_t *tile_offset_B,
                                    uint32_t *x_offset_el,
                                    uint32_t *y_offset_el,
                                    uint32_t *z_offset_el,
@@ -2953,8 +2957,8 @@ isl_tiling_get_intratile_offset_el(enum isl_tiling tiling,
    if (tiling == ISL_TILING_LINEAR) {
       assert(bpb % 8 == 0);
       assert(total_z_offset_el == 0 && total_array_offset == 0);
-      *base_address_offset = total_y_offset_el * row_pitch_B +
-                             total_x_offset_el * (bpb / 8);
+      *tile_offset_B = (uint64_t)total_y_offset_el * row_pitch_B +
+                       (uint64_t)total_x_offset_el * (bpb / 8);
       *x_offset_el = 0;
       *y_offset_el = 0;
       *z_offset_el = 0;
@@ -3001,9 +3005,9 @@ isl_tiling_get_intratile_offset_el(enum isl_tiling tiling,
    /* Add the Z and array offset to the Y offset to get a 2D offset */
    y_offset_tl += (z_offset_tl + a_offset_tl) * array_pitch_tl_rows;
 
-   *base_address_offset =
-      y_offset_tl * tile_info.phys_extent_B.h * row_pitch_B +
-      x_offset_tl * tile_info.phys_extent_B.h * tile_info.phys_extent_B.w;
+   *tile_offset_B =
+      (uint64_t)y_offset_tl * tile_info.phys_extent_B.h * row_pitch_B +
+      (uint64_t)x_offset_tl * tile_info.phys_extent_B.h * tile_info.phys_extent_B.w;
 }
 
 uint32_t

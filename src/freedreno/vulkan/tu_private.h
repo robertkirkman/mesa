@@ -234,6 +234,8 @@ enum tu_debug_flags
    TU_DEBUG_NOMULTIPOS = 1 << 7,
    TU_DEBUG_NOLRZ = 1 << 8,
    TU_DEBUG_PERFC = 1 << 9,
+   TU_DEBUG_FLUSHALL = 1 << 10,
+   TU_DEBUG_SYNCDRAW = 1 << 11,
 };
 
 struct tu_instance
@@ -500,9 +502,11 @@ enum tu_dynamic_state
    TU_DYNAMIC_STATE_RB_DEPTH_CNTL,
    TU_DYNAMIC_STATE_RB_STENCIL_CNTL,
    TU_DYNAMIC_STATE_VB_STRIDE,
+   TU_DYNAMIC_STATE_RASTERIZER_DISCARD,
    TU_DYNAMIC_STATE_COUNT,
    /* no associated draw state: */
    TU_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY = TU_DYNAMIC_STATE_COUNT,
+   TU_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE,
    /* re-use the line width enum as it uses GRAS_SU_CNTL: */
    TU_DYNAMIC_STATE_GRAS_SU_CNTL = VK_DYNAMIC_STATE_LINE_WIDTH,
 };
@@ -722,8 +726,9 @@ enum tu_cmd_dirty_bits
    TU_CMD_DIRTY_SHADER_CONSTS = BIT(7),
    TU_CMD_DIRTY_LRZ = BIT(8),
    TU_CMD_DIRTY_VS_PARAMS = BIT(9),
+   TU_CMD_DIRTY_RASTERIZER_DISCARD = BIT(10),
    /* all draw states were disabled and need to be re-enabled: */
-   TU_CMD_DIRTY_DRAW_STATE = BIT(10)
+   TU_CMD_DIRTY_DRAW_STATE = BIT(11)
 };
 
 /* There are only three cache domains we have to care about: the CCU, or
@@ -937,7 +942,9 @@ struct tu_cmd_state
    uint32_t dynamic_stencil_ref;
 
    uint32_t gras_su_cntl, rb_depth_cntl, rb_stencil_cntl;
+   uint32_t pc_raster_cntl, vpc_unknown_9107;
    enum pc_di_primtype primtype;
+   bool primitive_restart_enable;
 
    /* saved states to re-emit in TU_CMD_DIRTY_DRAW_STATE case */
    struct tu_draw_state dynamic_state[TU_DYNAMIC_STATE_COUNT];
@@ -1160,6 +1167,8 @@ struct tu_pipeline
    uint32_t gras_su_cntl, gras_su_cntl_mask;
    uint32_t rb_depth_cntl, rb_depth_cntl_mask;
    uint32_t rb_stencil_cntl, rb_stencil_cntl_mask;
+   uint32_t pc_raster_cntl, pc_raster_cntl_mask;
+   uint32_t vpc_unknown_9107, vpc_unknown_9107_mask;
    uint32_t stencil_wrmask;
 
    bool rb_depth_cntl_disable;
@@ -1542,6 +1551,12 @@ struct tu_subpass_barrier {
 struct tu_subpass_attachment
 {
    uint32_t attachment;
+
+   /* For input attachments, true if it needs to be patched to refer to GMEM
+    * in GMEM mode. This is false if it hasn't already been written as an
+    * attachment.
+    */
+   bool patch_input_gmem;
 };
 
 struct tu_subpass
@@ -1550,6 +1565,13 @@ struct tu_subpass
    uint32_t color_count;
    uint32_t resolve_count;
    bool resolve_depth_stencil;
+
+   /* True if there is any feedback loop at all. */
+   bool feedback;
+
+   /* True if we must invalidate UCHE thanks to a feedback loop. */
+   bool feedback_invalidate;
+
    struct tu_subpass_attachment *input_attachments;
    struct tu_subpass_attachment *color_attachments;
    struct tu_subpass_attachment *resolve_attachments;

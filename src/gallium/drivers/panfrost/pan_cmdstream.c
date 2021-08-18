@@ -236,6 +236,7 @@ panfrost_emit_blend(struct panfrost_batch *batch, void *rts, mali_ptr *blend_sha
         unsigned rt_count = batch->key.nr_cbufs;
         struct panfrost_context *ctx = batch->ctx;
         const struct panfrost_blend_state *so = ctx->blend;
+        bool dithered = so->base.dither;
 
         /* Always have at least one render target for depth-only passes */
         for (unsigned i = 0; i < MAX2(rt_count, 1); ++i) {
@@ -262,7 +263,7 @@ panfrost_emit_blend(struct panfrost_batch *batch, void *rts, mali_ptr *blend_sha
                 pan_pack(packed, BLEND, cfg) {
                         cfg.srgb = util_format_is_srgb(format);
                         cfg.load_destination = info.load_dest;
-                        cfg.round_to_fb_precision = !ctx->blend->base.dither;
+                        cfg.round_to_fb_precision = !dithered;
                         cfg.alpha_to_one = ctx->blend->base.alpha_to_one;
 #if PAN_ARCH >= 6
                         cfg.bifrost.constant = pack_blend_constant(format, cons);
@@ -317,7 +318,7 @@ panfrost_emit_blend(struct panfrost_batch *batch, void *rts, mali_ptr *blend_sha
                                  */
                                 cfg.fixed_function.num_comps = 4;
                                 cfg.fixed_function.conversion.memory_format =
-                                        panfrost_format_to_bifrost_blend(dev, format);
+                                        panfrost_format_to_bifrost_blend(dev, format, dithered);
                                 cfg.fixed_function.conversion.register_format =
                                         fs->info.bifrost.blend[i].format;
                                 cfg.fixed_function.rt = i;
@@ -884,7 +885,7 @@ panfrost_upload_rt_conversion_sysval(struct panfrost_batch *batch,
         if (rt < batch->key.nr_cbufs && batch->key.cbufs[rt]) {
                 enum pipe_format format = batch->key.cbufs[rt]->format;
                 uniform->u[0] =
-                        pan_blend_get_bifrost_desc(dev, format, rt, size) >> 32;
+                        pan_blend_get_bifrost_desc(dev, format, rt, size, false) >> 32;
         } else {
                 pan_pack(&uniform->u[0], BIFROST_INTERNAL_CONVERSION, cfg)
                         cfg.memory_format = dev->formats[PIPE_FORMAT_NONE].hw;
@@ -2690,6 +2691,7 @@ panfrost_draw_emit_tiler(struct panfrost_batch *batch,
                 cfg.address = panfrost_batch_get_bifrost_tiler(batch, ~0);
         }
 
+        pan_section_pack(job, TILER_JOB, PADDING, cfg);
         pan_section_pack(job, TILER_JOB, DRAW_PADDING, cfg);
 #endif
 
@@ -3434,6 +3436,7 @@ panfrost_create_blend_state(struct pipe_context *pipe,
 
                 /* Determine some common properties */
                 unsigned constant_mask = pan_blend_constant_mask(equation);
+                const bool supports_2src = pan_blend_supports_2src(PAN_ARCH);
                 so->info[c] = (struct pan_blend_info) {
                         .no_colour = (equation.color_mask == 0),
                         .opaque = pan_blend_is_opaque(equation),
@@ -3445,7 +3448,8 @@ panfrost_create_blend_state(struct pipe_context *pipe,
 
                         /* Could this possibly be fixed-function? */
                         .fixed_function = !blend->logicop_enable &&
-                                pan_blend_can_fixed_function(equation) &&
+                                pan_blend_can_fixed_function(equation,
+                                                             supports_2src) &&
                                 (!constant_mask ||
                                  pan_blend_supports_constant(PAN_ARCH, c))
                 };
@@ -3460,8 +3464,7 @@ panfrost_create_blend_state(struct pipe_context *pipe,
                 /* Converting equations to Mali style is expensive, do it at
                  * CSO create time instead of draw-time */
                 if (so->info[c].fixed_function) {
-                        pan_pack(&so->equation[c], BLEND_EQUATION, cfg)
-                                pan_blend_to_fixed_function_equation(equation, &cfg);
+                        so->equation[c] = pan_pack_blend(equation);
                 }
         }
 

@@ -3685,8 +3685,11 @@ typedef struct nir_shader_compiler_options {
     */
    bool intel_vec4;
 
-   /** Lower nir_op_ibfe and nir_op_ubfe that have two constant sources. */
-   bool lower_bfe_with_two_constants;
+   /**
+    * For most Intel GPUs, all ternary operations such as FMA and BFE cannot
+    * have immediates, so two to three instructions may eventually be needed.
+    */
+   bool avoid_ternary_with_two_constants;
 
    /** Whether 8-bit ALU is supported. */
    bool support_8bit_alu;
@@ -3887,6 +3890,7 @@ nir_call_instr *nir_call_instr_create(nir_shader *shader,
 nir_tex_instr *nir_tex_instr_create(nir_shader *shader, unsigned num_srcs);
 
 nir_phi_instr *nir_phi_instr_create(nir_shader *shader);
+nir_phi_src *nir_phi_instr_add_src(nir_phi_instr *instr, nir_block *pred, nir_src src);
 
 nir_parallel_copy_instr *nir_parallel_copy_instr_create(nir_shader *shader);
 
@@ -5443,6 +5447,8 @@ bool nir_opt_deref_impl(nir_function_impl *impl);
 bool nir_opt_deref(nir_shader *shader);
 
 bool nir_opt_find_array_copies(nir_shader *shader);
+
+bool nir_opt_fragdepth(nir_shader *shader);
 
 bool nir_opt_gcm(nir_shader *shader, bool value_number);
 

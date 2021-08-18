@@ -746,7 +746,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
          A6XX_HLSQ_CONTROL_4_REG_ZWCOORDREGID(zwcoord_regid) |
          A6XX_HLSQ_CONTROL_4_REG_IJ_PERSP_SAMPLE(ij_regid[IJ_PERSP_SAMPLE]) |
          A6XX_HLSQ_CONTROL_4_REG_IJ_LINEAR_SAMPLE(ij_regid[IJ_LINEAR_SAMPLE]));
-   OUT_RING(ring, 0xfc); /* XXX */
+   OUT_RING(ring, 0xfcfc); /* line length (?), foveation quality */
 
    OUT_PKT4(ring, REG_A6XX_HLSQ_FS_CNTL_0, 1);
    OUT_RING(ring, A6XX_HLSQ_FS_CNTL_0_THREADSIZE(fssz) |
@@ -816,8 +816,11 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
    OUT_PKT4(ring, REG_A6XX_RB_SAMPLE_CNTL, 1);
    OUT_RING(ring, COND(sample_shading, A6XX_RB_SAMPLE_CNTL_PER_SAMP_MODE));
 
-   OUT_PKT4(ring, REG_A6XX_GRAS_UNKNOWN_8101, 1);
-   OUT_RING(ring, COND(sample_shading, 0x6)); // XXX
+   OUT_PKT4(ring, REG_A6XX_GRAS_LRZ_PS_INPUT_CNTL, 1);
+   OUT_RING(ring,
+         CONDREG(samp_id_regid, A6XX_GRAS_LRZ_PS_INPUT_CNTL_SAMPLEID) |
+         A6XX_GRAS_LRZ_PS_INPUT_CNTL_FRAGCOORDSAMPLEMODE(
+            sample_shading ? FRAGCOORD_SAMPLE : FRAGCOORD_CENTER));
 
    OUT_PKT4(ring, REG_A6XX_GRAS_SAMPLE_CNTL, 1);
    OUT_RING(ring, COND(sample_shading, A6XX_GRAS_SAMPLE_CNTL_PER_SAMP_MODE));
@@ -910,7 +913,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
       OUT_RING(ring, A6XX_GRAS_GS_CL_CNTL_CLIP_MASK(clip_mask) |
                         A6XX_GRAS_GS_CL_CNTL_CULL_MASK(cull_mask));
 
-      OUT_PKT4(ring, REG_A6XX_VPC_UNKNOWN_9100, 1);
+      OUT_PKT4(ring, REG_A6XX_VPC_GS_PARAM, 1);
       OUT_RING(ring, 0xff);
 
       OUT_PKT4(ring, REG_A6XX_VPC_GS_CLIP_CNTL, 1);

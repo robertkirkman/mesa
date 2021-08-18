@@ -46,6 +46,7 @@ static const struct debug_named_value bifrost_debug_options[] = {
         {"nosched",   BIFROST_DBG_NOSCHED, 	"Force trivial bundling"},
         {"inorder",   BIFROST_DBG_INORDER, 	"Force in-order bundling"},
         {"novalidate",BIFROST_DBG_NOVALIDATE,   "Skip IR validation"},
+        {"noopt",     BIFROST_DBG_NOOPT,        "Skip optimization passes"},
         DEBUG_NAMED_VALUE_END
 };
 
@@ -1232,7 +1233,7 @@ bi_emit_intrinsic(bi_builder *b, nir_intrinsic_instr *instr)
         case nir_intrinsic_discard_if: {
                 bi_index src = bi_src_index(&instr->src[0]);
                 assert(nir_src_bit_size(instr->src[0]) == 1);
-                bi_discard_f32(b, bi_half(src, false), bi_imm_u16(0), BI_CMPF_NE);
+                bi_discard_b32(b, bi_half(src, false));
                 break;
         }
 
@@ -1514,8 +1515,8 @@ bi_fexp_32(bi_builder *b, bi_index dst, bi_index s0, bi_index log2_base)
         bi_index fixed_pt = bi_f32_to_s32(b, scale, BI_ROUND_NONE);
 
         /* Compute the result for the fixed-point input, but pass along
-         * the original input for correct NaN propagation */
-        bi_fexp_f32_to(b, dst, fixed_pt, s0);
+         * the floating-point scale for correct NaN propagation */
+        bi_fexp_f32_to(b, dst, fixed_pt, scale);
 }
 
 static void
@@ -1861,29 +1862,29 @@ bi_emit_alu(bi_builder *b, nir_alu_instr *instr)
                 break;
 
         case nir_op_fsat: {
-                bi_instr *I = bi_fadd_to(b, sz, dst, s0, bi_negzero(), BI_ROUND_NONE);
+                bi_instr *I = bi_fclamp_to(b, sz, dst, s0);
                 I->clamp = BI_CLAMP_CLAMP_0_1;
                 break;
         }
 
         case nir_op_fsat_signed_mali: {
-                bi_instr *I = bi_fadd_to(b, sz, dst, s0, bi_negzero(), BI_ROUND_NONE);
+                bi_instr *I = bi_fclamp_to(b, sz, dst, s0);
                 I->clamp = BI_CLAMP_CLAMP_M1_1;
                 break;
         }
 
         case nir_op_fclamp_pos_mali: {
-                bi_instr *I = bi_fadd_to(b, sz, dst, s0, bi_negzero(), BI_ROUND_NONE);
+                bi_instr *I = bi_fclamp_to(b, sz, dst, s0);
                 I->clamp = BI_CLAMP_CLAMP_0_INF;
                 break;
         }
 
         case nir_op_fneg:
-                bi_fadd_to(b, sz, dst, bi_neg(s0), bi_negzero(), BI_ROUND_NONE);
+                bi_fabsneg_to(b, sz, dst, bi_neg(s0));
                 break;
 
         case nir_op_fabs:
-                bi_fadd_to(b, sz, dst, bi_abs(s0), bi_negzero(), BI_ROUND_NONE);
+                bi_fabsneg_to(b, sz, dst, bi_abs(s0));
                 break;
 
         case nir_op_fsin:
@@ -2296,6 +2297,14 @@ bi_emit_texc_array_index(bi_builder *b, bi_index idx, nir_alu_type T)
 static bi_index
 bi_emit_texc_lod_88(bi_builder *b, bi_index lod, bool fp16)
 {
+        /* Precompute for constant LODs to avoid general constant folding */
+        if (lod.type == BI_INDEX_CONSTANT) {
+                uint32_t raw = lod.value;
+                float x = fp16 ? _mesa_half_to_float(raw) : uif(raw);
+                int32_t s32 = CLAMP(x, -16.0f, 16.0f) * 256.0f;
+                return bi_imm_u32(s32 & 0xFFFF);
+        }
+
         /* Sort of arbitrary. Must be less than 128.0, greater than or equal to
          * the max LOD (16 since we cap at 2^16 texture dimensions), and
          * preferably small to minimize precision loss */
@@ -3576,6 +3585,10 @@ bifrost_compile_shader_nir(nir_shader *nir,
         ctx->stage = nir->info.stage;
         ctx->quirks = bifrost_get_quirks(inputs->gpu_id);
         ctx->arch = inputs->gpu_id >> 12;
+
+        /* If nothing is pushed, all UBOs need to be uploaded */
+        ctx->ubo_mask = ~0;
+
         list_inithead(&ctx->blocks);
 
         /* Lower gl_Position pre-optimisation, but after lowering vars to ssa
@@ -3611,6 +3624,7 @@ bifrost_compile_shader_nir(nir_shader *nir,
                                 bifrost_nir_lower_store_component,
                                 nir_metadata_block_index |
                                 nir_metadata_dominance, stores);
+                _mesa_hash_table_u64_destroy(stores);
         }
 
         NIR_PASS_V(nir, nir_lower_ssbo);
@@ -3672,21 +3686,32 @@ bifrost_compile_shader_nir(nir_shader *nir,
                 bi_emit_atest(&b, bi_zero());
         }
 
+        bool optimize = !(bifrost_debug & BIFROST_DBG_NOOPT);
+
         /* Runs before constant folding */
         bi_lower_swizzle(ctx);
         bi_validate(ctx, "Early lowering");
 
         /* Runs before copy prop */
-        bi_opt_push_ubo(ctx);
-        bi_opt_constant_fold(ctx);
+        if (optimize && !ctx->inputs->no_ubo_to_push) {
+                bi_opt_push_ubo(ctx);
+        }
 
-        bi_opt_copy_prop(ctx);
-        bi_opt_mod_prop_forward(ctx);
-        bi_opt_mod_prop_backward(ctx);
-        bi_opt_dead_code_eliminate(ctx);
-        bi_opt_cse(ctx);
-        bi_opt_dead_code_eliminate(ctx);
-        bi_validate(ctx, "Optimization passes");
+        if (likely(optimize)) {
+                bi_opt_copy_prop(ctx);
+                bi_opt_constant_fold(ctx);
+                bi_opt_copy_prop(ctx);
+                bi_opt_mod_prop_forward(ctx);
+                bi_opt_mod_prop_backward(ctx);
+                bi_opt_dead_code_eliminate(ctx);
+                bi_opt_cse(ctx);
+                bi_opt_dead_code_eliminate(ctx);
+                bi_validate(ctx, "Optimization passes");
+        }
+
+        bi_foreach_instr_global(ctx, I) {
+                bi_lower_opt_instruction(I);
+        }
 
         bi_foreach_block(ctx, block) {
                 bi_lower_branch(block);
@@ -3703,7 +3728,10 @@ bifrost_compile_shader_nir(nir_shader *nir,
         bi_validate(ctx, "Late lowering");
 
         bi_register_allocate(ctx);
-        bi_opt_post_ra(ctx);
+
+        if (likely(optimize))
+                bi_opt_post_ra(ctx);
+
         if (bifrost_debug & BIFROST_DBG_SHADERS && !skip_internal)
                 bi_print_shader(ctx, stdout);
 
@@ -3737,5 +3765,6 @@ bifrost_compile_shader_nir(nir_shader *nir,
                 bi_print_stats(ctx, binary->size, stderr);
         }
 
+        _mesa_hash_table_u64_destroy(ctx->sysval_to_id);
         ralloc_free(ctx);
 }

@@ -711,7 +711,13 @@ lower_tex_src_to_offset(nir_builder *b, nir_tex_instr *instr, unsigned src_idx,
       deref->var->data.index + base_index :
       base_index;
 
-   uint8_t return_size = relaxed_precision || instr->is_shadow ? 16 : 32;
+   uint8_t return_size;
+   if (unlikely(V3D_DEBUG & V3D_DEBUG_TMU_16BIT))
+      return_size = 16;
+   else  if (unlikely(V3D_DEBUG & V3D_DEBUG_TMU_32BIT))
+      return_size = 32;
+   else
+      return_size = relaxed_precision || instr->is_shadow ? 16 : 32;
 
    struct v3dv_descriptor_map *map =
       pipeline_get_descriptor_map(pipeline, binding_layout->type,
@@ -1134,7 +1140,8 @@ pipeline_populate_v3d_fs_key(struct v3d_fs_key *key,
    key->has_gs = has_geometry_shader;
 
    const VkPipelineColorBlendStateCreateInfo *cb_info =
-      pCreateInfo->pColorBlendState;
+      !pCreateInfo->pRasterizationState->rasterizerDiscardEnable ?
+      pCreateInfo->pColorBlendState : NULL;
 
    key->logicop_func = cb_info && cb_info->logicOpEnable == VK_TRUE ?
                        vk_to_pipe_logicop[cb_info->logicOp] :
@@ -1949,18 +1956,19 @@ pipeline_populate_graphics_key(struct v3dv_pipeline *pipeline,
    key->robust_buffer_access =
       pipeline->device->features.robustBufferAccess;
 
+   const bool raster_enabled =
+      !pCreateInfo->pRasterizationState->rasterizerDiscardEnable;
+
    const VkPipelineInputAssemblyStateCreateInfo *ia_info =
       pCreateInfo->pInputAssemblyState;
    key->topology = vk_to_pipe_prim_type[ia_info->topology];
 
    const VkPipelineColorBlendStateCreateInfo *cb_info =
-      pCreateInfo->pColorBlendState;
+      raster_enabled ? pCreateInfo->pColorBlendState : NULL;
+
    key->logicop_func = cb_info && cb_info->logicOpEnable == VK_TRUE ?
       vk_to_pipe_logicop[cb_info->logicOp] :
       PIPE_LOGICOP_COPY;
-
-   const bool raster_enabled =
-      !pCreateInfo->pRasterizationState->rasterizerDiscardEnable;
 
    /* Multisample rasterization state must be ignored if rasterization
     * is disabled.
@@ -2415,6 +2423,9 @@ pipeline_compile_graphics(struct v3dv_pipeline *pipeline,
       goto success;
    }
 
+   if (pCreateInfo->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT)
+      return VK_PIPELINE_COMPILE_REQUIRED_EXT;
+
    /* Otherwise we try to get the NIR shaders (either from the original SPIR-V
     * shader or the pipeline cache) and compile.
     */
@@ -2540,6 +2551,8 @@ v3dv_dynamic_state_mask(VkDynamicState state)
       return V3DV_DYNAMIC_DEPTH_BIAS;
    case VK_DYNAMIC_STATE_LINE_WIDTH:
       return V3DV_DYNAMIC_LINE_WIDTH;
+   case VK_DYNAMIC_STATE_COLOR_WRITE_ENABLE_EXT:
+      return V3DV_DYNAMIC_COLOR_WRITE_ENABLE;
 
    /* Depth bounds testing is not available in in V3D 4.2 so here we are just
     * ignoring this dynamic state. We are already asserting at pipeline creation
@@ -2560,7 +2573,8 @@ pipeline_init_dynamic_state(
    const VkPipelineViewportStateCreateInfo *pViewportState,
    const VkPipelineDepthStencilStateCreateInfo *pDepthStencilState,
    const VkPipelineColorBlendStateCreateInfo *pColorBlendState,
-   const VkPipelineRasterizationStateCreateInfo *pRasterizationState)
+   const VkPipelineRasterizationStateCreateInfo *pRasterizationState,
+   const VkPipelineColorWriteCreateInfoEXT *pColorWriteState)
 {
    pipeline->dynamic_state = default_dynamic_state;
    struct v3dv_dynamic_state *dynamic = &pipeline->dynamic_state;
@@ -2634,6 +2648,12 @@ pipeline_init_dynamic_state(
       }
       if (!(dynamic_states & V3DV_DYNAMIC_LINE_WIDTH))
          dynamic->line_width = pRasterizationState->lineWidth;
+   }
+
+   if (pColorWriteState && !(dynamic_states & V3DV_DYNAMIC_COLOR_WRITE_ENABLE)) {
+      dynamic->color_write_enable = 0;
+      for (uint32_t i = 0; i < pColorWriteState->attachmentCount; i++)
+         dynamic->color_write_enable |= pColorWriteState->pColorWriteEnables[i] ? (0xfu << (i * 4)) : 0;
    }
 
    pipeline->dynamic_state.mask = dynamic_states;
@@ -2829,15 +2849,26 @@ pipeline_init(struct v3dv_pipeline *pipeline,
    const VkPipelineRasterizationStateCreateInfo *rs_info =
       raster_enabled ? pCreateInfo->pRasterizationState : NULL;
 
+   const VkPipelineRasterizationProvokingVertexStateCreateInfoEXT *pv_info =
+      rs_info ? vk_find_struct_const(
+         rs_info->pNext,
+         PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT) :
+            NULL;
+
    const VkPipelineColorBlendStateCreateInfo *cb_info =
       raster_enabled ? pCreateInfo->pColorBlendState : NULL;
 
    const VkPipelineMultisampleStateCreateInfo *ms_info =
       raster_enabled ? pCreateInfo->pMultisampleState : NULL;
 
+   const VkPipelineColorWriteCreateInfoEXT *cw_info =
+      cb_info ? vk_find_struct_const(cb_info->pNext,
+                                     PIPELINE_COLOR_WRITE_CREATE_INFO_EXT) :
+                NULL;
+
    pipeline_init_dynamic_state(pipeline,
                                pCreateInfo->pDynamicState,
-                               vp_info, ds_info, cb_info, rs_info);
+                               vp_info, ds_info, cb_info, rs_info, cw_info);
 
    /* V3D 4.2 doesn't support depth bounds testing so we don't advertise that
     * feature and it shouldn't be used by any pipeline.
@@ -2845,7 +2876,7 @@ pipeline_init(struct v3dv_pipeline *pipeline,
    assert(!ds_info || !ds_info->depthBoundsTestEnable);
 
    v3dv_X(device, pipeline_pack_state)(pipeline, cb_info, ds_info,
-                                       rs_info, ms_info);
+                                       rs_info, pv_info, ms_info);
 
    pipeline_set_ez_state(pipeline, ds_info);
    enable_depth_bias(pipeline, rs_info);
@@ -2908,6 +2939,8 @@ graphics_pipeline_create(VkDevice _device,
 
    if (result != VK_SUCCESS) {
       v3dv_destroy_pipeline(pipeline, device, pAllocator);
+      if (result == VK_PIPELINE_COMPILE_REQUIRED_EXT)
+         *pPipeline = VK_NULL_HANDLE;
       return result;
    }
 
@@ -2930,7 +2963,8 @@ v3dv_CreateGraphicsPipelines(VkDevice _device,
    if (unlikely(V3D_DEBUG & V3D_DEBUG_SHADERS))
       mtx_lock(&device->pdevice->mutex);
 
-   for (uint32_t i = 0; i < count; i++) {
+   uint32_t i = 0;
+   for (; i < count; i++) {
       VkResult local_result;
 
       local_result = graphics_pipeline_create(_device,
@@ -2942,8 +2976,15 @@ v3dv_CreateGraphicsPipelines(VkDevice _device,
       if (local_result != VK_SUCCESS) {
          result = local_result;
          pPipelines[i] = VK_NULL_HANDLE;
+
+         if (pCreateInfos[i].flags &
+             VK_PIPELINE_CREATE_EARLY_RETURN_ON_FAILURE_BIT_EXT)
+            break;
       }
    }
+
+   for (; i < count; i++)
+      pPipelines[i] = VK_NULL_HANDLE;
 
    if (unlikely(V3D_DEBUG & V3D_DEBUG_SHADERS))
       mtx_unlock(&device->pdevice->mutex);
@@ -3022,6 +3063,9 @@ pipeline_compile_compute(struct v3dv_pipeline *pipeline,
       assert(pipeline->shared_data->variants[BROADCOM_SHADER_COMPUTE]);
       goto success;
    }
+
+   if (info->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT)
+      return VK_PIPELINE_COMPILE_REQUIRED_EXT;
 
    pipeline->shared_data = v3dv_pipeline_shared_data_new_empty(pipeline_sha1,
                                                                pipeline,
@@ -3106,6 +3150,8 @@ compute_pipeline_create(VkDevice _device,
                                   pCreateInfo, pAllocator);
    if (result != VK_SUCCESS) {
       v3dv_destroy_pipeline(pipeline, device, pAllocator);
+      if (result == VK_PIPELINE_COMPILE_REQUIRED_EXT)
+         *pPipeline = VK_NULL_HANDLE;
       return result;
    }
 
@@ -3128,7 +3174,8 @@ v3dv_CreateComputePipelines(VkDevice _device,
    if (unlikely(V3D_DEBUG & V3D_DEBUG_SHADERS))
       mtx_lock(&device->pdevice->mutex);
 
-   for (uint32_t i = 0; i < createInfoCount; i++) {
+   uint32_t i = 0;
+   for (; i < createInfoCount; i++) {
       VkResult local_result;
       local_result = compute_pipeline_create(_device,
                                               pipelineCache,
@@ -3139,8 +3186,15 @@ v3dv_CreateComputePipelines(VkDevice _device,
       if (local_result != VK_SUCCESS) {
          result = local_result;
          pPipelines[i] = VK_NULL_HANDLE;
+
+         if (pCreateInfos[i].flags &
+             VK_PIPELINE_CREATE_EARLY_RETURN_ON_FAILURE_BIT_EXT)
+            break;
       }
    }
+
+   for (; i < createInfoCount; i++)
+      pPipelines[i] = VK_NULL_HANDLE;
 
    if (unlikely(V3D_DEBUG & V3D_DEBUG_SHADERS))
       mtx_unlock(&device->pdevice->mutex);
