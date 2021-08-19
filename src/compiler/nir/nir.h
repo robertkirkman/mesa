@@ -3017,6 +3017,17 @@ typedef struct {
 } nir_loop_terminator;
 
 typedef struct {
+   /* Induction variable. */
+   nir_ssa_def *def;
+
+   /* Init statement with only uniform. */
+   nir_src *init_src;
+
+   /* Update statement with only uniform. */
+   nir_alu_src *update_src;
+} nir_loop_induction_variable;
+
+typedef struct {
    /* Estimated cost (in number of instructions) of the loop */
    unsigned instr_cost;
 
@@ -3042,6 +3053,10 @@ typedef struct {
 
    /* A list of loop_terminators terminating this loop. */
    struct list_head loop_terminator_list;
+
+   /* array of induction variables for this loop */
+   nir_loop_induction_variable *induction_vars;
+   unsigned num_induction_vars;
 } nir_loop_info;
 
 typedef enum {
@@ -3665,6 +3680,9 @@ typedef struct nir_shader_compiler_options {
    /** Backend supports isub, if not set isub will automatically be lowered to
     * iadd(x, ineg(y)). If true, driver should call nir_opt_algebraic_late(). */
    bool has_isub;
+
+   /** Backend supports pack_32_4x8 or pack_32_4x8_split. */
+   bool has_pack_32_4x8;
 
    /** Backend supports txs, if not nir_lower_tex(..) uses txs-free variants
     * for rect texture lowering. */

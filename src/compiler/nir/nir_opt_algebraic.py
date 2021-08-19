@@ -829,6 +829,33 @@ optimizations.extend([
     (('i2f16', ('i2imp', 'a@32')), ('i2f16', a)),
 ])
 
+# Clean up junk left from 8-bit integer to 16-bit integer lowering.
+optimizations.extend([
+    # The u2u16(u2u8(X)) just masks off the upper 8-bits of X.  This can be
+    # accomplished by mask the upper 8-bit of the immediate operand to the
+    # iand instruction.  Often times, both patterns will end up being applied
+    # to the same original expression tree.
+    (('iand', ('u2u16', ('u2u8', 'a@16')), '#b'),               ('iand', a, ('iand', b, 0xff))),
+    (('u2u16', ('u2u8(is_used_once)', ('iand', 'a@16', '#b'))), ('iand', a, ('iand', b, 0xff))),
+])
+
+for op in ['iand', 'ior', 'ixor']:
+    optimizations.extend([
+        (('u2u8', (op, ('u2u16', ('u2u8', 'a@16')), ('u2u16', ('u2u8', 'b@16')))), ('u2u8', (op, a, b))),
+        (('u2u8', (op, ('u2u16', ('u2u8', 'a@32')), ('u2u16', ('u2u8', 'b@32')))), ('u2u8', (op, a, b))),
+
+        # Undistribute extract from a logic op
+        ((op, ('extract_i8', a, '#b'), ('extract_i8', c, b)), ('extract_i8', (op, a, c), b)),
+        ((op, ('extract_u8', a, '#b'), ('extract_u8', c, b)), ('extract_u8', (op, a, c), b)),
+        ((op, ('extract_i16', a, '#b'), ('extract_i16', c, b)), ('extract_i16', (op, a, c), b)),
+        ((op, ('extract_u16', a, '#b'), ('extract_u16', c, b)), ('extract_u16', (op, a, c), b)),
+
+        # Undistribute shifts from a logic op
+        ((op, ('ushr(is_used_once)', a, '#b'), ('ushr', c, b)), ('ushr', (op, a, c), b)),
+        ((op, ('ishr(is_used_once)', a, '#b'), ('ishr', c, b)), ('ishr', (op, a, c), b)),
+        ((op, ('ishl(is_used_once)', a, '#b'), ('ishl', c, b)), ('ishl', (op, a, c), b)),
+    ])
+
 # Integer sizes
 for s in [8, 16, 32, 64]:
     optimizations.extend([
@@ -1253,6 +1280,15 @@ optimizations.extend([
    (('ishr', 'a@64', 56), ('extract_i8', a, 7), '!options->lower_extract_byte'),
    (('iand', 0xff, a), ('extract_u8', a, 0), '!options->lower_extract_byte'),
 
+   # Common pattern in many Vulkan CTS tests that read 8-bit integers from a
+   # storage buffer.
+   (('u2u8', ('extract_u16', a, 1)), ('u2u8', ('extract_u8', a, 2)), '!options->lower_extract_byte'),
+   (('u2u8', ('ushr', a, 8)), ('u2u8', ('extract_u8', a, 1)), '!options->lower_extract_byte'),
+
+   # Common pattern after lowering 8-bit integers to 16-bit.
+   (('i2i16', ('u2u8', ('extract_u8', a, b))), ('i2i16', ('extract_i8', a, b))),
+   (('u2u16', ('u2u8', ('extract_u8', a, b))), ('u2u16', ('extract_u8', a, b))),
+
    (('ubfe', a,  0, 8), ('extract_u8', a, 0), '!options->lower_extract_byte'),
    (('ubfe', a,  8, 8), ('extract_u8', a, 1), '!options->lower_extract_byte'),
    (('ubfe', a, 16, 8), ('extract_u8', a, 2), '!options->lower_extract_byte'),
@@ -1276,6 +1312,10 @@ optimizations.extend([
    (('ubfe', a, 16, 16), ('extract_u16', a, 1), '!options->lower_extract_word'),
    (('ibfe', a,  0, 16), ('extract_i16', a, 0), '!options->lower_extract_word'),
    (('ibfe', a, 16, 16), ('extract_i16', a, 1), '!options->lower_extract_word'),
+
+   # Packing a u8vec4 to write to an SSBO.
+   (('ior', ('ishl', ('u2u32', 'a@8'), 24), ('ior', ('ishl', ('u2u32', 'b@8'), 16), ('ior', ('ishl', ('u2u32', 'c@8'), 8), ('u2u32', 'd@8')))),
+    ('pack_32_4x8', ('vec4', d, c, b, a)), 'options->has_pack_32_4x8'),
 
    (('extract_u16', ('extract_i16', a, b), 0), ('extract_u16', a, b)),
    (('extract_u16', ('extract_u16', a, b), 0), ('extract_u16', a, b)),

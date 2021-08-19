@@ -645,6 +645,11 @@ lower_bit_size_callback(const nir_instr *instr, UNUSED void *data)
       if (alu->dest.dest.ssa.bit_size >= 32)
          return 0;
 
+      /* Note: nir_op_iabs and nir_op_ineg are not lowered here because the
+       * 8-bit ABS or NEG instruction should eventually get copy propagated
+       * into the MOV that does the type conversion.  This results in far
+       * fewer MOV instructions.
+       */
       switch (alu->op) {
       case nir_op_idiv:
       case nir_op_imod:
@@ -666,16 +671,18 @@ lower_bit_size_callback(const nir_instr *instr, UNUSED void *data)
       case nir_op_fsin:
       case nir_op_fcos:
          return devinfo->ver < 9 ? 32 : 0;
+      case nir_op_isign:
+         assert(!"Should have been lowered by nir_opt_algebraic.");
+         return 0;
       default:
-         if (devinfo->ver >= 11) {
-            if (nir_op_infos[alu->op].num_inputs >= 2 &&
-                alu->dest.dest.ssa.bit_size == 8)
-               return 16;
+         if (nir_op_infos[alu->op].num_inputs >= 2 &&
+             alu->dest.dest.ssa.bit_size == 8)
+            return 16;
 
-            if (nir_alu_instr_is_comparison(alu) &&
-                alu->src[0].src.ssa->bit_size == 8)
-               return 16;
-         }
+         if (nir_alu_instr_is_comparison(alu) &&
+             alu->src[0].src.ssa->bit_size == 8)
+            return 16;
+
          return 0;
       }
       break;
@@ -696,7 +703,7 @@ lower_bit_size_callback(const nir_instr *instr, UNUSED void *data)
       case nir_intrinsic_quad_swap_horizontal:
       case nir_intrinsic_quad_swap_vertical:
       case nir_intrinsic_quad_swap_diagonal:
-         if (intrin->src[0].ssa->bit_size == 8 && devinfo->ver >= 11)
+         if (intrin->src[0].ssa->bit_size == 8)
             return 16;
          return 0;
 
@@ -729,7 +736,7 @@ lower_bit_size_callback(const nir_instr *instr, UNUSED void *data)
 
    case nir_instr_type_phi: {
       nir_phi_instr *phi = nir_instr_as_phi(instr);
-      if (devinfo->ver >= 11 && phi->dest.ssa.bit_size == 8)
+      if (phi->dest.ssa.bit_size == 8)
          return 16;
       return 0;
    }
