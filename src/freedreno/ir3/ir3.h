@@ -57,6 +57,8 @@ struct ir3_info {
    uint16_t nops_count;   /* # of nop instructions, including nopN */
    uint16_t mov_count;
    uint16_t cov_count;
+   uint16_t stp_count;
+   uint16_t ldp_count;
    /* NOTE: max_reg, etc, does not include registers not touched
     * by the shader (ie. vertex fetched via VFD_DECODE but not
     * touched by shader)
@@ -89,6 +91,7 @@ struct ir3_merge_set {
    uint16_t alignment;
 
    unsigned interval_start;
+   unsigned spill_slot;
 
    unsigned regs_count;
    struct ir3_register **regs;
@@ -201,6 +204,8 @@ struct ir3_register {
     * they must have "tied" pointing to each other.
     */
    struct ir3_register *tied;
+
+   unsigned spill_slot, next_use;
 
    unsigned merge_set_offset;
    struct ir3_merge_set *merge_set;
@@ -588,6 +593,7 @@ struct ir3_block {
    uint32_t dom_post_index;
 
    uint32_t loop_id;
+   uint32_t loop_depth;
 
 #ifdef DEBUG
    uint32_t serialno;
@@ -615,6 +621,8 @@ void ir3_block_add_physical_predecessor(struct ir3_block *block,
                                         struct ir3_block *pred);
 void ir3_block_remove_predecessor(struct ir3_block *block,
                                   struct ir3_block *pred);
+void ir3_block_remove_physical_predecessor(struct ir3_block *block,
+                                           struct ir3_block *pred);
 unsigned ir3_block_get_pred_index(struct ir3_block *block,
                                   struct ir3_block *pred);
 
@@ -708,6 +716,17 @@ ir3_instr_move_after(struct ir3_instruction *instr,
    list_add(&instr->node, &before->node);
 }
 
+/**
+ * Move 'instr' to the beginning of the block:
+ */
+static inline void
+ir3_instr_move_before_block(struct ir3_instruction *instr,
+                            struct ir3_block *block)
+{
+   list_delinit(&instr->node);
+   list_add(&instr->node, &block->instr_list);
+}
+
 void ir3_find_ssa_uses(struct ir3 *ir, void *mem_ctx, bool falsedeps);
 
 void ir3_set_dst_type(struct ir3_instruction *instr, bool half);
@@ -799,6 +818,8 @@ is_same_type_mov(struct ir3_instruction *instr)
       if (!is_same_type_reg(instr->dsts[0], instr->srcs[0]))
          return false;
       break;
+   case OPC_META_PHI:
+      return instr->srcs_count == 1;
    default:
       return false;
    }
@@ -1581,6 +1602,9 @@ void ir3_validate(struct ir3 *ir);
 void ir3_print(struct ir3 *ir);
 void ir3_print_instr(struct ir3_instruction *instr);
 
+struct log_stream;
+void ir3_print_instr_stream(struct log_stream *stream, struct ir3_instruction *instr);
+
 /* delay calculation: */
 int ir3_delayslots(struct ir3_instruction *assigner,
                    struct ir3_instruction *consumer, unsigned n, bool soft);
@@ -1592,6 +1616,9 @@ unsigned ir3_delay_calc_postra(struct ir3_block *block,
 unsigned ir3_delay_calc_exact(struct ir3_block *block,
                               struct ir3_instruction *instr, bool mergedregs);
 void ir3_remove_nops(struct ir3 *ir);
+
+/* unreachable block elimination: */
+bool ir3_remove_unreachable(struct ir3 *ir);
 
 /* dead code elimination: */
 struct ir3_shader_variant;

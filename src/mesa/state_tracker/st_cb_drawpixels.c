@@ -885,15 +885,12 @@ draw_textured_quad(struct gl_context *ctx, GLint x, GLint y, GLfloat z,
       if (sv[1])
          sampler_views[fpv->pixelmap_sampler] = sv[1];
       pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, num_views, 0,
-                              sampler_views);
+                              true, sampler_views);
       st->state.num_sampler_views[PIPE_SHADER_FRAGMENT] = num_views;
-
-      for (unsigned i = 0; i < num_views; i++)
-         pipe_sampler_view_reference(&sampler_views[i], NULL);
    } else {
       /* drawing a depth/stencil image */
       pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, num_sampler_view,
-                              0, sv);
+                              0, false, sv);
       st->state.num_sampler_views[PIPE_SHADER_FRAGMENT] =
          MAX2(st->state.num_sampler_views[PIPE_SHADER_FRAGMENT], num_sampler_view);
 
@@ -952,7 +949,7 @@ draw_textured_quad(struct gl_context *ctx, GLint x, GLint y, GLfloat z,
     */
    pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, 0,
                            st->state.num_sampler_views[PIPE_SHADER_FRAGMENT],
-                           NULL);
+                           false, NULL);
    st->state.num_sampler_views[PIPE_SHADER_FRAGMENT] = 0;
 
    st->dirty |= ST_NEW_VERTEX_ARRAYS |

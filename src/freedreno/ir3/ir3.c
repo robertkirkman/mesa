@@ -262,11 +262,15 @@ ir3_collect_info(struct ir3_shader_variant *v)
          }
 
          if ((instr->opc == OPC_STP || instr->opc == OPC_LDP)) {
-            struct ir3_register *base =
-               (instr->opc == OPC_STP) ? instr->srcs[2] : instr->srcs[1];
-            if (base->iim_val * type_size(instr->cat6.type) > 32) {
+            unsigned components = instr->srcs[2]->uim_val;
+            if (components * type_size(instr->cat6.type) > 32) {
                info->multi_dword_ldp_stp = true;
             }
+
+            if (instr->opc == OPC_STP)
+               info->stp_count += components;
+            else
+               info->ldp_count += components;
          }
 
          if ((instr->opc == OPC_BARY_F) && (instr->dsts[0]->flags & IR3_REG_EI))
@@ -388,6 +392,22 @@ ir3_block_remove_predecessor(struct ir3_block *block, struct ir3_block *pred)
          }
 
          block->predecessors_count--;
+         return;
+      }
+   }
+}
+
+void
+ir3_block_remove_physical_predecessor(struct ir3_block *block, struct ir3_block *pred)
+{
+   for (unsigned i = 0; i < block->physical_predecessors_count; i++) {
+      if (block->physical_predecessors[i] == pred) {
+         if (i < block->predecessors_count - 1) {
+            block->physical_predecessors[i] =
+               block->physical_predecessors[block->predecessors_count - 1];
+         }
+
+         block->physical_predecessors_count--;
          return;
       }
    }
