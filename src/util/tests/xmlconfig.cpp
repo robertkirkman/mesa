@@ -40,6 +40,19 @@ protected:
 
 xmlconfig_test::xmlconfig_test()
 {
+   /* Unset variables from the envrionment to prevent user settings from
+    * impacting the tests.
+    */
+   unsetenv("glsl_zero_init");
+   unsetenv("always_have_depth_buffer");
+   unsetenv("opt");
+   unsetenv("vblank_mode");
+   unsetenv("not_present");
+   unsetenv("mesa_b_option");
+   unsetenv("mesa_s_option");
+   unsetenv("mest_test_unknown_option");
+   unsetenv("mest_drirc_option");
+
    options = {};
 }
 
@@ -95,6 +108,19 @@ TEST_F(xmlconfig_test, enums)
    driParseOptionInfo(&options, driconf, ARRAY_SIZE(driconf));
 
    EXPECT_EQ(driQueryOptioni(&options, "vblank_mode"), DRI_CONF_VBLANK_DEF_INTERVAL_1);
+}
+
+TEST_F(xmlconfig_test, enums_from_env)
+{
+   driOptionDescription driconf[] = {
+      DRI_CONF_SECTION_MISCELLANEOUS
+      DRI_CONF_VBLANK_MODE(DRI_CONF_VBLANK_DEF_INTERVAL_1)
+   };
+
+   setenv("vblank_mode", "0", 1);
+   driParseOptionInfo(&options, driconf, ARRAY_SIZE(driconf));
+
+   EXPECT_EQ(0, driQueryOptioni(&options, "vblank_mode"));
 }
 
 TEST_F(xmlconfig_test, string)
