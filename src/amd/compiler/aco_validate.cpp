@@ -165,6 +165,15 @@ validate_ir(Program* program)
                      "SDWA+VOPC definition must be fixed to vcc on GFX8", instr.get());
             }
 
+            for (unsigned i = 0; i < std::min<unsigned>(2, instr->operands.size()); i++) {
+               const Operand& op = instr->operands[i];
+               check(op.bytes() <= 4, "SDWA operands must not be larger than 4 bytes", instr.get());
+               if (sdwa.sel[i] & sdwa_isra)
+                  check(op.bytes() >= (sdwa.sel[i] & sdwa_rasize),
+                        "SDWA selection size must be at most operand size", instr.get());
+               else
+                  check(op.bytes() == 4, "SDWA selection needs dword operand", instr.get());
+            }
             if (instr->operands.size() >= 3) {
                check(instr->operands[2].isFixed() && instr->operands[2].physReg() == vcc,
                      "3rd operand must be fixed to vcc with SDWA", instr.get());
@@ -681,8 +690,8 @@ validate_subdword_operand(chip_class chip, const aco_ptr<Instruction>& instr, un
    if (instr->isPseudo() && chip >= GFX8)
       return true;
    if (instr->isSDWA()) {
-      unsigned sel = instr->sdwa().sel[index] & sdwa_asuint;
-      return (sel & sdwa_isra) && (sel & sdwa_rasize) <= op.bytes();
+      unsigned size = instr->sdwa().sel[index] & sdwa_rasize;
+      return byte % size == 0;
    }
    if (byte == 2 && can_use_opsel(chip, instr->opcode, index, 1))
       return true;
@@ -763,8 +772,17 @@ get_subdword_bytes_written(Program* program, const aco_ptr<Instruction>& instr, 
 
    if (instr->isPseudo())
       return chip >= GFX8 ? def.bytes() : def.size() * 4u;
-   if (instr->isSDWA() && instr->sdwa().dst_sel == (sdwa_isra | def.bytes()))
-      return def.bytes();
+   if (instr->isVALU()) {
+      assert(def.bytes() <= 2);
+
+      if (instr->isSDWA() && instr->sdwa().dst_sel == (sdwa_isra | def.bytes()))
+         return def.bytes();
+
+      if (instr_is_16bit(chip, instr->opcode))
+         return 2;
+
+      return 4;
+   }
 
    switch (instr->opcode) {
    case aco_opcode::buffer_load_ubyte_d16:
@@ -787,20 +805,8 @@ get_subdword_bytes_written(Program* program, const aco_ptr<Instruction>& instr, 
    case aco_opcode::global_load_short_d16_hi:
    case aco_opcode::ds_read_u8_d16_hi:
    case aco_opcode::ds_read_u16_d16_hi: return program->dev.sram_ecc_enabled ? 4 : 2;
-   case aco_opcode::v_mad_f16:
-   case aco_opcode::v_mad_u16:
-   case aco_opcode::v_mad_i16:
-   case aco_opcode::v_fma_f16:
-   case aco_opcode::v_div_fixup_f16:
-   case aco_opcode::v_interp_p2_f16:
-      if (chip >= GFX9)
-         return 2;
-      break;
-   default: break;
+   default: return def.size() * 4;
    }
-
-   return MAX2(chip >= GFX10 ? def.bytes() : 4,
-               instr_info.definition_size[(int)instr->opcode] / 8u);
 }
 
 } /* end namespace */

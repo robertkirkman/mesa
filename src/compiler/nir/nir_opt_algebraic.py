@@ -192,7 +192,72 @@ optimizations = [
 
    # flrp(a, a + b, c) => a + flrp(0, b, c) => a + (b * c)
    (('~flrp', a, ('fadd(is_used_once)', a, b), c), ('fadd', ('fmul', b, c), a)),
+
+   (('sdot_4x8_iadd', a, 0, b), b),
+   (('udot_4x8_uadd', a, 0, b), b),
+   (('sdot_4x8_iadd_sat', a, 0, b), b),
+   (('udot_4x8_uadd_sat', a, 0, b), b),
+
+   # sudot_4x8_iadd is not commutative at all, so the patterns must be
+   # duplicated with zeros on each of the first positions.
+   (('sudot_4x8_iadd', a, 0, b), b),
+   (('sudot_4x8_iadd', 0, a, b), b),
+   (('sudot_4x8_iadd_sat', a, 0, b), b),
+   (('sudot_4x8_iadd_sat', 0, a, b), b),
+
+   (('iadd', ('sdot_4x8_iadd(is_used_once)', a, b, '#c'), '#d'), ('sdot_4x8_iadd', a, b, ('iadd', c, d))),
+   (('iadd', ('udot_4x8_uadd(is_used_once)', a, b, '#c'), '#d'), ('udot_4x8_uadd', a, b, ('iadd', c, d))),
+   (('iadd', ('sudot_4x8_iadd(is_used_once)', a, b, '#c'), '#d'), ('sudot_4x8_iadd', a, b, ('iadd', c, d))),
+
+   # Try to let constant folding eliminate the dot-product part.  These are
+   # safe because the dot product cannot overflow 32 bits.
+   (('iadd', ('sdot_4x8_iadd', 'a(is_not_const)', b, 0), c), ('sdot_4x8_iadd', a, b, c)),
+   (('iadd', ('udot_4x8_uadd', 'a(is_not_const)', b, 0), c), ('udot_4x8_uadd', a, b, c)),
+   (('iadd', ('sudot_4x8_iadd', 'a(is_not_const)', b, 0), c), ('sudot_4x8_iadd', a, b, c)),
+   (('iadd', ('sudot_4x8_iadd', a, 'b(is_not_const)', 0), c), ('sudot_4x8_iadd', a, b, c)),
+   (('sdot_4x8_iadd', '#a', '#b', 'c(is_not_const)'), ('iadd', ('sdot_4x8_iadd', a, b, 0), c)),
+   (('udot_4x8_uadd', '#a', '#b', 'c(is_not_const)'), ('iadd', ('udot_4x8_uadd', a, b, 0), c)),
+   (('sudot_4x8_iadd', '#a', '#b', 'c(is_not_const)'), ('iadd', ('sudot_4x8_iadd', a, b, 0), c)),
+   (('sdot_4x8_iadd_sat', '#a', '#b', 'c(is_not_const)'), ('iadd_sat', ('sdot_4x8_iadd', a, b, 0), c), '!options->lower_add_sat'),
+   (('udot_4x8_uadd_sat', '#a', '#b', 'c(is_not_const)'), ('uadd_sat', ('udot_4x8_uadd', a, b, 0), c), '!options->lower_add_sat'),
+   (('sudot_4x8_iadd_sat', '#a', '#b', 'c(is_not_const)'), ('iadd_sat', ('sudot_4x8_iadd', a, b, 0), c), '!options->lower_add_sat'),
 ]
+
+# Shorthand for the expansion of just the dot product part of the [iu]dp4a
+# instructions.
+sdot_4x8_a_b = ('iadd', ('iadd', ('imul', ('extract_i8', a, 0), ('extract_i8', b, 0)),
+                                 ('imul', ('extract_i8', a, 1), ('extract_i8', b, 1))),
+                        ('iadd', ('imul', ('extract_i8', a, 2), ('extract_i8', b, 2)),
+                                 ('imul', ('extract_i8', a, 3), ('extract_i8', b, 3))))
+udot_4x8_a_b = ('iadd', ('iadd', ('imul', ('extract_u8', a, 0), ('extract_u8', b, 0)),
+                                 ('imul', ('extract_u8', a, 1), ('extract_u8', b, 1))),
+                        ('iadd', ('imul', ('extract_u8', a, 2), ('extract_u8', b, 2)),
+                                 ('imul', ('extract_u8', a, 3), ('extract_u8', b, 3))))
+sudot_4x8_a_b = ('iadd', ('iadd', ('imul', ('extract_i8', a, 0), ('extract_u8', b, 0)),
+                                  ('imul', ('extract_i8', a, 1), ('extract_u8', b, 1))),
+                         ('iadd', ('imul', ('extract_i8', a, 2), ('extract_u8', b, 2)),
+                                  ('imul', ('extract_i8', a, 3), ('extract_u8', b, 3))))
+
+optimizations.extend([
+   (('sdot_4x8_iadd', a, b, c), ('iadd', sdot_4x8_a_b, c), '!options->has_dot_4x8'),
+   (('udot_4x8_uadd', a, b, c), ('iadd', udot_4x8_a_b, c), '!options->has_dot_4x8'),
+   (('sudot_4x8_iadd', a, b, c), ('iadd', sudot_4x8_a_b, c), '!options->has_sudot_4x8'),
+
+   # For the unsigned dot-product, the largest possible value 4*(255*255) =
+   # 0x3f804, so we don't have to worry about that intermediate result
+   # overflowing.  0x100000000 - 0x3f804 = 0xfffc07fc.  If c is a constant
+   # that is less than 0xfffc07fc, then the result cannot overflow ever.
+   (('udot_4x8_uadd_sat', a, b, '#c(is_ult_0xfffc07fc)'), ('udot_4x8_uadd', a, b, c)),
+   (('udot_4x8_uadd_sat', a, b, c), ('uadd_sat', udot_4x8_a_b, c), '!options->has_dot_4x8'),
+
+   # For the signed dot-product, the largest positive value is 4*(-128*-128) =
+   # 0x10000, and the largest negative value is 4*(-128*127) = -0xfe00.  We
+   # don't have to worry about that intermediate result overflowing or
+   # underflowing.
+   (('sdot_4x8_iadd_sat', a, b, c), ('iadd_sat', sdot_4x8_a_b, c), '!options->has_dot_4x8'),
+
+   (('sudot_4x8_iadd_sat', a, b, c), ('iadd_sat', sudot_4x8_a_b, c), '!options->has_sudot_4x8'),
+])
 
 # Float sizes
 for s in [16, 32, 64]:
@@ -200,7 +265,7 @@ for s in [16, 32, 64]:
        (('~flrp@{}'.format(s), a, b, ('b2f', 'c@1')), ('bcsel', c, b, a), 'options->lower_flrp{}'.format(s)),
 
        (('~flrp@{}'.format(s), a, ('fadd', a, b), c), ('fadd', ('fmul', b, c), a), 'options->lower_flrp{}'.format(s)),
-       (('~flrp@{}'.format(s), ('fadd', a, b), ('fadd', a, c), d), ('fadd', ('flrp', b, c, d), a), 'options->lower_flrp{}'.format(s)),
+       (('~flrp@{}'.format(s), ('fadd(is_used_once)', a, b), ('fadd(is_used_once)', a, c), d), ('fadd', ('flrp', b, c, d), a), 'options->lower_flrp{}'.format(s)),
        (('~flrp@{}'.format(s), a, ('fmul(is_used_once)', a, b), c), ('fmul', ('flrp', 1.0, b, c), a), 'options->lower_flrp{}'.format(s)),
 
        (('~fadd@{}'.format(s), ('fmul', a, ('fadd', 1.0, ('fneg', c))), ('fmul', b, c)), ('flrp', a, b, c), '!options->lower_flrp{}'.format(s)),
@@ -1357,6 +1422,15 @@ optimizations.extend([
 
    (('iadd', ('pack_half_2x16_split', a, 0), ('pack_half_2x16_split', 0, b)), ('pack_half_2x16_split', a, b)),
    (('ior',  ('pack_half_2x16_split', a, 0), ('pack_half_2x16_split', 0, b)), ('pack_half_2x16_split', a, b)),
+
+   (('extract_i8', ('pack_32_4x8_split', a, b, c, d), 0), ('i2i', a)),
+   (('extract_i8', ('pack_32_4x8_split', a, b, c, d), 1), ('i2i', b)),
+   (('extract_i8', ('pack_32_4x8_split', a, b, c, d), 2), ('i2i', c)),
+   (('extract_i8', ('pack_32_4x8_split', a, b, c, d), 3), ('i2i', d)),
+   (('extract_u8', ('pack_32_4x8_split', a, b, c, d), 0), ('u2u', a)),
+   (('extract_u8', ('pack_32_4x8_split', a, b, c, d), 1), ('u2u', b)),
+   (('extract_u8', ('pack_32_4x8_split', a, b, c, d), 2), ('u2u', c)),
+   (('extract_u8', ('pack_32_4x8_split', a, b, c, d), 3), ('u2u', d)),
 ])
 
 # After the ('extract_u8', a, 0) pattern, above, triggers, there will be
@@ -2466,6 +2540,11 @@ late_optimizations = [
    (('ishr', a, 0), a),
    (('ishr', a, -32), a),
    (('ushr', a, 0), a),
+
+   (('extract_i8', ('extract_i8', a, b), 0), ('extract_i8', a, b)),
+   (('extract_i8', ('extract_u8', a, b), 0), ('extract_i8', a, b)),
+   (('extract_u8', ('extract_i8', a, b), 0), ('extract_u8', a, b)),
+   (('extract_u8', ('extract_u8', a, b), 0), ('extract_u8', a, b)),
 ]
 
 # A few more extract cases we'd rather leave late

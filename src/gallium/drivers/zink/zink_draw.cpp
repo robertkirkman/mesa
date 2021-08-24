@@ -369,6 +369,7 @@ update_barriers(struct zink_context *ctx, bool is_compute)
                   pipeline |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
                   bind_count -= util_bitcount(res->vbo_bind_mask);
                }
+               bind_count -= res->so_bind_count;
             }
             if (bind_count)
                access |= VK_ACCESS_SHADER_READ_BIT;
@@ -424,10 +425,14 @@ zink_draw_vbo(struct pipe_context *pctx,
    bool reads_drawid = ctx->shader_reads_drawid;
    bool reads_basevertex = ctx->shader_reads_basevertex;
    unsigned work_count = ctx->batch.work_count;
-   enum pipe_prim_type mode = dinfo->mode;
+   enum pipe_prim_type mode = (enum pipe_prim_type)dinfo->mode;
 
    update_barriers(ctx, false);
 
+   if (unlikely(ctx->buffer_rebind_counter < screen->buffer_rebind_counter)) {
+      ctx->buffer_rebind_counter = screen->buffer_rebind_counter;
+      zink_rebind_all_buffers(ctx);
+   }
    if (ctx->gfx_pipeline_state.vertices_per_patch != ctx->gfx_pipeline_state.patch_vertices)
       ctx->gfx_pipeline_state.dirty = true;
    bool drawid_broken = ctx->drawid_broken;

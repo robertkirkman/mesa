@@ -1885,6 +1885,39 @@ fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr,
       bld.emit(FS_OPCODE_PACK_HALF_2x16_SPLIT, result, op[0], op[1]);
       break;
 
+   case nir_op_sdot_4x8_iadd:
+   case nir_op_sdot_4x8_iadd_sat:
+      inst = bld.DP4A(result,
+                      retype(op[2], BRW_REGISTER_TYPE_D),
+                      retype(op[0], BRW_REGISTER_TYPE_D),
+                      retype(op[1], BRW_REGISTER_TYPE_D));
+
+      if (instr->op == nir_op_sdot_4x8_iadd_sat)
+         inst->saturate = true;
+      break;
+
+   case nir_op_udot_4x8_uadd:
+   case nir_op_udot_4x8_uadd_sat:
+      inst = bld.DP4A(result,
+                      retype(op[2], BRW_REGISTER_TYPE_UD),
+                      retype(op[0], BRW_REGISTER_TYPE_UD),
+                      retype(op[1], BRW_REGISTER_TYPE_UD));
+
+      if (instr->op == nir_op_udot_4x8_uadd_sat)
+         inst->saturate = true;
+      break;
+
+   case nir_op_sudot_4x8_iadd:
+   case nir_op_sudot_4x8_iadd_sat:
+      inst = bld.DP4A(result,
+                      retype(op[2], BRW_REGISTER_TYPE_D),
+                      retype(op[0], BRW_REGISTER_TYPE_D),
+                      retype(op[1], BRW_REGISTER_TYPE_UD));
+
+      if (instr->op == nir_op_sudot_4x8_iadd_sat)
+         inst->saturate = true;
+      break;
+
    case nir_op_ffma:
       if (nir_has_any_rounding_mode_enabled(execution_mode)) {
          brw_rnd_mode rnd =
@@ -2824,25 +2857,31 @@ fs_visitor::nir_emit_tcs_intrinsic(const fs_builder &bld,
       /* Zero the message header */
       bld.exec_all().MOV(m0, brw_imm_ud(0u));
 
-      if (devinfo->ver < 11) {
+      if (devinfo->verx10 >= 125) {
+         /* From BSpec: 54006, mov r0.2[31:24] into m0.2[31:24] and m0.2[23:16] */
+         fs_reg m0_10ub = component(retype(m0, BRW_REGISTER_TYPE_UB), 10);
+         fs_reg r0_11ub =
+            stride(suboffset(retype(brw_vec1_grf(0, 0), BRW_REGISTER_TYPE_UB), 11),
+                   0, 1, 0);
+         bld.exec_all().group(2, 0).MOV(m0_10ub, r0_11ub);
+      } else if (devinfo->ver >= 11) {
+         chanbld.AND(m0_2, retype(brw_vec1_grf(0, 2), BRW_REGISTER_TYPE_UD),
+                     brw_imm_ud(INTEL_MASK(30, 24)));
+
+         /* Set the Barrier Count and the enable bit */
+         chanbld.OR(m0_2, m0_2,
+                    brw_imm_ud(tcs_prog_data->instances << 8 | (1 << 15)));
+      } else {
          /* Copy "Barrier ID" from r0.2, bits 16:13 */
          chanbld.AND(m0_2, retype(brw_vec1_grf(0, 2), BRW_REGISTER_TYPE_UD),
                      brw_imm_ud(INTEL_MASK(16, 13)));
 
          /* Shift it up to bits 27:24. */
          chanbld.SHL(m0_2, m0_2, brw_imm_ud(11));
-      } else {
-         chanbld.AND(m0_2, retype(brw_vec1_grf(0, 2), BRW_REGISTER_TYPE_UD),
-                     brw_imm_ud(INTEL_MASK(30, 24)));
-      }
 
-      /* Set the Barrier Count and the enable bit */
-      if (devinfo->ver < 11) {
+         /* Set the Barrier Count and the enable bit */
          chanbld.OR(m0_2, m0_2,
                     brw_imm_ud(tcs_prog_data->instances << 9 | (1 << 15)));
-      } else {
-         chanbld.OR(m0_2, m0_2,
-                    brw_imm_ud(tcs_prog_data->instances << 8 | (1 << 15)));
       }
 
       bld.emit(SHADER_OPCODE_BARRIER, bld.null_reg_ud(), m0);

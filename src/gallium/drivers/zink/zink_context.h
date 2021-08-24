@@ -269,6 +269,8 @@ struct zink_context {
    struct pipe_surface *dummy_surface;
    struct zink_buffer_view *dummy_bufferview;
 
+   unsigned buffer_rebind_counter;
+
    struct {
       /* descriptor info */
       VkDescriptorBufferInfo ubos[PIPE_SHADER_TYPES][PIPE_MAX_CONSTANT_BUFFERS];
@@ -407,6 +409,9 @@ zink_pipeline_flags_from_pipe_stage(enum pipe_shader_type pstage)
 }
 
 void
+zink_rebind_all_buffers(struct zink_context *ctx);
+
+void
 zink_init_draw_functions(struct zink_context *ctx, struct zink_screen *screen);
 void
 zink_init_grid_functions(struct zink_context *ctx);
@@ -447,7 +452,26 @@ zink_rect_from_box(const struct pipe_box *box)
    return (struct u_rect){box->x, box->x + box->width, box->y, box->y + box->height};
 }
 
-void
+static inline VkComponentSwizzle
+zink_component_mapping(enum pipe_swizzle swizzle)
+{
+   switch (swizzle) {
+   case PIPE_SWIZZLE_X: return VK_COMPONENT_SWIZZLE_R;
+   case PIPE_SWIZZLE_Y: return VK_COMPONENT_SWIZZLE_G;
+   case PIPE_SWIZZLE_Z: return VK_COMPONENT_SWIZZLE_B;
+   case PIPE_SWIZZLE_W: return VK_COMPONENT_SWIZZLE_A;
+   case PIPE_SWIZZLE_0: return VK_COMPONENT_SWIZZLE_ZERO;
+   case PIPE_SWIZZLE_1: return VK_COMPONENT_SWIZZLE_ONE;
+   case PIPE_SWIZZLE_NONE: return VK_COMPONENT_SWIZZLE_IDENTITY; // ???
+   default:
+      unreachable("unexpected swizzle");
+   }
+}
+
+enum pipe_swizzle
+zink_clamp_void_swizzle(const struct util_format_description *desc, enum pipe_swizzle swizzle);
+
+bool
 zink_resource_rebind(struct zink_context *ctx, struct zink_resource *res);
 
 void

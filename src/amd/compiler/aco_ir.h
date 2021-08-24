@@ -1729,6 +1729,7 @@ memory_sync_info get_sync_info(const Instruction* instr);
 bool is_dead(const std::vector<uint16_t>& uses, Instruction* instr);
 
 bool can_use_opsel(chip_class chip, aco_opcode op, int idx, bool high);
+bool instr_is_16bit(chip_class chip, aco_opcode op);
 bool can_use_SDWA(chip_class chip, const aco_ptr<Instruction>& instr, bool pre_ra);
 bool can_use_DPP(const aco_ptr<Instruction>& instr, bool pre_ra);
 /* updates "instr" and returns the old instruction (or NULL if no update was needed) */
@@ -2201,7 +2202,6 @@ typedef struct {
    const aco::Format format[static_cast<int>(aco_opcode::num_opcodes)];
    /* sizes used for input/output modifiers and constants */
    const unsigned operand_size[static_cast<int>(aco_opcode::num_opcodes)];
-   const unsigned definition_size[static_cast<int>(aco_opcode::num_opcodes)];
    const instr_class classes[static_cast<int>(aco_opcode::num_opcodes)];
 } Info;
 

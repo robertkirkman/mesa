@@ -812,10 +812,6 @@ anv_physical_device_try_create(struct anv_instance *instance,
 
    device->info = devinfo;
 
-   device->no_hw = device->info.no_hw;
-   if (getenv("INTEL_NO_HW") != NULL)
-      device->no_hw = true;
-
    device->pci_info.domain = drm_device->businfo.pci->domain;
    device->pci_info.bus = drm_device->businfo.pci->bus;
    device->pci_info.device = drm_device->businfo.pci->dev;
@@ -3239,7 +3235,6 @@ VkResult anv_CreateDevice(
    }
 
    device->physical = physical_device;
-   device->no_hw = physical_device->no_hw;
    device->_lost = false;
 
    /* XXX(chadv): Can we dup() physicalDevice->fd here? */

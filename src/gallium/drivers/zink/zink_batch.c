@@ -56,6 +56,10 @@ zink_reset_batch_state(struct zink_context *ctx, struct zink_batch_state *bs)
       zink_buffer_view_reference(screen, &buffer_view, NULL);
    }
 
+   util_dynarray_foreach(&bs->dead_framebuffers, struct zink_framebuffer*, fb) {
+      zink_framebuffer_reference(screen, fb, NULL);
+   }
+   util_dynarray_clear(&bs->dead_framebuffers);
    util_dynarray_foreach(&bs->zombie_samplers, VkSampler, samp) {
       vkDestroySampler(screen->dev, *samp, NULL);
    }
@@ -74,12 +78,6 @@ zink_reset_batch_state(struct zink_context *ctx, struct zink_batch_state *bs)
          struct zink_gfx_program *prog = (struct zink_gfx_program*)pg;
          zink_gfx_program_reference(screen, &prog, NULL);
       }
-   }
-
-   set_foreach(bs->fbs, entry) {
-      struct zink_framebuffer *fb = (void*)entry->key;
-      zink_framebuffer_reference(screen, &fb, NULL);
-      _mesa_set_remove(bs->fbs, entry);
    }
 
    pipe_resource_reference(&bs->flush_res, NULL);
@@ -141,8 +139,8 @@ zink_batch_state_destroy(struct zink_screen *screen, struct zink_batch_state *bs
    if (bs->cmdpool)
       vkDestroyCommandPool(screen->dev, bs->cmdpool, NULL);
 
-   _mesa_set_destroy(bs->fbs, NULL);
    util_dynarray_fini(&bs->zombie_samplers);
+   util_dynarray_fini(&bs->dead_framebuffers);
    _mesa_set_destroy(bs->surfaces, NULL);
    _mesa_set_destroy(bs->bufferviews, NULL);
    _mesa_set_destroy(bs->programs, NULL);
@@ -184,13 +182,13 @@ create_batch_state(struct zink_context *ctx)
    bs->ctx = ctx;
    pipe_reference_init(&bs->reference, 1);
 
-   SET_CREATE_OR_FAIL(bs->fbs);
    SET_CREATE_OR_FAIL(bs->resources);
    SET_CREATE_OR_FAIL(bs->surfaces);
    SET_CREATE_OR_FAIL(bs->bufferviews);
    SET_CREATE_OR_FAIL(bs->programs);
    SET_CREATE_OR_FAIL(bs->active_queries);
    util_dynarray_init(&bs->zombie_samplers, NULL);
+   util_dynarray_init(&bs->dead_framebuffers, NULL);
    util_dynarray_init(&bs->persistent_resources, NULL);
 
    cnd_init(&bs->usage.flush);
@@ -666,16 +664,6 @@ zink_batch_reference_sampler_view(struct zink_batch *batch,
       zink_batch_reference_bufferview(batch, sv->buffer_view);
    else
       zink_batch_reference_surface(batch, sv->image_view);
-}
-
-void
-zink_batch_reference_framebuffer(struct zink_batch *batch,
-                                 struct zink_framebuffer *fb)
-{
-   bool found;
-   _mesa_set_search_or_add(batch->state->fbs, fb, &found);
-   if (!found)
-      pipe_reference(NULL, &fb->reference);
 }
 
 void

@@ -978,7 +978,9 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceProperties2(
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_PROPERTIES_EXT: {
          VkPhysicalDeviceLineRasterizationPropertiesEXT *properties =
             (VkPhysicalDeviceLineRasterizationPropertiesEXT *)ext;
-         properties->lineSubPixelPrecisionBits = 4;
+         properties->lineSubPixelPrecisionBits =
+            pdevice->pscreen->get_param(pdevice->pscreen,
+                                        PIPE_CAP_RASTERIZER_SUBPIXEL_BITS);
          break;
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT: {
@@ -1095,7 +1097,7 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceMemoryProperties2(
                                          &pMemoryProperties->memoryProperties);
 }
 
-VkResult
+VKAPI_ATTR VkResult VKAPI_CALL
 lvp_GetMemoryHostPointerPropertiesEXT(
    VkDevice _device,
    VkExternalMemoryHandleTypeFlagBits handleType,

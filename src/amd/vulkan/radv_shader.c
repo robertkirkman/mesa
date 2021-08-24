@@ -117,9 +117,6 @@ radv_optimize_nir(const struct radv_device *device, struct nir_shader *shader,
                   bool optimize_conservatively, bool allow_copies)
 {
    bool progress;
-   unsigned lower_flrp = (shader->options->lower_flrp16 ? 16 : 0) |
-                         (shader->options->lower_flrp32 ? 32 : 0) |
-                         (shader->options->lower_flrp64 ? 64 : 0);
 
    do {
       progress = false;
@@ -161,21 +158,6 @@ radv_optimize_nir(const struct radv_device *device, struct nir_shader *shader,
       NIR_PASS(progress, shader, nir_opt_peephole_select, 8, true, true);
       NIR_PASS(progress, shader, nir_opt_constant_folding);
       NIR_PASS(progress, shader, nir_opt_algebraic);
-
-      if (lower_flrp != 0) {
-         bool lower_flrp_progress = false;
-         NIR_PASS(lower_flrp_progress, shader, nir_lower_flrp, lower_flrp,
-                  false /* always_precise */);
-         if (lower_flrp_progress) {
-            NIR_PASS(progress, shader, nir_opt_constant_folding);
-            progress = true;
-         }
-
-         /* Nothing should rematerialize any flrps, so we only
-          * need to do this lowering once.
-          */
-         lower_flrp = 0;
-      }
 
       NIR_PASS(progress, shader, nir_opt_undef);
       NIR_PASS(progress, shader, nir_opt_shrink_vectors,
@@ -311,8 +293,7 @@ lower_intrinsics(nir_shader *nir, const struct radv_pipeline_key *key,
                def = nir_build_load_global(&b, 1, 64, addr, .access = ACCESS_NON_WRITEABLE,
                                            .align_mul = 8, .align_offset = 0);
             } else {
-               def = nir_vec3(&b, nir_channel(&b, intrin->src[0].ssa, 0),
-                              nir_channel(&b, intrin->src[0].ssa, 1), nir_imm_int(&b, 0));
+               def = nir_vector_insert_imm(&b, intrin->src[0].ssa, nir_imm_int(&b, 0), 2);
             }
             break;
          case nir_intrinsic_vulkan_resource_index: {
@@ -323,8 +304,6 @@ lower_intrinsics(nir_shader *nir, const struct radv_pipeline_key *key,
             nir_ssa_def *new_res = nir_vulkan_resource_index(
                &b, 3, 32, intrin->src[0].ssa, .desc_set = desc_set, .binding = binding,
                .desc_type = nir_intrinsic_desc_type(intrin));
-            nir_ssa_def *set_ptr = nir_channel(&b, new_res, 0);
-            nir_ssa_def *binding_ptr = nir_channel(&b, new_res, 1);
 
             nir_ssa_def *stride;
             if (desc_layout->binding[binding].type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
@@ -333,15 +312,14 @@ lower_intrinsics(nir_shader *nir, const struct radv_pipeline_key *key,
             } else {
                stride = nir_imm_int(&b, desc_layout->binding[binding].size);
             }
-            def = nir_vec3(&b, set_ptr, binding_ptr, stride);
+            def = nir_vector_insert_imm(&b, new_res, stride, 2);
             break;
          }
          case nir_intrinsic_vulkan_resource_reindex: {
-            nir_ssa_def *set_ptr = nir_channel(&b, intrin->src[0].ssa, 0);
             nir_ssa_def *binding_ptr = nir_channel(&b, intrin->src[0].ssa, 1);
             nir_ssa_def *stride = nir_channel(&b, intrin->src[0].ssa, 2);
             binding_ptr = nir_iadd(&b, binding_ptr, nir_imul(&b, intrin->src[1].ssa, stride));
-            def = nir_vec3(&b, set_ptr, binding_ptr, stride);
+            def = nir_vector_insert_imm(&b, intrin->src[0].ssa, binding_ptr, 1);
             break;
          }
          case nir_intrinsic_is_sparse_texels_resident:
@@ -699,6 +677,14 @@ radv_shader_compile_to_nir(struct radv_device *device, struct vk_shader_module *
     * to remove any copies introduced by nir_opt_find_array_copies().
     */
    nir_lower_var_copies(nir);
+
+   unsigned lower_flrp = (nir->options->lower_flrp16 ? 16 : 0) |
+                         (nir->options->lower_flrp32 ? 32 : 0) |
+                         (nir->options->lower_flrp64 ? 64 : 0);
+   if (lower_flrp != 0) {
+      if (nir_lower_flrp(nir, lower_flrp, false /* always_precise */))
+         NIR_PASS_V(nir, nir_opt_constant_folding);
+   }
 
    const nir_opt_access_options opt_access_options = {
       .is_vulkan = true,
@@ -1059,7 +1045,7 @@ radv_alloc_shader_memory(struct radv_device *device, struct radv_shader_variant 
    slab->size = MAX2(256 * 1024, shader->code_size);
    VkResult result = device->ws->buffer_create(
       device->ws, slab->size, 256, RADEON_DOMAIN_VRAM,
-      RADEON_FLAG_NO_INTERPROCESS_SHARING |
+      RADEON_FLAG_NO_INTERPROCESS_SHARING | RADEON_FLAG_32BIT |
          (device->physical_device->rad_info.cpdma_prefetch_writes_memory ? 0
                                                                          : RADEON_FLAG_READ_ONLY),
       RADV_BO_PRIORITY_SHADER, 0, &slab->bo);

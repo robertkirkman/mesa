@@ -31,7 +31,6 @@
 #include "util/u_memory.h"
 #include "pipe/p_defines.h"
 #include "pipe/p_state.h"
-#include "indices/u_primconvert.h"
 #include "gallium/auxiliary/util/u_blend.h"
 
 #include "panfrost-quirks.h"
@@ -361,21 +360,6 @@ pan_merge_empty_fs(struct mali_renderer_state_packed *rsd)
         pan_merge((*rsd), empty_rsd, RENDERER_STATE);
 }
 
-#if PAN_ARCH == 5
-/* Get the last blend shader, for an erratum workaround */
-
-static mali_ptr
-panfrost_last_nonnull(mali_ptr *ptrs, unsigned count)
-{
-        for (signed i = ((signed) count - 1); i >= 0; --i) {
-                if (ptrs[i])
-                        return ptrs[i];
-        }
-
-        return 0;
-}
-#endif
-
 static void
 panfrost_prepare_fs_state(struct panfrost_context *ctx,
                           mali_ptr *blend_shaders,
@@ -571,7 +555,7 @@ panfrost_emit_frag_shader_meta(struct panfrost_batch *batch)
                                              PAN_DESC_ARRAY(rt_count, BLEND));
 #endif
 
-        mali_ptr blend_shaders[PIPE_MAX_COLOR_BUFS];
+        mali_ptr blend_shaders[PIPE_MAX_COLOR_BUFS] = { 0 };
         unsigned shader_offset = 0;
         struct panfrost_bo *shader_bo = NULL;
 
@@ -2766,18 +2750,6 @@ panfrost_direct_draw(struct panfrost_batch *batch,
 
         struct panfrost_context *ctx = batch->ctx;
 
-        /* Fallback for unsupported modes */
-        if (!(ctx->draw_modes & BITFIELD_BIT(info->mode))) {
-                if (draw->count < 4) {
-                        /* Degenerate case? */
-                        return;
-                }
-
-                util_primconvert_save_rasterizer_state(ctx->primconvert, &ctx->rasterizer->base);
-                util_primconvert_draw_vbo(ctx->primconvert, info, drawid_offset, NULL, draw, 1);
-                return;
-        }
-
         /* Take into account a negative bias */
         ctx->indirect_draw = false;
         ctx->vertex_count = draw->count + (info->index_size ? abs(draw->index_bias) : 0);
@@ -2879,7 +2851,6 @@ panfrost_indirect_draw(struct panfrost_batch *batch,
         /* TODO: Increment transform feedback offsets */
         assert(ctx->streamout.num_targets == 0);
 
-        assert(ctx->draw_modes & (1 << info->mode));
         ctx->active_prim = info->mode;
         ctx->drawid = drawid_offset;
         ctx->indirect_draw = true;
