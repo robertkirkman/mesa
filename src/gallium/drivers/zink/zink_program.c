@@ -280,7 +280,7 @@ update_shader_modules(struct zink_context *ctx, struct zink_gfx_program *prog)
 {
    bool hash_changed = false;
    bool default_variants = true;
-   bool first = !!prog->modules[PIPE_SHADER_VERTEX];
+   bool first = !prog->modules[PIPE_SHADER_VERTEX];
    u_foreach_bit(pstage, ctx->dirty_shader_stages & prog->stages_present) {
       assert(prog->shaders[pstage]);
       struct zink_shader_module *zm = get_shader_module_for_stage(ctx, prog->shaders[pstage], prog);
@@ -825,7 +825,7 @@ zink_get_gfx_pipeline(struct zink_context *ctx,
       memcpy(&pc_entry->state, state, sizeof(*state));
       pc_entry->pipeline = pipeline;
 
-      entry = _mesa_hash_table_insert_pre_hashed(prog->pipelines[vkmode], state->final_hash, state, pc_entry);
+      entry = _mesa_hash_table_insert_pre_hashed(prog->pipelines[vkmode], state->final_hash, pc_entry, pc_entry);
       assert(entry);
    }
 
@@ -864,7 +864,7 @@ zink_get_compute_pipeline(struct zink_screen *screen,
       memcpy(&pc_entry->state, state, sizeof(*state));
       pc_entry->pipeline = pipeline;
 
-      entry = _mesa_hash_table_insert_pre_hashed(comp->pipelines, state->hash, state, pc_entry);
+      entry = _mesa_hash_table_insert_pre_hashed(comp->pipelines, state->hash, pc_entry, pc_entry);
       assert(entry);
    }
 

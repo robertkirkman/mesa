@@ -2026,6 +2026,9 @@ crocus_create_rasterizer_state(struct pipe_context *ctx,
       sf.LineEndCapAntialiasingRegionWidth =
          state->line_smooth ? _10pixels : _05pixels;
       sf.LastPixelEnable = state->line_last_pixel;
+#if GFX_VER <= 7
+      sf.AntialiasingEnable = state->line_smooth;
+#endif
 #if GFX_VER == 8
       struct crocus_screen *screen = (struct crocus_screen *)ctx->screen;
       if (screen->devinfo.is_cherryview)
@@ -4793,7 +4796,7 @@ crocus_populate_fs_key(const struct crocus_context *ice,
 
    uint32_t line_aa = BRW_WM_AA_NEVER;
    if (rast->cso.line_smooth) {
-      int reduced_prim = u_reduced_prim(ice->state.prim_mode);
+      int reduced_prim = ice->state.reduced_prim_mode;
       if (reduced_prim == PIPE_PRIM_LINES)
          line_aa = BRW_WM_AA_ALWAYS;
       else if (reduced_prim == PIPE_PRIM_TRIANGLES) {
@@ -7037,11 +7040,15 @@ crocus_upload_dirty_render_state(struct crocus_context *ice,
          sf.DestinationOriginHorizontalBias = 0.5;
          sf.DestinationOriginVerticalBias = 0.5;
 
+	 sf.LineEndCapAntialiasingRegionWidth =
+            cso_state->line_smooth ? _10pixels : _05pixels;
          sf.LastPixelEnable = cso_state->line_last_pixel;
+         sf.AntialiasingEnable = cso_state->line_smooth;
+
          sf.LineWidth = get_line_width(cso_state);
          sf.PointWidth = cso_state->point_size;
          sf.PointWidthSource = cso_state->point_size_per_vertex ? Vertex : State;
-#if GFX_VERx10 == 45 || GFX_VER >= 5
+#if GFX_VERx10 >= 45
          sf.AALineDistanceMode = AALINEDISTANCE_TRUE;
 #endif
          sf.ViewportTransformEnable = true;
@@ -9252,6 +9259,7 @@ genX(crocus_init_state)(struct crocus_context *ice)
    ice->state.sample_mask = 0xff;
    ice->state.num_viewports = 1;
    ice->state.prim_mode = PIPE_PRIM_MAX;
+   ice->state.reduced_prim_mode = PIPE_PRIM_MAX;
    ice->state.genx = calloc(1, sizeof(struct crocus_genx_state));
    ice->draw.derived_params.drawid = -1;
 
