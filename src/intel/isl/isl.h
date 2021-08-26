@@ -577,6 +577,8 @@ enum isl_tiling {
    ISL_TILING_Y0, /**< Legacy Y tiling */
    ISL_TILING_Yf, /**< Standard 4K tiling. The 'f' means "four". */
    ISL_TILING_Ys, /**< Standard 64K tiling. The 's' means "sixty-four". */
+   ISL_TILING_4,  /**< 4K tiling. */
+   ISL_TILING_64,  /**< 64K tiling.*/
    ISL_TILING_HIZ, /**< Tiling format for HiZ surfaces */
    ISL_TILING_CCS, /**< Tiling format for CCS surfaces */
    ISL_TILING_GFX12_CCS, /**< Tiling format for Gfx12 CCS surfaces */
@@ -593,6 +595,8 @@ typedef uint32_t isl_tiling_flags_t;
 #define ISL_TILING_Y0_BIT                 (1u << ISL_TILING_Y0)
 #define ISL_TILING_Yf_BIT                 (1u << ISL_TILING_Yf)
 #define ISL_TILING_Ys_BIT                 (1u << ISL_TILING_Ys)
+#define ISL_TILING_4_BIT                  (1u << ISL_TILING_4)
+#define ISL_TILING_64_BIT                 (1u << ISL_TILING_64)
 #define ISL_TILING_HIZ_BIT                (1u << ISL_TILING_HIZ)
 #define ISL_TILING_CCS_BIT                (1u << ISL_TILING_CCS)
 #define ISL_TILING_GFX12_CCS_BIT          (1u << ISL_TILING_GFX12_CCS)
@@ -1102,19 +1106,14 @@ typedef uint64_t isl_surf_usage_flags_t;
 #define ISL_SURF_USAGE_CUBE_BIT                (1u << 4)
 #define ISL_SURF_USAGE_DISABLE_AUX_BIT         (1u << 5)
 #define ISL_SURF_USAGE_DISPLAY_BIT             (1u << 6)
-#define ISL_SURF_USAGE_DISPLAY_ROTATE_90_BIT   (1u << 7)
-#define ISL_SURF_USAGE_DISPLAY_ROTATE_180_BIT  (1u << 8)
-#define ISL_SURF_USAGE_DISPLAY_ROTATE_270_BIT  (1u << 9)
-#define ISL_SURF_USAGE_DISPLAY_FLIP_X_BIT      (1u << 10)
-#define ISL_SURF_USAGE_DISPLAY_FLIP_Y_BIT      (1u << 11)
-#define ISL_SURF_USAGE_STORAGE_BIT             (1u << 12)
-#define ISL_SURF_USAGE_HIZ_BIT                 (1u << 13)
-#define ISL_SURF_USAGE_MCS_BIT                 (1u << 14)
-#define ISL_SURF_USAGE_CCS_BIT                 (1u << 15)
-#define ISL_SURF_USAGE_VERTEX_BUFFER_BIT       (1u << 16)
-#define ISL_SURF_USAGE_INDEX_BUFFER_BIT        (1u << 17)
-#define ISL_SURF_USAGE_CONSTANT_BUFFER_BIT     (1u << 18)
-#define ISL_SURF_USAGE_STAGING_BIT             (1u << 19)
+#define ISL_SURF_USAGE_STORAGE_BIT             (1u << 7)
+#define ISL_SURF_USAGE_HIZ_BIT                 (1u << 8)
+#define ISL_SURF_USAGE_MCS_BIT                 (1u << 9)
+#define ISL_SURF_USAGE_CCS_BIT                 (1u << 10)
+#define ISL_SURF_USAGE_VERTEX_BUFFER_BIT       (1u << 11)
+#define ISL_SURF_USAGE_INDEX_BUFFER_BIT        (1u << 12)
+#define ISL_SURF_USAGE_CONSTANT_BUFFER_BIT     (1u << 13)
+#define ISL_SURF_USAGE_STAGING_BIT             (1u << 14)
 /** @} */
 
 /**
@@ -1988,7 +1987,10 @@ isl_has_matching_typed_storage_image_format(const struct intel_device_info *devi
 
 void
 isl_tiling_get_info(enum isl_tiling tiling,
+                    enum isl_surf_dim dim,
+                    enum isl_msaa_layout msaa_layout,
                     uint32_t format_bpb,
+                    uint32_t samples,
                     struct isl_tile_info *tile_info);
 
 static inline enum isl_tiling
@@ -2699,7 +2701,10 @@ isl_surf_get_uncompressed_surf(const struct isl_device *dev,
  */
 void
 isl_tiling_get_intratile_offset_el(enum isl_tiling tiling,
+                                   enum isl_surf_dim dim,
+                                   enum isl_msaa_layout msaa_layout,
                                    uint32_t bpb,
+                                   uint32_t samples,
                                    uint32_t row_pitch_B,
                                    uint32_t array_pitch_el_rows,
                                    uint32_t total_x_offset_el,
@@ -2737,7 +2742,10 @@ isl_tiling_get_intratile_offset_el(enum isl_tiling tiling,
  */
 static inline void
 isl_tiling_get_intratile_offset_sa(enum isl_tiling tiling,
+                                   enum isl_surf_dim dim,
+                                   enum isl_msaa_layout msaa_layout,
                                    enum isl_format format,
+                                   uint32_t samples,
                                    uint32_t row_pitch_B,
                                    uint32_t array_pitch_el_rows,
                                    uint32_t total_x_offset_sa,
@@ -2763,7 +2771,8 @@ isl_tiling_get_intratile_offset_sa(enum isl_tiling tiling,
    const uint32_t total_y_offset_el = total_y_offset_sa / fmtl->bh;
    const uint32_t total_z_offset_el = total_z_offset_sa / fmtl->bd;
 
-   isl_tiling_get_intratile_offset_el(tiling, fmtl->bpb, row_pitch_B,
+   isl_tiling_get_intratile_offset_el(tiling, dim, msaa_layout, fmtl->bpb,
+                                      samples, row_pitch_B,
                                       array_pitch_el_rows,
                                       total_x_offset_el,
                                       total_y_offset_el,

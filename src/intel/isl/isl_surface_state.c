@@ -39,39 +39,57 @@ __gen_combine_address(__attribute__((unused)) void *data,
 
 #include "isl_priv.h"
 
-#if GFX_VER >= 8
-static const uint8_t isl_encode_halign[] = {
-    [4] = HALIGN4,
-    [8] = HALIGN8,
-    [16] = HALIGN16,
-};
-#elif GFX_VER >= 7
-static const uint8_t isl_encode_halign[] = {
-    [4] = HALIGN_4,
-    [8] = HALIGN_8,
-};
+#if GFX_VER >= 7
+static const uint8_t isl_encode_halign(uint8_t halign)
+{
+   switch (halign) {
+#if GFX_VERx10 >= 125
+   case  16: return HALIGN_16;
+   case  32: return HALIGN_32;
+   case  64: return HALIGN_64;
+   case 128: return HALIGN_128;
+#elif GFX_VER >= 8
+   case   4: return HALIGN_4;
+   case   8: return HALIGN_8;
+   case  16: return HALIGN_16;
+#else
+   case   4: return HALIGN_4;
+   case   8: return HALIGN_8;
+#endif
+   default: unreachable("Invalid halign");
+   }
+}
 #endif
 
+#if GFX_VER >= 6
+static const uint8_t isl_encode_valign(uint8_t valign)
+{
+   switch (valign) {
 #if GFX_VER >= 8
-static const uint8_t isl_encode_valign[] = {
-    [4] = VALIGN4,
-    [8] = VALIGN8,
-    [16] = VALIGN16,
-};
-#elif GFX_VER >= 6
-static const uint8_t isl_encode_valign[] = {
-    [2] = VALIGN_2,
-    [4] = VALIGN_4,
-};
+   case   4: return VALIGN_4;
+   case   8: return VALIGN_8;
+   case  16: return VALIGN_16;
+#else
+   case   2: return VALIGN_2;
+   case   4: return VALIGN_4;
+#endif
+   default: unreachable("Invalid valign");
+   }
+}
 #endif
 
 #if GFX_VER >= 8
 static const uint8_t isl_encode_tiling[] = {
    [ISL_TILING_LINEAR]  = LINEAR,
    [ISL_TILING_X]       = XMAJOR,
+#if GFX_VERx10 >= 125
+   [ISL_TILING_4]       = TILE4,
+   [ISL_TILING_64]      = TILE64,
+#else
    [ISL_TILING_Y0]      = YMAJOR,
    [ISL_TILING_Yf]      = YMAJOR,
    [ISL_TILING_Ys]      = YMAJOR,
+#endif
 #if GFX_VER <= 11
    [ISL_TILING_W]       = WMAJOR,
 #endif
@@ -148,7 +166,28 @@ get_surftype(enum isl_surf_dim dim, isl_surf_usage_flags_t usage)
 UNUSED static struct isl_extent3d
 get_image_alignment(const struct isl_surf *surf)
 {
-   if (GFX_VER >= 9) {
+   if (GFX_VERx10 >= 125) {
+      if (surf->tiling == ISL_TILING_64) {
+         /* The hardware ignores the alignment values. Anyway, the surface's
+          * true alignment is likely outside the enum range of HALIGN* and
+          * VALIGN*.
+          */
+         return isl_extent3d(128, 4, 1);
+      } else if (isl_format_get_layout(surf->format)->bpb % 3 == 0) {
+         /* On XeHP, RENDER_SURFACE_STATE.SurfaceHorizontalAlignment is in
+          * units of elements for 24, 48, and 96 bpb formats.
+          */
+         return isl_surf_get_image_alignment_el(surf);
+      } else {
+         /* On XeHP, RENDER_SURFACE_STATE.SurfaceHorizontalAlignment is in
+          * units of bytes for formats that are powers of two.
+          */
+         const uint32_t bs = isl_format_get_layout(surf->format)->bpb / 8;
+         return isl_extent3d(surf->image_alignment_el.w * bs,
+                             surf->image_alignment_el.h,
+                             surf->image_alignment_el.d);
+      }
+   } else if (GFX_VER >= 9) {
       if (isl_tiling_is_std_y(surf->tiling) ||
           surf->dim_layout == ISL_DIM_LAYOUT_GFX9_1D) {
          /* The hardware ignores the alignment values. Anyway, the surface's
@@ -471,9 +510,9 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
 
 #if GFX_VER >= 6
    const struct isl_extent3d image_align = get_image_alignment(info->surf);
-   s.SurfaceVerticalAlignment = isl_encode_valign[image_align.height];
+   s.SurfaceVerticalAlignment = isl_encode_valign(image_align.height);
 #if GFX_VER >= 7
-   s.SurfaceHorizontalAlignment = isl_encode_halign[image_align.width];
+   s.SurfaceHorizontalAlignment = isl_encode_halign(image_align.width);
 #endif
 #endif
 
@@ -879,9 +918,11 @@ isl_genX(buffer_fill_state_s)(const struct isl_device *dev, void *state,
    s.SurfacePitch = info->stride_B - 1;
 
 #if GFX_VER >= 6
-   s.SurfaceVerticalAlignment = isl_encode_valign[4];
-#if GFX_VER >= 7
-   s.SurfaceHorizontalAlignment = isl_encode_halign[4];
+   s.SurfaceVerticalAlignment = isl_encode_valign(4);
+#if GFX_VERx10 >= 125
+   s.SurfaceHorizontalAlignment = isl_encode_halign(128);
+#elif GFX_VER >= 7
+   s.SurfaceHorizontalAlignment = isl_encode_halign(4);
    s.SurfaceArray = false;
 #endif
 #endif
@@ -961,7 +1002,9 @@ isl_genX(null_fill_state)(void *state,
 #if GFX_VER >= 7
       .SurfaceArray = info->size.depth > 1,
 #endif
-#if GFX_VER >= 8
+#if GFX_VERx10 >= 125
+      .TileMode = TILE4,
+#elif GFX_VER >= 8
       .TileMode = YMAJOR,
 #else
       .TiledSurface = true,

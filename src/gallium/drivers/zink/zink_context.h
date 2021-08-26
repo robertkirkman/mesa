@@ -203,16 +203,20 @@ struct zink_context {
    bool shader_reads_basevertex;
    struct zink_gfx_pipeline_state gfx_pipeline_state;
    enum pipe_prim_type gfx_prim_mode;
-   struct hash_table *program_cache;
+   /* there are 5 gfx stages, but VS and FS are assumed to be always present,
+    * thus only 3 stages need to be considered, giving 2^3 = 8 program caches.
+    */
+   struct hash_table program_cache[8];
    struct zink_gfx_program *curr_program;
 
    struct zink_descriptor_data *dd;
 
    struct zink_shader *compute_stage;
    struct zink_compute_pipeline_state compute_pipeline_state;
-   struct hash_table *compute_program_cache;
+   struct hash_table compute_program_cache;
    struct zink_compute_program *curr_compute;
 
+   unsigned shader_stages : ZINK_SHADER_COUNT; /* mask of bound gfx shader stages */
    unsigned dirty_shader_stages : 6; /* mask of changed shader stages */
    bool last_vertex_stage_dirty;
 
@@ -303,6 +307,8 @@ struct zink_context {
    bool xfb_barrier;
    bool first_frame_done;
    bool have_timelines;
+
+   bool gfx_dirty;
 
    bool is_device_lost;
    bool vertex_state_changed : 1;

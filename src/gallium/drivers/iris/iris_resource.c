@@ -87,6 +87,8 @@ modifier_is_supported(const struct intel_device_info *devinfo,
    case I915_FORMAT_MOD_Y_TILED:
       if (devinfo->ver <= 8 && (bind & PIPE_BIND_SCANOUT))
          return false;
+      if (devinfo->verx10 >= 125)
+         return false;
       break;
    case I915_FORMAT_MOD_Y_TILED_CCS:
       if (devinfo->ver <= 8 || devinfo->ver >= 12)
@@ -95,7 +97,7 @@ modifier_is_supported(const struct intel_device_info *devinfo,
    case I915_FORMAT_MOD_Y_TILED_GEN12_RC_CCS:
    case I915_FORMAT_MOD_Y_TILED_GEN12_MC_CCS:
    case I915_FORMAT_MOD_Y_TILED_GEN12_RC_CCS_CC:
-      if (devinfo->ver != 12)
+      if (devinfo->verx10 != 120)
          return false;
       break;
    case DRM_FORMAT_MOD_INVALID:
@@ -2116,6 +2118,10 @@ iris_transfer_map(struct pipe_context *ctx,
       }
    }
 
+   /* TODO: Teach iris_map_tiled_memcpy about Tile4... */
+   if (res->surf.tiling == ISL_TILING_4)
+      usage &= ~PIPE_MAP_DIRECTLY;
+
    if (!(usage & PIPE_MAP_DIRECTLY)) {
       /* If we need a synchronous mapping and the resource is busy, or needs
        * resolving, we copy to/from a linear temporary buffer using the GPU.
@@ -2254,8 +2260,11 @@ iris_texture_subdata(struct pipe_context *ctx,
     * Linear staging buffers appear to be better than tiled ones, too, so
     * take that path if we need the GPU to perform color compression, or
     * stall-avoidance blits.
+    *
+    * TODO: Teach isl_memcpy_linear_to_tiled about Tile4...
     */
    if (surf->tiling == ISL_TILING_LINEAR ||
+       surf->tiling == ISL_TILING_4 ||
        isl_aux_usage_has_compression(res->aux.usage) ||
        resource_is_busy(ice, res) ||
        res->bo->mmap_mode == IRIS_MMAP_NONE) {

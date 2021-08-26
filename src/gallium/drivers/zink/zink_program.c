@@ -110,7 +110,7 @@ shader_key_vs_gen(struct zink_context *ctx, struct zink_shader *zs,
    struct zink_vs_key *vs_key = &key->key.vs;
    key->size = sizeof(struct zink_vs_key);
 
-   vs_key->clip_halfz = ctx->rast_state->base.clip_halfz;
+   vs_key->clip_halfz = ctx->rast_state && ctx->rast_state->base.clip_halfz;
    switch (zs->nir->info.stage) {
    case MESA_SHADER_VERTEX:
       vs_key->last_vertex_stage = !shaders[PIPE_SHADER_TESS_EVAL] && !shaders[PIPE_SHADER_GEOMETRY];
@@ -142,10 +142,12 @@ shader_key_fs_gen(struct zink_context *ctx, struct zink_shader *zs,
    if (zs->nir->info.outputs_written & (1 << FRAG_RESULT_SAMPLE_MASK))
       fs_key->samples = !!ctx->fb_state.samples;
    fs_key->force_dual_color_blend = screen->driconf.dual_color_blend_by_location &&
+                                    ctx->gfx_pipeline_state.blend_state &&
                                     ctx->gfx_pipeline_state.blend_state->dual_src_blend &&
                                     ctx->gfx_pipeline_state.blend_state->attachments[1].blendEnable;
    if (((shaders[PIPE_SHADER_GEOMETRY] && shaders[PIPE_SHADER_GEOMETRY]->nir->info.gs.output_primitive == GL_POINTS) ||
-       ctx->gfx_prim_mode == PIPE_PRIM_POINTS) && ctx->rast_state->base.point_quad_rasterization && ctx->rast_state->base.sprite_coord_enable) {
+       ctx->gfx_prim_mode == PIPE_PRIM_POINTS) &&
+       ctx->rast_state &&ctx->rast_state->base.point_quad_rasterization && ctx->rast_state->base.sprite_coord_enable) {
       fs_key->coord_replace_bits = ctx->rast_state->base.sprite_coord_enable;
       fs_key->coord_replace_yinvert = !!ctx->rast_state->base.sprite_coord_mode;
    }
@@ -208,7 +210,7 @@ get_shader_module_for_stage(struct zink_context *ctx, struct zink_shader *zs, st
       /* if comparing against the existing default, use the base variant key size since
        * we're only checking the stage-specific data
        */
-      key.is_default_variant = !memcmp(tmp->data, &key, key.size);
+      key.is_default_variant = tmp->size == key.size && !memcmp(tmp->data, &key, key.size);
    } else
       key.is_default_variant = true;
 
@@ -276,12 +278,12 @@ destroy_shader_cache(struct zink_screen *screen, struct hash_table *sc)
 }
 
 static void
-update_shader_modules(struct zink_context *ctx, struct zink_gfx_program *prog)
+update_shader_modules(struct zink_context *ctx, struct zink_gfx_program *prog, uint32_t mask)
 {
    bool hash_changed = false;
    bool default_variants = true;
    bool first = !prog->modules[PIPE_SHADER_VERTEX];
-   u_foreach_bit(pstage, ctx->dirty_shader_stages & prog->stages_present) {
+   u_foreach_bit(pstage, mask) {
       assert(prog->shaders[pstage]);
       struct zink_shader_module *zm = get_shader_module_for_stage(ctx, prog->shaders[pstage], prog);
       if (prog->modules[pstage] != zm)
@@ -299,7 +301,6 @@ update_shader_modules(struct zink_context *ctx, struct zink_gfx_program *prog)
       ctx->gfx_pipeline_state.combined_dirty = true;
    }
    ctx->gfx_pipeline_state.module_hash = prog->last_variant_hash;
-   ctx->dirty_shader_stages &= ~u_bit_consecutive(PIPE_SHADER_VERTEX, 5);
 }
 
 static uint32_t
@@ -342,7 +343,7 @@ equals_gfx_pipeline_state(const void *a, const void *b)
 void
 zink_update_gfx_program(struct zink_context *ctx, struct zink_gfx_program *prog)
 {
-   update_shader_modules(ctx, prog);
+   update_shader_modules(ctx, prog, ctx->dirty_shader_stages & prog->stages_present);
 }
 
 VkPipelineLayout
@@ -434,11 +435,9 @@ zink_create_gfx_program(struct zink_context *ctx,
       prog->stages_present |= BITFIELD_BIT(PIPE_SHADER_TESS_CTRL);
    }
 
-   /* always force shader creation during init */
-   ctx->dirty_shader_stages |= prog->stages_present;
    assign_io(prog, prog->shaders);
 
-   update_shader_modules(ctx, prog);
+   update_shader_modules(ctx, prog, prog->stages_present);
    prog->default_variant_hash = ctx->gfx_pipeline_state.module_hash;
 
    for (int i = 0; i < ARRAY_SIZE(prog->pipelines); ++i) {
@@ -539,8 +538,6 @@ zink_create_compute_program(struct zink_context *ctx, struct zink_shader *shader
    comp->module->shader = zink_shader_compile(screen, shader, shader->nir, NULL);
    assert(comp->module->shader);
    _mesa_hash_table_insert(&comp->base.shader_cache[0], shader, comp->module);
-
-   ctx->dirty_shader_stages &= ~(1 << PIPE_SHADER_COMPUTE);
 
    comp->pipelines = _mesa_hash_table_create(NULL, hash_compute_pipeline_state,
                                              equals_compute_pipeline_state);
@@ -877,31 +874,40 @@ static inline void
 bind_stage(struct zink_context *ctx, enum pipe_shader_type stage,
            struct zink_shader *shader)
 {
+   if (shader && shader->nir->info.num_inlinable_uniforms)
+      ctx->shader_has_inlinable_uniforms_mask |= 1 << stage;
+   else
+      ctx->shader_has_inlinable_uniforms_mask &= ~(1 << stage);
+
    if (stage == PIPE_SHADER_COMPUTE) {
       if (shader && shader != ctx->compute_stage) {
-         struct hash_entry *entry = _mesa_hash_table_search(ctx->compute_program_cache, shader);
+         struct hash_entry *entry = _mesa_hash_table_search(&ctx->compute_program_cache, shader);
          if (entry) {
             ctx->compute_pipeline_state.dirty = true;
             ctx->curr_compute = entry->data;
-         } else
-            ctx->dirty_shader_stages |= 1 << stage;
+         } else {
+            struct zink_compute_program *comp = zink_create_compute_program(ctx, shader);
+            _mesa_hash_table_insert(&ctx->compute_program_cache, comp->shader, comp);
+            ctx->compute_pipeline_state.dirty = true;
+            ctx->curr_compute = comp;
+            zink_batch_reference_program(&ctx->batch, &ctx->curr_compute->base);
+         }
       } else if (!shader)
          ctx->curr_compute = NULL;
       ctx->compute_stage = shader;
       zink_select_launch_grid(ctx);
    } else {
       ctx->gfx_stages[stage] = shader;
+      ctx->gfx_dirty = ctx->gfx_stages[PIPE_SHADER_FRAGMENT] && ctx->gfx_stages[PIPE_SHADER_VERTEX];
       ctx->gfx_pipeline_state.combined_dirty = true;
-      if (!shader) {
+      if (shader)
+         ctx->shader_stages |= BITFIELD_BIT(stage);
+      else {
          ctx->gfx_pipeline_state.modules[stage] = VK_NULL_HANDLE;
          ctx->curr_program = NULL;
+         ctx->shader_stages &= ~BITFIELD_BIT(stage);
       }
-      ctx->dirty_shader_stages |= 1 << stage;
    }
-   if (shader && shader->nir->info.num_inlinable_uniforms)
-      ctx->shader_has_inlinable_uniforms_mask |= 1 << stage;
-   else
-      ctx->shader_has_inlinable_uniforms_mask &= ~(1 << stage);
 }
 
 static void

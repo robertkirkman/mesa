@@ -23,18 +23,18 @@
 
 #include "nir_to_dxil.h"
 
-#include "dxil_module.h"
 #include "dxil_container.h"
-#include "dxil_function.h"
-#include "dxil_signature.h"
-#include "dxil_enums.h"
 #include "dxil_dump.h"
+#include "dxil_enums.h"
+#include "dxil_function.h"
+#include "dxil_module.h"
 #include "dxil_nir.h"
+#include "dxil_signature.h"
 
-#include "util/u_debug.h"
-#include "util/u_math.h"
-#include "util/u_dynarray.h"
 #include "nir/nir_builder.h"
+#include "util/u_debug.h"
+#include "util/u_dynarray.h"
+#include "util/u_math.h"
 
 #include "git_sha1.h"
 
@@ -245,6 +245,8 @@ enum dxil_intr {
    DXIL_INTR_DDY_COARSE = 84,
    DXIL_INTR_DDX_FINE = 85,
    DXIL_INTR_DDY_FINE = 86,
+
+   DXIL_INTR_SAMPLE_INDEX = 90,
 
    DXIL_INTR_THREAD_ID = 93,
    DXIL_INTR_GROUP_ID = 94,
@@ -2345,24 +2347,25 @@ emit_load_local_workgroup_id(struct ntd_context *ctx,
 }
 
 static bool
-emit_load_primitiveid(struct ntd_context *ctx,
-                      nir_intrinsic_instr *intr)
+emit_load_unary_external_function(struct ntd_context *ctx,
+                                  nir_intrinsic_instr *intr, const char *name,
+                                  int32_t dxil_intr)
 {
-   const struct dxil_func *func = dxil_get_function(&ctx->mod, "dx.op.primitiveID", DXIL_I32);
+   const struct dxil_func *func =
+      dxil_get_function(&ctx->mod, name, DXIL_I32);
    if (!func)
       return false;
 
-   const struct dxil_value *opcode = dxil_module_get_int32_const(&ctx->mod,
-       DXIL_INTR_PRIMITIVE_ID);
+   const struct dxil_value *opcode =
+      dxil_module_get_int32_const(&ctx->mod, dxil_intr);
    if (!opcode)
       return false;
 
-   const struct dxil_value *args[] = {
-     opcode
-   };
+   const struct dxil_value *args[] = {opcode};
 
-   const struct dxil_value *primid = dxil_emit_call(&ctx->mod, func, args, ARRAY_SIZE(args));
-   store_dest_value(ctx, &intr->dest, 0, primid);
+   const struct dxil_value *value =
+      dxil_emit_call(&ctx->mod, func, args, ARRAY_SIZE(args));
+   store_dest_value(ctx, &intr->dest, 0, value);
 
    return true;
 }
@@ -3552,7 +3555,11 @@ emit_intrinsic(struct ntd_context *ctx, nir_intrinsic_instr *intr)
       return emit_load_input_interpolated(ctx, intr,
                                           ctx->system_value[SYSTEM_VALUE_INSTANCE_ID]);
    case nir_intrinsic_load_primitive_id:
-      return emit_load_primitiveid(ctx, intr);
+      return emit_load_unary_external_function(ctx, intr, "dx.op.primitiveID",
+                                               DXIL_INTR_PRIMITIVE_ID);
+   case nir_intrinsic_load_sample_id:
+      return emit_load_unary_external_function(ctx, intr, "dx.op.sampleIndex",
+                                               DXIL_INTR_SAMPLE_INDEX);
    case nir_intrinsic_load_shared_dxil:
       return emit_load_shared(ctx, intr);
    case nir_intrinsic_load_scratch_dxil:
@@ -3689,7 +3696,7 @@ emit_deref(struct ntd_context* ctx, nir_deref_instr* instr)
 
    if (!glsl_type_is_sampler(glsl_without_array(var->type)) &&
        !glsl_type_is_image(glsl_without_array(var->type)))
-   return true;
+      return true;
 
    const struct glsl_type *type = instr->type;
    const struct dxil_value *binding;
@@ -4704,9 +4711,9 @@ void dxil_fill_validation_state(struct ntd_context *ctx,
       break;
    case DXIL_PIXEL_SHADER:
       /* TODO: handle depth outputs */
-      state->state.psv0.ps.depth_output =  ctx->mod.info.has_out_depth;
-      /* just guessing */
-      state->state.psv0.ps.sample_frequency = 0;
+      state->state.psv0.ps.depth_output = ctx->mod.info.has_out_depth;
+      state->state.psv0.ps.sample_frequency =
+         ctx->mod.info.has_per_sample_input;
       break;
    case DXIL_COMPUTE_SHADER:
       break;
@@ -4773,6 +4780,7 @@ struct sysvalue_name {
    {SYSTEM_VALUE_INSTANCE_ID, -1, "SV_InstanceID"},
    {SYSTEM_VALUE_FRONT_FACE, VARYING_SLOT_FACE, "SV_IsFrontFace"},
    {SYSTEM_VALUE_PRIMITIVE_ID, VARYING_SLOT_PRIMITIVE_ID, "SV_PrimitiveID"},
+   {SYSTEM_VALUE_SAMPLE_ID, -1, "SV_SampleIndex"},
 };
 
 static bool

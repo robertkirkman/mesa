@@ -175,20 +175,6 @@ zink_bind_vertex_buffers(struct zink_batch *batch, struct zink_context *ctx)
 }
 
 static void
-update_compute_program(struct zink_context *ctx)
-{
-   const unsigned bits = 1 << PIPE_SHADER_COMPUTE;
-   if (ctx->dirty_shader_stages & bits) {
-      struct zink_compute_program *comp = zink_create_compute_program(ctx, ctx->compute_stage);
-      _mesa_hash_table_insert(ctx->compute_program_cache, comp->shader, comp);
-      ctx->compute_pipeline_state.dirty = true;
-      ctx->curr_compute = comp;
-      ctx->dirty_shader_stages &= bits;
-      zink_batch_reference_program(&ctx->batch, &ctx->curr_compute->base);
-   }
-}
-
-static void
 update_gfx_program(struct zink_context *ctx)
 {
    if (ctx->last_vertex_stage_dirty) {
@@ -200,16 +186,18 @@ update_gfx_program(struct zink_context *ctx)
          ctx->dirty_shader_stages |= BITFIELD_BIT(PIPE_SHADER_VERTEX);
       ctx->last_vertex_stage_dirty = false;
    }
-   unsigned bits = u_bit_consecutive(PIPE_SHADER_VERTEX, 5);
-   if (ctx->dirty_shader_stages & bits) {
+   unsigned bits = BITFIELD_MASK(PIPE_SHADER_COMPUTE);
+   if (ctx->gfx_dirty) {
       struct zink_gfx_program *prog = NULL;
-      struct hash_entry *entry = _mesa_hash_table_search(ctx->program_cache,
-                                                         ctx->gfx_stages);
+
+      struct hash_table *ht = &ctx->program_cache[ctx->shader_stages >> 2];
+      uint32_t hash = ht->key_hash_function(ctx->gfx_stages);
+      struct hash_entry *entry = _mesa_hash_table_search_pre_hashed(ht, hash, ctx->gfx_stages);
       if (entry)
          zink_update_gfx_program(ctx, (struct zink_gfx_program*)entry->data);
       else {
          prog = zink_create_gfx_program(ctx, ctx->gfx_stages);
-         entry = _mesa_hash_table_insert(ctx->program_cache, prog->shaders, prog);
+         entry = _mesa_hash_table_insert_pre_hashed(ht, hash, prog->shaders, prog);
       }
       prog = (struct zink_gfx_program*)(entry ? entry->data : NULL);
       if (prog && prog != ctx->curr_program) {
@@ -217,8 +205,11 @@ update_gfx_program(struct zink_context *ctx)
          zink_batch_reference_program(&ctx->batch, &prog->base);
       }
       ctx->curr_program = prog;
-      ctx->dirty_shader_stages &= ~bits;
+      ctx->gfx_dirty = false;
+   } else if (ctx->dirty_shader_stages & bits) {
+      zink_update_gfx_program(ctx, ctx->curr_program);
    }
+   ctx->dirty_shader_stages &= ~bits;
 }
 
 static bool
@@ -773,8 +764,6 @@ zink_launch_grid(struct pipe_context *pctx, const struct pipe_grid_info *info)
 
    update_barriers(ctx, true);
 
-   update_compute_program(ctx);
-
    if (zink_program_has_descriptors(&ctx->curr_compute->base))
       screen->descriptors_update(ctx, true);
 
@@ -874,6 +863,54 @@ zink_invalid_launch_grid(struct pipe_context *pctx, const struct pipe_grid_info 
    unreachable("compute shader not bound");
 }
 
+template <unsigned STAGE_MASK>
+static uint32_t
+hash_gfx_program(const void *key)
+{
+   const void **shaders = (const void**)key;
+   uint32_t base_hash = _mesa_hash_data(key, sizeof(void*) * 2);
+   uint32_t gs_hash = _mesa_hash_data(key, sizeof(void*) * 3);
+   if (STAGE_MASK == 0) //VS+FS
+      return base_hash;
+   if (STAGE_MASK == 1) //VS+GS+FS
+      return gs_hash;
+   /*VS+TCS+FS isn't a thing */
+   /*VS+TCS+GS+FS isn't a thing */
+   if (STAGE_MASK == 4) //VS+TES+FS
+      return XXH32(&shaders[PIPE_SHADER_TESS_EVAL], sizeof(void*), base_hash);
+   if (STAGE_MASK == 5) //VS+TES+GS+FS
+      return XXH32(&shaders[PIPE_SHADER_TESS_EVAL], sizeof(void*), gs_hash);
+   if (STAGE_MASK == 6) //VS+TCS+TES+FS
+      return XXH32(&shaders[PIPE_SHADER_TESS_CTRL], sizeof(void*) * 2, base_hash);
+
+   /* all stages */
+   return _mesa_hash_data(key, sizeof(void*) * ZINK_SHADER_COUNT);
+}
+
+template <unsigned STAGE_MASK>
+static bool
+equals_gfx_program(const void *a, const void *b)
+{
+   const void **sa = (const void**)a;
+   const void **sb = (const void**)b;
+   if (STAGE_MASK == 0) //VS+FS
+      return !memcmp(a, b, sizeof(void*) * 2);
+   if (STAGE_MASK == 1) //VS+GS+FS
+      return !memcmp(a, b, sizeof(void*) * 3);
+   /*VS+TCS+FS isn't a thing */
+   /*VS+TCS+GS+FS isn't a thing */
+   if (STAGE_MASK == 4) //VS+TES+FS
+      return sa[PIPE_SHADER_TESS_EVAL] == sb[PIPE_SHADER_TESS_EVAL] && !memcmp(a, b, sizeof(void*) * 2);
+   if (STAGE_MASK == 5) //VS+TES+GS+FS
+      return sa[PIPE_SHADER_TESS_EVAL] == sb[PIPE_SHADER_TESS_EVAL] && !memcmp(a, b, sizeof(void*) * 3);
+   if (STAGE_MASK == 6) //VS+TCS+TES+FS
+      return !memcmp(&sa[PIPE_SHADER_TESS_CTRL], &sb[PIPE_SHADER_TESS_CTRL], sizeof(void*) * 2) &&
+             !memcmp(a, b, sizeof(void*) * 2);
+
+   /* all stages */
+   return !memcmp(a, b, sizeof(void*) * ZINK_SHADER_COUNT);
+}
+
 extern "C"
 void
 zink_init_draw_functions(struct zink_context *ctx, struct zink_screen *screen)
@@ -888,6 +925,15 @@ zink_init_draw_functions(struct zink_context *ctx, struct zink_screen *screen)
     * initialization of callbacks in upper layers (such as u_threaded_context).
     */
    ctx->base.draw_vbo = zink_invalid_draw_vbo;
+
+   _mesa_hash_table_init(&ctx->program_cache[0], ctx, hash_gfx_program<0>, equals_gfx_program<0>);
+   _mesa_hash_table_init(&ctx->program_cache[1], ctx, hash_gfx_program<1>, equals_gfx_program<1>);
+   _mesa_hash_table_init(&ctx->program_cache[2], ctx, hash_gfx_program<2>, equals_gfx_program<2>);
+   _mesa_hash_table_init(&ctx->program_cache[3], ctx, hash_gfx_program<3>, equals_gfx_program<3>);
+   _mesa_hash_table_init(&ctx->program_cache[4], ctx, hash_gfx_program<4>, equals_gfx_program<4>);
+   _mesa_hash_table_init(&ctx->program_cache[5], ctx, hash_gfx_program<5>, equals_gfx_program<5>);
+   _mesa_hash_table_init(&ctx->program_cache[6], ctx, hash_gfx_program<6>, equals_gfx_program<6>);
+   _mesa_hash_table_init(&ctx->program_cache[7], ctx, hash_gfx_program<7>, equals_gfx_program<7>);
 }
 
 void

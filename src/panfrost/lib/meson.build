@@ -19,7 +19,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-midgard_pack = custom_target(
+pan_packers = custom_target(
   'midgard_pack.h',
   input : ['gen_pack.py', 'midgard.xml'],
   output : 'midgard_pack.h',
@@ -27,8 +27,8 @@ midgard_pack = custom_target(
   capture : true,
 )
 
-idep_midgard_pack = declare_dependency(
-  sources : [midgard_pack],
+idep_pan_packers = declare_dependency(
+  sources : [pan_packers],
   include_directories : include_directories('.'),
 )
 
@@ -38,14 +38,30 @@ libpanfrost_pixel_format = []
 foreach ver : pixel_format_versions
   libpanfrost_pixel_format += static_library(
     'pan-format-v' + ver,
-    ['pan_format.c', midgard_pack],
+    ['pan_format.c', pan_packers],
     include_directories : [
       inc_src, inc_include, inc_gallium, inc_mesa, inc_panfrost_hw, inc_gallium_aux, inc_panfrost_hw
     ],
     c_args : ['-DPAN_ARCH=' + ver],
     gnu_symbol_visibility : 'hidden',
-    dependencies : [idep_midgard_pack, dep_libdrm],
+    dependencies : [idep_pan_packers, dep_libdrm],
 )
+endforeach
+
+libpanfrost_per_arch = []
+
+foreach ver : ['4', '5', '6', '7']
+  libpanfrost_per_arch += static_library(
+    'pan-arch-v' + ver,
+    [
+      'pan_indirect_dispatch.c',
+      'pan_indirect_draw.c',
+    ],
+    include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_panfrost_hw],
+    c_args : ['-DPAN_ARCH=' + ver],
+    gnu_symbol_visibility : 'hidden',
+    dependencies : [dep_libdrm, idep_pan_packers, idep_nir],
+  )
 endforeach
 
 libpanfrost_lib_files = files(
@@ -58,8 +74,6 @@ libpanfrost_lib_files = files(
   'pan_blitter.c',
   'pan_clear.c',
   'pan_cs.c',
-  'pan_indirect_dispatch.c',
-  'pan_indirect_draw.c',
   'pan_samples.c',
   'pan_tiler.c',
   'pan_texture.c',
@@ -77,18 +91,18 @@ libpanfrost_decode_files = files(
 
 libpanfrost_lib = static_library(
   'panfrost_lib',
-  [libpanfrost_lib_files, midgard_pack],
+  [libpanfrost_lib_files, pan_packers],
   include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_panfrost_hw],
   c_args : [no_override_init_args],
   gnu_symbol_visibility : 'hidden',
   dependencies: [dep_libdrm, idep_nir],
   build_by_default : false,
-  link_with: [libpanfrost_pixel_format],
+  link_with: [libpanfrost_pixel_format, libpanfrost_per_arch],
 )
 
 libpanfrost_decode = static_library(
   'panfrost_decode',
-  [libpanfrost_decode_files, midgard_pack],
+  [libpanfrost_decode_files, pan_packers],
   include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_panfrost],
   dependencies : idep_mesautil,
   c_args : [no_override_init_args],
@@ -97,9 +111,9 @@ libpanfrost_decode = static_library(
 )
 
 libpanfrost_dep = declare_dependency(
-  link_with: [libpanfrost_lib, libpanfrost_decode, libpanfrost_midgard, libpanfrost_bifrost, libpanfrost_pixel_format],
+  link_with: [libpanfrost_lib, libpanfrost_decode, libpanfrost_midgard, libpanfrost_bifrost, libpanfrost_pixel_format, libpanfrost_per_arch],
   include_directories: [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_panfrost_hw, inc_panfrost],
-  dependencies: [dep_libdrm, idep_nir, idep_midgard_pack],
+  dependencies: [dep_libdrm, idep_nir, idep_pan_packers],
 )
 
 if with_tests

@@ -507,7 +507,7 @@ bi_register_allocate(bi_context *ctx)
 
                 if (success) {
                         ctx->info->work_reg_count = 32;
-                } else if (!success) {
+                } else {
                         lcra_free(l);
                         l = NULL;
                 }
@@ -535,6 +535,7 @@ bi_register_allocate(bi_context *ctx)
         }
 
         assert(success);
+        assert(l != NULL);
 
         ctx->info->tls_size = spill_count;
         bi_install_registers(ctx, l);

@@ -118,7 +118,6 @@ struct ureg_program
       enum tgsi_semantic semantic_name;
       unsigned semantic_index;
       enum tgsi_interpolate_mode interp;
-      unsigned char cylindrical_wrap;
       unsigned char usage_mask;
       enum tgsi_interpolate_loc interp_location;
       unsigned first;
@@ -284,11 +283,10 @@ ureg_property(struct ureg_program *ureg, unsigned name, unsigned value)
 }
 
 struct ureg_src
-ureg_DECL_fs_input_cyl_centroid_layout(struct ureg_program *ureg,
+ureg_DECL_fs_input_centroid_layout(struct ureg_program *ureg,
                        enum tgsi_semantic semantic_name,
                        unsigned semantic_index,
                        enum tgsi_interpolate_mode interp_mode,
-                       unsigned cylindrical_wrap,
                        enum tgsi_interpolate_loc interp_location,
                        unsigned index,
                        unsigned usage_mask,
@@ -304,7 +302,6 @@ ureg_DECL_fs_input_cyl_centroid_layout(struct ureg_program *ureg,
       if (ureg->input[i].semantic_name == semantic_name &&
           ureg->input[i].semantic_index == semantic_index) {
          assert(ureg->input[i].interp == interp_mode);
-         assert(ureg->input[i].cylindrical_wrap == cylindrical_wrap);
          assert(ureg->input[i].interp_location == interp_location);
          if (ureg->input[i].array_id == array_id) {
             ureg->input[i].usage_mask |= usage_mask;
@@ -319,7 +316,6 @@ ureg_DECL_fs_input_cyl_centroid_layout(struct ureg_program *ureg,
       ureg->input[i].semantic_name = semantic_name;
       ureg->input[i].semantic_index = semantic_index;
       ureg->input[i].interp = interp_mode;
-      ureg->input[i].cylindrical_wrap = cylindrical_wrap;
       ureg->input[i].interp_location = interp_location;
       ureg->input[i].first = index;
       ureg->input[i].last = index + array_size - 1;
@@ -337,18 +333,17 @@ out:
 }
 
 struct ureg_src
-ureg_DECL_fs_input_cyl_centroid(struct ureg_program *ureg,
+ureg_DECL_fs_input_centroid(struct ureg_program *ureg,
                        enum tgsi_semantic semantic_name,
                        unsigned semantic_index,
                        enum tgsi_interpolate_mode interp_mode,
-                       unsigned cylindrical_wrap,
                        enum tgsi_interpolate_loc interp_location,
                        unsigned array_id,
                        unsigned array_size)
 {
-   return ureg_DECL_fs_input_cyl_centroid_layout(ureg,
+   return ureg_DECL_fs_input_centroid_layout(ureg,
          semantic_name, semantic_index, interp_mode,
-         cylindrical_wrap, interp_location,
+         interp_location,
          ureg->nr_input_regs, TGSI_WRITEMASK_XYZW, array_id, array_size);
 }
 
@@ -374,9 +369,9 @@ ureg_DECL_input_layout(struct ureg_program *ureg,
                 unsigned array_id,
                 unsigned array_size)
 {
-   return ureg_DECL_fs_input_cyl_centroid_layout(ureg,
+   return ureg_DECL_fs_input_centroid_layout(ureg,
                semantic_name, semantic_index,
-               TGSI_INTERPOLATE_CONSTANT, 0, TGSI_INTERPOLATE_LOC_CENTER,
+               TGSI_INTERPOLATE_CONSTANT, TGSI_INTERPOLATE_LOC_CENTER,
                index, usage_mask, array_id, array_size);
 }
 
@@ -388,8 +383,8 @@ ureg_DECL_input(struct ureg_program *ureg,
                 unsigned array_id,
                 unsigned array_size)
 {
-   return ureg_DECL_fs_input_cyl_centroid(ureg, semantic_name, semantic_index,
-                                          TGSI_INTERPOLATE_CONSTANT, 0,
+   return ureg_DECL_fs_input_centroid(ureg, semantic_name, semantic_index,
+                                          TGSI_INTERPOLATE_CONSTANT,
                                           TGSI_INTERPOLATE_LOC_CENTER,
                                           array_id, array_size);
 }
@@ -1587,7 +1582,6 @@ emit_decl_fs(struct ureg_program *ureg,
              enum tgsi_semantic semantic_name,
              unsigned semantic_index,
              enum tgsi_interpolate_mode interpolate,
-             unsigned cylindrical_wrap,
              enum tgsi_interpolate_loc interpolate_location,
              unsigned array_id,
              unsigned usage_mask)
@@ -1610,7 +1604,6 @@ emit_decl_fs(struct ureg_program *ureg,
 
    out[2].value = 0;
    out[2].decl_interp.Interpolate = interpolate;
-   out[2].decl_interp.CylindricalWrap = cylindrical_wrap;
    out[2].decl_interp.Location = interpolate_location;
 
    out[3].value = 0;
@@ -1851,7 +1844,6 @@ static void emit_decls( struct ureg_program *ureg )
                          ureg->input[i].semantic_name,
                          ureg->input[i].semantic_index,
                          ureg->input[i].interp,
-                         ureg->input[i].cylindrical_wrap,
                          ureg->input[i].interp_location,
                          ureg->input[i].array_id,
                          ureg->input[i].usage_mask);
@@ -1867,7 +1859,6 @@ static void emit_decls( struct ureg_program *ureg )
                             ureg->input[i].semantic_index +
                             (j - ureg->input[i].first),
                             ureg->input[i].interp,
-                            ureg->input[i].cylindrical_wrap,
                             ureg->input[i].interp_location, 0,
                             ureg->input[i].usage_mask);
             }

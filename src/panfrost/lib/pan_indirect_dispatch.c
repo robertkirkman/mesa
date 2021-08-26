@@ -70,7 +70,7 @@ static mali_ptr
 get_tls(const struct panfrost_device *dev)
 {
         return dev->indirect_dispatch.descs->ptr.gpu +
-               MALI_RENDERER_STATE_LENGTH;
+               pan_size(RENDERER_STATE);
 }
 
 static mali_ptr
@@ -112,9 +112,9 @@ get_push_uniforms(struct pan_pool *pool,
 }
 
 unsigned
-pan_indirect_dispatch_emit(struct pan_pool *pool,
-                           struct pan_scoreboard *scoreboard,
-                           const struct pan_indirect_dispatch_info *dispatch_info)
+GENX(pan_indirect_dispatch_emit)(struct pan_pool *pool,
+                                 struct pan_scoreboard *scoreboard,
+                                 const struct pan_indirect_dispatch_info *dispatch_info)
 {
         struct panfrost_device *dev = pool->dev;
         struct panfrost_ptr job =
@@ -141,7 +141,7 @@ pan_indirect_dispatch_emit(struct pan_pool *pool,
 
         pan_section_pack(job.cpu, COMPUTE_JOB, DRAW, cfg) {
                 cfg.draw_descriptor_is_64b = true;
-                cfg.texture_descriptor_is_64b = !pan_is_bifrost(dev);
+                cfg.texture_descriptor_is_64b = PAN_ARCH <= 5;
                 cfg.state = get_rsd(dev);
                 cfg.thread_storage = get_tls(pool->dev);
                 cfg.uniform_buffers = get_ubos(pool, &inputs);
@@ -155,7 +155,7 @@ pan_indirect_dispatch_emit(struct pan_pool *pool,
 }
 
 void
-pan_indirect_dispatch_init(struct panfrost_device *dev)
+GENX(pan_indirect_dispatch_init)(struct panfrost_device *dev)
 {
         nir_builder b =
                 nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
@@ -244,13 +244,15 @@ pan_indirect_dispatch_init(struct panfrost_device *dev)
         dev->indirect_dispatch.push = shader_info.push;
         dev->indirect_dispatch.descs =
                 panfrost_bo_create(dev,
-                                   MALI_RENDERER_STATE_LENGTH +
-                                   MALI_LOCAL_STORAGE_LENGTH,
+                                   pan_size(RENDERER_STATE) +
+                                   pan_size(LOCAL_STORAGE),
                                    0, "Indirect dispatch descriptors");
 
         mali_ptr address = dev->indirect_dispatch.bin->ptr.gpu;
-        if (!pan_is_bifrost(dev))
-                address |= shader_info.midgard.first_tag;
+
+#if PAN_ARCH <= 5
+        address |= shader_info.midgard.first_tag;
+#endif
 
         void *rsd = dev->indirect_dispatch.descs->ptr.cpu;
         pan_pack(rsd, RENDERER_STATE, cfg) {
@@ -258,14 +260,14 @@ pan_indirect_dispatch_init(struct panfrost_device *dev)
         }
 
         void *tsd = dev->indirect_dispatch.descs->ptr.cpu +
-                    MALI_RENDERER_STATE_LENGTH;
+                    pan_size(RENDERER_STATE);
         pan_pack(tsd, LOCAL_STORAGE, ls) {
                 ls.wls_instances = MALI_LOCAL_STORAGE_NO_WORKGROUP_MEM;
         };
 }
 
 void
-pan_indirect_dispatch_cleanup(struct panfrost_device *dev)
+GENX(pan_indirect_dispatch_cleanup)(struct panfrost_device *dev)
 {
         panfrost_bo_unreference(dev->indirect_dispatch.bin);
         panfrost_bo_unreference(dev->indirect_dispatch.descs);
