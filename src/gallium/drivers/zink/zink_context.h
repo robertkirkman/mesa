@@ -156,6 +156,11 @@ typedef enum {
    ZINK_DYNAMIC_STATE,
 } zink_dynamic_state;
 
+typedef enum {
+   ZINK_NO_DYNAMIC_STATE2,
+   ZINK_DYNAMIC_STATE2,
+} zink_dynamic_state2;
+
 struct zink_context {
    struct pipe_context base;
    struct threaded_context *tc;
@@ -300,6 +305,7 @@ struct zink_context {
    struct set *need_barriers[2]; //gfx, compute
    struct set update_barriers[2][2]; //[gfx, compute][current, next]
    uint8_t barrier_set_idx[2];
+   unsigned memory_barrier;
 
    uint32_t num_so_targets;
    struct pipe_stream_output_target *so_targets[PIPE_MAX_SO_OUTPUTS];
@@ -311,6 +317,7 @@ struct zink_context {
    bool gfx_dirty;
 
    bool is_device_lost;
+   bool primitive_restart;
    bool vertex_state_changed : 1;
    bool blend_state_changed : 1;
    bool rast_state_changed : 1;
@@ -417,6 +424,8 @@ zink_pipeline_flags_from_pipe_stage(enum pipe_shader_type pstage)
 void
 zink_rebind_all_buffers(struct zink_context *ctx);
 
+void
+zink_flush_memory_barrier(struct zink_context *ctx, bool is_compute);
 void
 zink_init_draw_functions(struct zink_context *ctx, struct zink_screen *screen);
 void

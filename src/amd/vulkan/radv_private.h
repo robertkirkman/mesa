@@ -216,23 +216,10 @@ VkResult __vk_errorf(struct radv_instance *instance, const void *object,
    __vk_errorf(instance, NULL, VK_DEBUG_REPORT_OBJECT_TYPE_UNKNOWN_EXT, error, __FILE__, __LINE__, \
                format, ##__VA_ARGS__);
 
-void __radv_finishme(const char *file, int line, const char *format, ...) radv_printflike(3, 4);
 void radv_loge(const char *format, ...) radv_printflike(1, 2);
 void radv_loge_v(const char *format, va_list va);
 void radv_logi(const char *format, ...) radv_printflike(1, 2);
 void radv_logi_v(const char *format, va_list va);
-
-/**
- * Print a FINISHME message, including its source location.
- */
-#define radv_finishme(format, ...)                                                                 \
-   do {                                                                                            \
-      static bool reported = false;                                                                \
-      if (!reported) {                                                                             \
-         __radv_finishme(__FILE__, __LINE__, format, ##__VA_ARGS__);                               \
-         reported = true;                                                                          \
-      }                                                                                            \
-   } while (0)
 
 /* A non-fatal assert.  Useful for debugging. */
 #ifdef NDEBUG
@@ -2558,9 +2545,6 @@ struct radv_shader_args;
 void llvm_compile_shader(struct radv_device *device, unsigned shader_count,
                          struct nir_shader *const *shaders, struct radv_shader_binary **binary,
                          struct radv_shader_args *args);
-
-unsigned radv_nir_get_max_workgroup_size(enum chip_class chip_class, gl_shader_stage stage,
-                                         const struct nir_shader *nir);
 
 /* radv_shader_info.h */
 struct radv_shader_info;

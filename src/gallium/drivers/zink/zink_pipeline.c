@@ -73,26 +73,31 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    VkPipelineInputAssemblyStateCreateInfo primitive_state = {0};
    primitive_state.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
    primitive_state.topology = primitive_topology;
-   switch (primitive_topology) {
-   case VK_PRIMITIVE_TOPOLOGY_POINT_LIST:
-   case VK_PRIMITIVE_TOPOLOGY_LINE_LIST:
-   case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST:
-   case VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY:
-   case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY:
-   case VK_PRIMITIVE_TOPOLOGY_PATCH_LIST:
-      if (state->primitive_restart)
-         debug_printf("restart_index set with unsupported primitive topology %u\n", primitive_topology);
-      primitive_state.primitiveRestartEnable = VK_FALSE;
-      break;
-   default:
-      primitive_state.primitiveRestartEnable = state->primitive_restart ? VK_TRUE : VK_FALSE;
+   if (!screen->info.have_EXT_extended_dynamic_state2) {
+      switch (primitive_topology) {
+      case VK_PRIMITIVE_TOPOLOGY_POINT_LIST:
+      case VK_PRIMITIVE_TOPOLOGY_LINE_LIST:
+      case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST:
+      case VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY:
+      case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY:
+      case VK_PRIMITIVE_TOPOLOGY_PATCH_LIST:
+         if (state->primitive_restart)
+            debug_printf("restart_index set with unsupported primitive topology %u\n", primitive_topology);
+         primitive_state.primitiveRestartEnable = VK_FALSE;
+         break;
+      default:
+         primitive_state.primitiveRestartEnable = state->primitive_restart ? VK_TRUE : VK_FALSE;
+      }
    }
 
    VkPipelineColorBlendAttachmentState blend_att[PIPE_MAX_COLOR_BUFS];
    VkPipelineColorBlendStateCreateInfo blend_state = {0};
    blend_state.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+   unsigned num_attachments = state->render_pass->state.num_rts;
+   if (state->render_pass->state.have_zsbuf)
+      num_attachments--;
    if (state->void_alpha_attachments) {
-      for (unsigned i = 0; i < state->num_attachments; i++) {
+      for (unsigned i = 0; i < num_attachments; i++) {
          blend_att[i] = state->blend_state->attachments[i];
          if (state->void_alpha_attachments & BITFIELD_BIT(i)) {
             blend_att[i].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
@@ -103,7 +108,7 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
       blend_state.pAttachments = blend_att;
    } else
       blend_state.pAttachments = state->blend_state->attachments;
-   blend_state.attachmentCount = state->num_attachments;
+   blend_state.attachmentCount = num_attachments;
    blend_state.logicOpEnable = state->blend_state->logicop_enable;
    blend_state.logicOp = state->blend_state->logicop_func;
 
@@ -161,7 +166,7 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    depth_stencil_state.back = state->depth_stencil_alpha_state->stencil_back;
    depth_stencil_state.depthWriteEnable = state->depth_stencil_alpha_state->depth_write;
 
-   VkDynamicState dynamicStateEnables[24] = {
+   VkDynamicState dynamicStateEnables[30] = {
       VK_DYNAMIC_STATE_LINE_WIDTH,
       VK_DYNAMIC_STATE_DEPTH_BIAS,
       VK_DYNAMIC_STATE_BLEND_CONSTANTS,
@@ -182,6 +187,7 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT;
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE_EXT;
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_FRONT_FACE_EXT;
+      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY_EXT;
       if (state->sample_locations_enabled)
          dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT;
    } else {
@@ -191,6 +197,8 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    if (screen->info.have_EXT_vertex_input_dynamic_state) {
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VERTEX_INPUT_EXT;
    }
+   if (screen->info.have_EXT_extended_dynamic_state2)
+      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE_EXT;
 
    VkPipelineRasterizationLineStateCreateInfoEXT rast_line_state;
    if (screen->info.have_EXT_line_rasterization) {

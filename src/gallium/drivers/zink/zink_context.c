@@ -345,7 +345,8 @@ zink_create_sampler_state(struct pipe_context *pctx,
          assert(check <= screen->info.border_color_props.maxCustomBorderColorSamplers);
       } else
          sci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK; // TODO with custom shader if we're super interested?
-   }
+   } else
+      sci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
 
    sci.unnormalizedCoordinates = !state->normalized_coords;
 
@@ -2026,9 +2027,6 @@ zink_set_framebuffer_state(struct pipe_context *pctx,
       ctx->gfx_pipeline_state.dirty = true;
    }
    ctx->gfx_pipeline_state.rast_samples = rast_samples;
-   if (ctx->gfx_pipeline_state.num_attachments != state->nr_cbufs)
-      ctx->gfx_pipeline_state.dirty = true;
-   ctx->gfx_pipeline_state.num_attachments = state->nr_cbufs;
 
    /* need to ensure we start a new rp on next draw */
    zink_batch_no_rp(ctx);
@@ -2698,14 +2696,64 @@ zink_texture_barrier(struct pipe_context *pctx, unsigned flags)
 }
 
 static inline void
-mem_barrier(struct zink_batch *batch, VkPipelineStageFlags src_stage, VkPipelineStageFlags dst_stage, VkAccessFlags src, VkAccessFlags dst)
+mem_barrier(struct zink_context *ctx, VkPipelineStageFlags src_stage, VkPipelineStageFlags dst_stage, VkAccessFlags src, VkAccessFlags dst)
 {
+   struct zink_batch *batch = &ctx->batch;
    VkMemoryBarrier mb;
    mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
    mb.pNext = NULL;
    mb.srcAccessMask = src;
    mb.dstAccessMask = dst;
+   zink_end_render_pass(ctx, batch);
    vkCmdPipelineBarrier(batch->state->cmdbuf, src_stage, dst_stage, 0, 1, &mb, 0, NULL, 0, NULL);
+}
+
+void
+zink_flush_memory_barrier(struct zink_context *ctx, bool is_compute)
+{
+   const VkPipelineStageFlags gfx_flags = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                                          VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT |
+                                          VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT |
+                                          VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT |
+                                          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+   const VkPipelineStageFlags cs_flags = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+   VkPipelineStageFlags src = ctx->batch.last_was_compute ? cs_flags : gfx_flags;
+   VkPipelineStageFlags dst = is_compute ? cs_flags : gfx_flags;
+
+   if (ctx->memory_barrier & (PIPE_BARRIER_TEXTURE | PIPE_BARRIER_SHADER_BUFFER | PIPE_BARRIER_IMAGE))
+      mem_barrier(ctx, src, dst, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+
+   if (ctx->memory_barrier & PIPE_BARRIER_CONSTANT_BUFFER)
+      mem_barrier(ctx, src, dst,
+                  VK_ACCESS_SHADER_WRITE_BIT,
+                  VK_ACCESS_UNIFORM_READ_BIT);
+
+   if (!is_compute) {
+      if (ctx->memory_barrier & PIPE_BARRIER_INDIRECT_BUFFER)
+         mem_barrier(ctx, src, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                     VK_ACCESS_SHADER_WRITE_BIT,
+                     VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
+      if (ctx->memory_barrier & PIPE_BARRIER_VERTEX_BUFFER)
+         mem_barrier(ctx, gfx_flags, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+                     VK_ACCESS_SHADER_WRITE_BIT,
+                     VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT);
+
+      if (ctx->memory_barrier & PIPE_BARRIER_INDEX_BUFFER)
+         mem_barrier(ctx, gfx_flags, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+                     VK_ACCESS_SHADER_WRITE_BIT,
+                     VK_ACCESS_INDEX_READ_BIT);
+      if (ctx->memory_barrier & PIPE_BARRIER_FRAMEBUFFER)
+         zink_texture_barrier(&ctx->base, 0);
+      if (ctx->memory_barrier & PIPE_BARRIER_STREAMOUT_BUFFER)
+         mem_barrier(ctx, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                            VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT |
+                            VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT,
+                     VK_PIPELINE_STAGE_TRANSFORM_FEEDBACK_BIT_EXT,
+                     VK_ACCESS_SHADER_READ_BIT,
+                     VK_ACCESS_TRANSFORM_FEEDBACK_WRITE_BIT_EXT |
+                     VK_ACCESS_TRANSFORM_FEEDBACK_COUNTER_WRITE_BIT_EXT);
+   }
+   ctx->memory_barrier = 0;
 }
 
 static void
@@ -2713,58 +2761,15 @@ zink_memory_barrier(struct pipe_context *pctx, unsigned flags)
 {
    struct zink_context *ctx = zink_context(pctx);
 
-   VkPipelineStageFlags all_flags = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-                                    VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT |
-                                    VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT |
-                                    VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT |
-                                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-                                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-
-   if (!(flags & ~PIPE_BARRIER_UPDATE))
+   flags &= ~PIPE_BARRIER_UPDATE;
+   if (!flags)
       return;
-
-   struct zink_batch *batch = &ctx->batch;
-   zink_end_render_pass(ctx, batch);
 
    if (flags & PIPE_BARRIER_MAPPED_BUFFER) {
       /* TODO: this should flush all persistent buffers in use as I think */
+      flags &= ~PIPE_BARRIER_MAPPED_BUFFER;
    }
-
-   if (flags & (PIPE_BARRIER_TEXTURE | PIPE_BARRIER_SHADER_BUFFER | PIPE_BARRIER_IMAGE))
-      mem_barrier(batch, all_flags, all_flags, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
-
-   if (flags & PIPE_BARRIER_QUERY_BUFFER)
-      mem_barrier(batch, all_flags, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                  VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT);
-
-   if (flags & PIPE_BARRIER_VERTEX_BUFFER)
-      mem_barrier(batch, all_flags, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
-                  VK_ACCESS_SHADER_WRITE_BIT,
-                  VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT);
-
-   if (flags & PIPE_BARRIER_INDEX_BUFFER)
-      mem_barrier(batch, all_flags, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
-                  VK_ACCESS_SHADER_WRITE_BIT,
-                  VK_ACCESS_INDEX_READ_BIT);
-
-   if (flags & PIPE_BARRIER_CONSTANT_BUFFER)
-      mem_barrier(batch, all_flags, all_flags,
-                  VK_ACCESS_SHADER_WRITE_BIT,
-                  VK_ACCESS_UNIFORM_READ_BIT);
-
-   if (flags & PIPE_BARRIER_INDIRECT_BUFFER)
-      mem_barrier(batch, all_flags, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-                  VK_ACCESS_SHADER_WRITE_BIT,
-                  VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
-
-   if (flags & PIPE_BARRIER_FRAMEBUFFER)
-      zink_texture_barrier(pctx, 0);
-   if (flags & PIPE_BARRIER_STREAMOUT_BUFFER)
-      mem_barrier(batch, all_flags,
-                  VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_TRANSFORM_FEEDBACK_BIT_EXT,
-                  VK_ACCESS_SHADER_WRITE_BIT,
-                  VK_ACCESS_TRANSFORM_FEEDBACK_WRITE_BIT_EXT |
-                  VK_ACCESS_TRANSFORM_FEEDBACK_COUNTER_WRITE_BIT_EXT);
+   ctx->memory_barrier = flags;
 }
 
 static void
@@ -3422,6 +3427,7 @@ zink_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    ctx->gfx_pipeline_state.dirty = true;
    ctx->compute_pipeline_state.dirty = true;
    ctx->fb_changed = ctx->rp_changed = true;
+   ctx->gfx_prim_mode = PIPE_PRIM_MAX;
 
    zink_init_draw_functions(ctx, screen);
    zink_init_grid_functions(ctx);
@@ -3502,6 +3508,7 @@ zink_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    _mesa_hash_table_init(&ctx->batch_states, ctx, NULL, _mesa_key_pointer_equal);
 
    ctx->gfx_pipeline_state.have_EXT_extended_dynamic_state = screen->info.have_EXT_extended_dynamic_state;
+   ctx->gfx_pipeline_state.have_EXT_extended_dynamic_state2 = screen->info.have_EXT_extended_dynamic_state2;
 
    slab_create_child(&ctx->transfer_pool, &screen->transfer_pool);
    slab_create_child(&ctx->transfer_pool_unsync, &screen->transfer_pool);
