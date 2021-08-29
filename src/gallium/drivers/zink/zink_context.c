@@ -345,8 +345,7 @@ zink_create_sampler_state(struct pipe_context *pctx,
          assert(check <= screen->info.border_color_props.maxCustomBorderColorSamplers);
       } else
          sci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK; // TODO with custom shader if we're super interested?
-   } else
-      sci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+   }
 
    sci.unnormalizedCoordinates = !state->normalized_coords;
 
@@ -968,9 +967,9 @@ zink_set_viewport_states(struct pipe_context *pctx,
    ctx->vp_state.num_viewports = start_slot + num_viewports;
 
    if (!zink_screen(pctx->screen)->info.have_EXT_extended_dynamic_state) {
-      if (ctx->gfx_pipeline_state.num_viewports != ctx->vp_state.num_viewports)
+      if (ctx->gfx_pipeline_state.dyn_state1.num_viewports != ctx->vp_state.num_viewports)
          ctx->gfx_pipeline_state.dirty = true;
-      ctx->gfx_pipeline_state.num_viewports = ctx->vp_state.num_viewports;
+      ctx->gfx_pipeline_state.dyn_state1.num_viewports = ctx->vp_state.num_viewports;
    }
    ctx->vp_state_changed = true;
 }
@@ -993,10 +992,14 @@ zink_set_inlinable_constants(struct pipe_context *pctx,
                              uint num_values, uint32_t *values)
 {
    struct zink_context *ctx = (struct zink_context *)pctx;
+   const uint32_t bit = BITFIELD_BIT(shader);
 
-   memcpy(ctx->inlinable_uniforms[shader], values, num_values * 4);
-   ctx->dirty_shader_stages |= 1 << shader;
-   ctx->inlinable_uniforms_valid_mask |= 1 << shader;
+   if (!(ctx->inlinable_uniforms_valid_mask & bit) ||
+       memcmp(ctx->inlinable_uniforms[shader], values, num_values * 4)) {
+      memcpy(ctx->inlinable_uniforms[shader], values, num_values * 4);
+      ctx->dirty_shader_stages |= bit;
+      ctx->inlinable_uniforms_valid_mask |= bit;
+   }
 }
 
 ALWAYS_INLINE static void
@@ -1599,7 +1602,7 @@ setup_framebuffer(struct zink_context *ctx)
    struct zink_render_pass *rp = ctx->gfx_pipeline_state.render_pass;
 
    if (ctx->gfx_pipeline_state.sample_locations_enabled && ctx->sample_locations_changed) {
-      unsigned samples = ctx->gfx_pipeline_state.rast_samples;
+      unsigned samples = ctx->gfx_pipeline_state.rast_samples + 1;
       unsigned idx = util_logbase2_ceil(MAX2(samples, 1));
       VkExtent2D grid_size = screen->maxSampleLocationGridSize[idx];
  
@@ -1718,11 +1721,11 @@ void
 zink_init_vk_sample_locations(struct zink_context *ctx, VkSampleLocationsInfoEXT *loc)
 {
    struct zink_screen *screen = zink_screen(ctx->base.screen);
-   unsigned idx = util_logbase2_ceil(MAX2(ctx->gfx_pipeline_state.rast_samples, 1));
+   unsigned idx = util_logbase2_ceil(MAX2(ctx->gfx_pipeline_state.rast_samples + 1, 1));
    loc->sType = VK_STRUCTURE_TYPE_SAMPLE_LOCATIONS_INFO_EXT;
    loc->pNext = NULL;
    loc->sampleLocationsPerPixel = 1 << idx;
-   loc->sampleLocationsCount = ctx->gfx_pipeline_state.rast_samples;
+   loc->sampleLocationsCount = ctx->gfx_pipeline_state.rast_samples + 1;
    loc->sampleLocationGridSize = screen->maxSampleLocationGridSize[idx];
    loc->pSampleLocations = ctx->vk_sample_locations;
 }
@@ -2018,9 +2021,9 @@ zink_set_framebuffer_state(struct pipe_context *pctx,
    ctx->fb_changed |= ctx->framebuffer != fb;
    ctx->framebuffer = fb;
 
-   uint8_t rast_samples = util_framebuffer_get_num_samples(state);
+   uint8_t rast_samples = util_framebuffer_get_num_samples(state) - 1;
    /* in vulkan, gl_SampleMask needs to be explicitly ignored for sampleCount == 1 */
-   if ((ctx->gfx_pipeline_state.rast_samples > 1) != (rast_samples > 1))
+   if ((ctx->gfx_pipeline_state.rast_samples > 0) != (rast_samples > 0))
       ctx->dirty_shader_stages |= 1 << PIPE_SHADER_FRAGMENT;
    if (ctx->gfx_pipeline_state.rast_samples != rast_samples) {
       ctx->sample_locations_changed |= ctx->gfx_pipeline_state.sample_locations_enabled;
@@ -2060,7 +2063,9 @@ zink_set_sample_locations(struct pipe_context *pctx, size_t size, const uint8_t 
    ctx->sample_locations_changed = ctx->gfx_pipeline_state.sample_locations_enabled;
    if (size > sizeof(ctx->sample_locations))
       size = sizeof(ctx->sample_locations);
-   memcpy(ctx->sample_locations, locations, size);
+
+   if (locations)
+      memcpy(ctx->sample_locations, locations, size);
 }
 
 static VkAccessFlags

@@ -161,7 +161,7 @@ shader_key_tcs_gen(struct zink_context *ctx, struct zink_shader *zs,
    struct zink_tcs_key *tcs_key = &key->key.tcs;
    key->size = sizeof(struct zink_tcs_key);
 
-   tcs_key->vertices_per_patch = ctx->gfx_pipeline_state.vertices_per_patch;
+   tcs_key->vertices_per_patch = ctx->gfx_pipeline_state.vertices_per_patch + 1;
    tcs_key->vs_outputs_written = shaders[PIPE_SHADER_VERTEX]->nir->info.outputs_written;
 }
 
@@ -313,7 +313,7 @@ hash_gfx_pipeline_state(const void *key)
       hash = XXH32(&state->primitive_restart, 1, hash);
    if (state->have_EXT_extended_dynamic_state)
       return hash;
-   return XXH32(&state->depth_stencil_alpha_state, sizeof(void*), hash);
+   return XXH32(&state->dyn_state1, sizeof(state->dyn_state1), hash);
 }
 
 static bool
@@ -333,10 +333,12 @@ equals_gfx_pipeline_state(const void *a, const void *b)
          if (sa->vertex_strides[idx_a] != sb->vertex_strides[idx_b])
             return false;
       }
-      if (sa->front_face != sb->front_face)
+      if (sa->dyn_state1.front_face != sb->dyn_state1.front_face)
          return false;
-      if (!!sa->depth_stencil_alpha_state != !!sb->depth_stencil_alpha_state ||
-          memcmp(sa->depth_stencil_alpha_state, sb->depth_stencil_alpha_state, sizeof(struct zink_depth_stencil_alpha_hw_state)))
+      if (!!sa->dyn_state1.depth_stencil_alpha_state != !!sb->dyn_state1.depth_stencil_alpha_state ||
+          (sa->dyn_state1.depth_stencil_alpha_state &&
+           memcmp(sa->dyn_state1.depth_stencil_alpha_state, sb->dyn_state1.depth_stencil_alpha_state,
+                  sizeof(struct zink_depth_stencil_alpha_hw_state))))
          return false;
    }
    if (!sa->have_EXT_extended_dynamic_state2) {

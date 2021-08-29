@@ -418,8 +418,8 @@ zink_bind_depth_stencil_alpha_state(struct pipe_context *pctx, void *cso)
 
    if (cso) {
       struct zink_gfx_pipeline_state *state = &ctx->gfx_pipeline_state;
-      if (state->depth_stencil_alpha_state != &ctx->dsa_state->hw_state) {
-         state->depth_stencil_alpha_state = &ctx->dsa_state->hw_state;
+      if (state->dyn_state1.depth_stencil_alpha_state != &ctx->dsa_state->hw_state) {
+         state->dyn_state1.depth_stencil_alpha_state = &ctx->dsa_state->hw_state;
          state->dirty |= !zink_screen(pctx->screen)->info.have_EXT_extended_dynamic_state;
          ctx->dsa_state_changed = true;
       }
@@ -455,6 +455,18 @@ line_width(float width, float granularity, const float range[2])
    return CLAMP(width, range[0], range[1]);
 }
 
+#define warn_line_feature(feat) \
+   do { \
+      static bool warned = false; \
+      if (!warned) { \
+         fprintf(stderr, "WARNING: Incorrect rendering will happen, " \
+                         "because the Vulkan device doesn't support " \
+                         "the %s feature of " \
+                         "VK_EXT_line_rasterization\n", feat); \
+         warned = true; \
+      } \
+   } while (0)
+
 static void *
 zink_create_rasterizer_state(struct pipe_context *pctx,
                              const struct pipe_rasterizer_state *rs_state)
@@ -473,13 +485,14 @@ zink_create_rasterizer_state(struct pipe_context *pctx,
    state->hw_state.depth_clamp = rs_state->depth_clip_near == 0;
    state->hw_state.rasterizer_discard = rs_state->rasterizer_discard;
    state->hw_state.force_persample_interp = rs_state->force_persample_interp;
-   state->hw_state.pv_mode = rs_state->flatshade_first ? VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT : VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT;
+   state->hw_state.pv_last = !rs_state->flatshade_first;
+   state->hw_state.clip_halfz = rs_state->clip_halfz;
 
    assert(rs_state->fill_front <= PIPE_POLYGON_MODE_POINT);
    if (rs_state->fill_back != rs_state->fill_front)
       debug_printf("BUG: vulkan doesn't support different front and back fill modes\n");
-   state->hw_state.polygon_mode = (VkPolygonMode)rs_state->fill_front; // same values
-   state->hw_state.cull_mode = (VkCullModeFlags)rs_state->cull_face; // same bits
+   state->hw_state.polygon_mode = rs_state->fill_front; // same values
+   state->hw_state.cull_mode = rs_state->cull_face; // same bits
 
    state->front_face = rs_state->front_ccw ?
                        VK_FRONT_FACE_COUNTER_CLOCKWISE :
@@ -497,13 +510,19 @@ zink_create_rasterizer_state(struct pipe_context *pctx,
                if (line_feats->stippledSmoothLines)
                   state->hw_state.line_mode =
                      VK_LINE_RASTERIZATION_MODE_RECTANGULAR_SMOOTH_EXT;
+               else
+                  warn_line_feature("stippledSmoothLines");
             } else if (line_feats->stippledRectangularLines)
                state->hw_state.line_mode =
                   VK_LINE_RASTERIZATION_MODE_RECTANGULAR_EXT;
+            else
+               warn_line_feature("stippledRectangularLines");
          } else if (line_feats->stippledBresenhamLines)
             state->hw_state.line_mode =
                VK_LINE_RASTERIZATION_MODE_BRESENHAM_EXT;
          else {
+            warn_line_feature("stippledBresenhamLines");
+
             /* no suitable mode that supports line stippling */
             state->base.line_stipple_factor = 0;
             state->base.line_stipple_pattern = UINT16_MAX;
@@ -516,12 +535,18 @@ zink_create_rasterizer_state(struct pipe_context *pctx,
                if (line_feats->smoothLines)
                   state->hw_state.line_mode =
                      VK_LINE_RASTERIZATION_MODE_RECTANGULAR_SMOOTH_EXT;
+               else
+                  warn_line_feature("smoothLines");
             } else if (line_feats->rectangularLines)
                state->hw_state.line_mode =
                   VK_LINE_RASTERIZATION_MODE_RECTANGULAR_EXT;
+            else
+               warn_line_feature("rectangularLines");
          } else if (line_feats->bresenhamLines)
             state->hw_state.line_mode =
                VK_LINE_RASTERIZATION_MODE_BRESENHAM_EXT;
+         else
+            warn_line_feature("bresenhamLines");
       }
       state->base.line_stipple_factor = 0;
       state->base.line_stipple_pattern = UINT16_MAX;
@@ -549,28 +574,29 @@ zink_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
    bool clip_halfz = ctx->rast_state ? ctx->rast_state->base.clip_halfz : false;
    bool point_quad_rasterization = ctx->rast_state ? ctx->rast_state->base.point_quad_rasterization : false;
    bool scissor = ctx->rast_state ? ctx->rast_state->base.scissor : false;
+   bool pv_last = ctx->rast_state ? ctx->rast_state->hw_state.pv_last : false;
    ctx->rast_state = cso;
 
    if (ctx->rast_state) {
-      if (ctx->gfx_pipeline_state.rast_state != &ctx->rast_state->hw_state) {
-         if (screen->info.have_EXT_provoking_vertex &&
-             (!ctx->gfx_pipeline_state.rast_state ||
-              ctx->gfx_pipeline_state.rast_state->pv_mode != ctx->rast_state->hw_state.pv_mode) &&
-             /* without this prop, change in pv mode requires new rp */
-             !screen->info.pv_props.provokingVertexModePerPipeline)
-            zink_batch_no_rp(ctx);
-         ctx->gfx_pipeline_state.rast_state = &ctx->rast_state->hw_state;
-         ctx->gfx_pipeline_state.dirty = true;
-         ctx->rast_state_changed = true;
-      }
+      if (screen->info.have_EXT_provoking_vertex &&
+          pv_last != ctx->rast_state->hw_state.pv_last &&
+          /* without this prop, change in pv mode requires new rp */
+          !screen->info.pv_props.provokingVertexModePerPipeline)
+         zink_batch_no_rp(ctx);
+      uint32_t rast_bits = 0;
+      memcpy(&rast_bits, &ctx->rast_state->hw_state, sizeof(struct zink_rasterizer_hw_state));
+      ctx->gfx_pipeline_state.rast_state = rast_bits & BITFIELD_MASK(ZINK_RAST_HW_STATE_SIZE);
+
+      ctx->gfx_pipeline_state.dirty = true;
+      ctx->rast_state_changed = true;
 
       if (clip_halfz != ctx->rast_state->base.clip_halfz) {
          ctx->last_vertex_stage_dirty = true;
          ctx->vp_state_changed = true;
       }
 
-      if (ctx->gfx_pipeline_state.front_face != ctx->rast_state->front_face) {
-         ctx->gfx_pipeline_state.front_face = ctx->rast_state->front_face;
+      if (ctx->gfx_pipeline_state.dyn_state1.front_face != ctx->rast_state->front_face) {
+         ctx->gfx_pipeline_state.dyn_state1.front_face = ctx->rast_state->front_face;
          ctx->gfx_pipeline_state.dirty |= !zink_screen(pctx->screen)->info.have_EXT_extended_dynamic_state;
       }
       if (ctx->rast_state->base.point_quad_rasterization != point_quad_rasterization)

@@ -100,9 +100,6 @@ tc_fence_finish(struct zink_context *ctx, struct zink_tc_fence *mfence, uint64_t
          threaded_context_flush(&ctx->base, mfence->tc_token, *timeout_ns == 0);
       }
 
-      if (!timeout_ns)
-         return false;
-
       /* this is a tc mfence, so we're just waiting on the queue mfence to complete
        * after being signaled by the real mfence
        */
@@ -206,7 +203,7 @@ zink_fence_server_sync(struct pipe_context *pctx, struct pipe_fence_handle *pfen
 {
    struct zink_tc_fence *mfence = zink_tc_fence(pfence);
 
-   if (pctx && mfence->deferred_ctx == pctx)
+   if (mfence->deferred_ctx == pctx)
       return;
 
    if (mfence->deferred_ctx) {

@@ -1422,6 +1422,7 @@ label_instruction(opt_ctx& ctx, aco_ptr<Instruction>& instr)
       if (!ctx.program->needs_wqm)
          ctx.info[instr->definitions[0].tempId()].set_constant(ctx.program->chip_class, 0u);
       break;
+   case aco_opcode::v_mul_f64: ctx.info[instr->definitions[0].tempId()].set_mul(instr.get()); break;
    case aco_opcode::v_mul_f16:
    case aco_opcode::v_mul_f32: { /* omod */
       ctx.info[instr->definitions[0].tempId()].set_mul(instr.get());
@@ -1477,11 +1478,7 @@ label_instruction(opt_ctx& ctx, aco_ptr<Instruction>& instr)
       break;
    }
    case aco_opcode::v_mul_lo_u16:
-      if (instr->definitions[0].isNUW()) {
-         /* Most of 16-bit mul optimizations are only valid if no overflow. */
-         ctx.info[instr->definitions[0].tempId()].set_usedef(instr.get());
-      }
-      break;
+   case aco_opcode::v_mul_lo_u16_e64:
    case aco_opcode::v_mul_u32_u24:
       ctx.info[instr->definitions[0].tempId()].set_usedef(instr.get());
       break;
@@ -3058,8 +3055,9 @@ combine_vop3p(opt_ctx& ctx, aco_ptr<Instruction>& instr)
       }
    }
 
-   if (instr->opcode == aco_opcode::v_pk_add_f16) {
-      if (instr->definitions[0].isPrecise())
+   if (instr->opcode == aco_opcode::v_pk_add_f16 || instr->opcode == aco_opcode::v_pk_add_u16) {
+      bool fadd = instr->opcode == aco_opcode::v_pk_add_f16;
+      if (fadd && instr->definitions[0].isPrecise())
          return;
 
       Instruction* mul_instr = nullptr;
@@ -3072,9 +3070,14 @@ combine_vop3p(opt_ctx& ctx, aco_ptr<Instruction>& instr)
          if (!instr->operands[i].isTemp() || !ctx.info[instr->operands[i].tempId()].is_vop3p())
             continue;
          ssa_info& info = ctx.info[instr->operands[i].tempId()];
-         if (info.instr->opcode != aco_opcode::v_pk_mul_f16 ||
-             info.instr->definitions[0].isPrecise())
-            continue;
+         if (fadd) {
+            if (info.instr->opcode != aco_opcode::v_pk_mul_f16 ||
+                info.instr->definitions[0].isPrecise())
+               continue;
+         } else {
+            if (info.instr->opcode != aco_opcode::v_pk_mul_lo_u16)
+               continue;
+         }
 
          Operand op[3] = {info.instr->operands[0], info.instr->operands[1], instr->operands[1 - i]};
          if (ctx.uses[instr->operands[i].tempId()] >= uses || !check_vop3_operands(ctx, 3, op))
@@ -3106,8 +3109,9 @@ combine_vop3p(opt_ctx& ctx, aco_ptr<Instruction>& instr)
 
       /* turn packed mul+add into v_pk_fma_f16 */
       assert(mul_instr->isVOP3P());
+      aco_opcode mad = fadd ? aco_opcode::v_pk_fma_f16 : aco_opcode::v_pk_mad_u16;
       aco_ptr<VOP3P_instruction> fma{
-         create_instruction<VOP3P_instruction>(aco_opcode::v_pk_fma_f16, Format::VOP3P, 3, 1)};
+         create_instruction<VOP3P_instruction>(mad, Format::VOP3P, 3, 1)};
       VOP3P_instruction* mul = &mul_instr->vop3p();
       for (unsigned i = 0; i < 2; i++) {
          fma->operands[i] = op[i];
@@ -3149,6 +3153,14 @@ combine_instruction(opt_ctx& ctx, aco_ptr<Instruction>& instr)
          if (!op.isTemp())
             continue;
          ssa_info& info = ctx.info[op.tempId()];
+         if (!info.is_extract())
+            continue;
+         /* if there are that many uses, there are likely better combinations */
+         // TODO: delay applying extract to a point where we know better
+         if (ctx.uses[op.tempId()] > 4) {
+            info.label &= ~label_extract;
+            continue;
+         }
          if (info.is_extract() &&
              (info.instr->operands[0].getTemp().type() == RegType::vgpr ||
               instr->operands[i].getTemp().type() == RegType::sgpr) &&
@@ -3234,9 +3246,11 @@ combine_instruction(opt_ctx& ctx, aco_ptr<Instruction>& instr)
                 instr->opcode == aco_opcode::v_subrev_f32;
    bool mad16 = instr->opcode == aco_opcode::v_add_f16 || instr->opcode == aco_opcode::v_sub_f16 ||
                 instr->opcode == aco_opcode::v_subrev_f16;
-   if (mad16 || mad32) {
-      bool need_fma = mad32 ? (ctx.fp_mode.denorm32 != 0 || ctx.program->chip_class >= GFX10_3)
-                            : (ctx.fp_mode.denorm16_64 != 0 || ctx.program->chip_class >= GFX10);
+   bool mad64 = instr->opcode == aco_opcode::v_add_f64;
+   if (mad16 || mad32 || mad64) {
+      bool need_fma =
+         mad32 ? (ctx.fp_mode.denorm32 != 0 || ctx.program->chip_class >= GFX10_3)
+               : (ctx.fp_mode.denorm16_64 != 0 || ctx.program->chip_class >= GFX10 || mad64);
       if (need_fma && instr->definitions[0].isPrecise())
          return;
       if (need_fma && mad32 && !ctx.program->dev.has_fast_fma32)
@@ -3321,6 +3335,8 @@ combine_instruction(opt_ctx& ctx, aco_ptr<Instruction>& instr)
                                                                  : aco_opcode::v_fma_f16)
                               : (ctx.program->chip_class == GFX8 ? aco_opcode::v_mad_legacy_f16
                                                                  : aco_opcode::v_mad_f16);
+         if (mad64)
+            mad_op = aco_opcode::v_fma_f64;
 
          aco_ptr<VOP3_instruction> mad{
             create_instruction<VOP3_instruction>(mad_op, Format::VOP3, 3, 1)};
@@ -3373,6 +3389,14 @@ combine_instruction(opt_ctx& ctx, aco_ptr<Instruction>& instr)
       } else if (combine_three_valu_op(ctx, instr, aco_opcode::s_xor_b32, aco_opcode::v_xor3_b32,
                                        "012", 1 | 2)) {
       }
+   } else if (instr->opcode == aco_opcode::v_add_u16) {
+      combine_three_valu_op(
+         ctx, instr, aco_opcode::v_mul_lo_u16,
+         ctx.program->chip_class == GFX8 ? aco_opcode::v_mad_legacy_u16 : aco_opcode::v_mad_u16,
+         "120", 1 | 2);
+   } else if (instr->opcode == aco_opcode::v_add_u16_e64) {
+      combine_three_valu_op(ctx, instr, aco_opcode::v_mul_lo_u16_e64, aco_opcode::v_mad_u16, "120",
+                            1 | 2);
    } else if (instr->opcode == aco_opcode::v_add_u32) {
       if (combine_add_sub_b2i(ctx, instr, aco_opcode::v_addc_co_u32, 1 | 2)) {
       } else if (combine_add_bcnt(ctx, instr)) {
@@ -3389,8 +3413,6 @@ combine_instruction(opt_ctx& ctx, aco_ptr<Instruction>& instr)
                                           "012", 1 | 2)) {
          } else if (combine_three_valu_op(ctx, instr, aco_opcode::v_add_u32, aco_opcode::v_add3_u32,
                                           "012", 1 | 2)) {
-         } else if (combine_three_valu_op(ctx, instr, aco_opcode::v_mul_lo_u16,
-                                          aco_opcode::v_mad_u32_u16, "120", 1 | 2)) {
          } else if (combine_add_or_then_and_lshl(ctx, instr)) {
          }
       }
@@ -3499,52 +3521,6 @@ to_uniform_bool_instr(opt_ctx& ctx, aco_ptr<Instruction>& instr)
 }
 
 void
-select_mul_u32_u24(opt_ctx& ctx, aco_ptr<Instruction>& instr)
-{
-   if (instr->usesModifiers())
-      return;
-
-   /* Only valid if the accumulator is zero (this is selected by isel to
-    * combine more v_add_u32+v_mad_u32_u16 together), but the optimizer
-    * fallbacks here when not possible.
-    */
-   if (!instr->operands[2].constantEquals(0))
-      return;
-
-   /* Only valid if the upper 16-bits of both operands are zero (because
-    * v_mul_u32_u24 doesn't mask them).
-    */
-   for (unsigned i = 0; i < 2; i++) {
-      if (instr->operands[i].isTemp() && !instr->operands[i].is16bit())
-         return;
-   }
-
-   bool swap = false;
-
-   /* VOP2 instructions can only take constants/sgprs in operand 0. */
-   if ((instr->operands[1].isConstant() ||
-        (instr->operands[1].hasRegClass() &&
-         instr->operands[1].regClass().type() == RegType::sgpr))) {
-      swap = true;
-      if ((instr->operands[0].isConstant() ||
-           (instr->operands[0].hasRegClass() &&
-            instr->operands[0].regClass().type() == RegType::sgpr))) {
-         /* VOP2 can't take both constants/sgprs, keep v_mad_u32_u16 because
-          * v_mul_u32_u24 has no advantages.
-          */
-         return;
-      }
-   }
-
-   VOP2_instruction* new_instr =
-      create_instruction<VOP2_instruction>(aco_opcode::v_mul_u32_u24, Format::VOP2, 2, 1);
-   new_instr->operands[0] = instr->operands[swap];
-   new_instr->operands[1] = instr->operands[!swap];
-   new_instr->definitions[0] = instr->definitions[0];
-   instr.reset(new_instr);
-}
-
-void
 select_instruction(opt_ctx& ctx, aco_ptr<Instruction>& instr)
 {
    const uint32_t threshold = 4;
@@ -3627,7 +3603,7 @@ select_instruction(opt_ctx& ctx, aco_ptr<Instruction>& instr)
          mad_info = NULL;
       }
       /* check literals */
-      else if (!instr->usesModifiers()) {
+      else if (!instr->usesModifiers() && instr->opcode != aco_opcode::v_fma_f64) {
          /* FMA can only take literals on GFX10+ */
          if ((instr->opcode == aco_opcode::v_fma_f32 || instr->opcode == aco_opcode::v_fma_f16) &&
              ctx.program->chip_class < GFX10)
@@ -3723,9 +3699,6 @@ select_instruction(opt_ctx& ctx, aco_ptr<Instruction>& instr)
 
       return;
    }
-
-   if (instr->opcode == aco_opcode::v_mad_u32_u16)
-      select_mul_u32_u24(ctx, instr);
 
    /* Combine DPP copies into VALU. This should be done after creating MAD/FMA. */
    if (instr->isVALU()) {

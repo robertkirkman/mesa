@@ -70,6 +70,7 @@ struct spirv_supported_capabilities {
    bool kernel_image;
    bool kernel_image_read_write;
    bool literal_sampler;
+   bool mesh_shading_nv;
    bool min_lod;
    bool multiview;
    bool physical_storage_buffer_address;
@@ -153,6 +154,12 @@ typedef struct shader_info {
    uint64_t outputs_read;
    /* Which system values are actually read */
    BITSET_DECLARE(system_values_read, SYSTEM_VALUE_MAX);
+
+   /* Which I/O is per-primitive, for read/written information combine with
+    * the fields above.
+    */
+   uint64_t per_primitive_inputs;
+   uint64_t per_primitive_outputs;
 
    /* Which 16-bit inputs and outputs are used corresponding to
     * VARYING_SLOT_VARn_16BIT.
@@ -452,6 +459,13 @@ typedef struct shader_info {
           */
          uint64_t tcs_cross_invocation_outputs_read;
       } tess;
+
+      /* Applies to MESH. */
+      struct {
+         uint16_t max_vertices_out;
+         uint16_t max_primitives_out;
+         uint16_t primitive_type;  /* GL_POINTS, GL_LINES or GL_TRIANGLES. */
+      } mesh;
    };
 } shader_info;
 

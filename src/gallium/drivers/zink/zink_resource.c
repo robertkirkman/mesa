@@ -125,6 +125,7 @@ create_bci(struct zink_screen *screen, const struct pipe_resource *templ, unsign
    bci.pNext = NULL;
    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
    bci.queueFamilyIndexCount = 0;
+   bci.pQueueFamilyIndices = NULL;
    bci.size = templ->width0;
    bci.flags = 0;
    assert(bci.size > 0);
@@ -1316,7 +1317,7 @@ zink_image_map(struct pipe_context *pctx,
                         (box->y / desc->block.height) * srl.rowPitch +
                         (box->x / desc->block.width) * (desc->block.bits / 8);
       if (!res->obj->coherent) {
-         VkDeviceSize size = box->width * box->height * desc->block.bits / 8;
+         VkDeviceSize size = (VkDeviceSize)box->width * box->height * desc->block.bits / 8;
          VkMappedMemoryRange range = zink_resource_init_mem_range(screen, res->obj, res->obj->offset + offset, size);
          vkFlushMappedMemoryRanges(screen->dev, 1, &range);
       }
@@ -1356,7 +1357,7 @@ zink_transfer_flush_region(struct pipe_context *pctx,
          size = box->width;
          offset = trans->offset;
       } else {
-         size = box->width * box->height * util_format_get_blocksize(m->base.b.format);
+         size = (VkDeviceSize)box->width * box->height * util_format_get_blocksize(m->base.b.format);
          offset = trans->offset +
                   box->z * trans->depthPitch +
                   util_format_get_2d_size(m->base.b.format, trans->base.b.stride, box->y) +

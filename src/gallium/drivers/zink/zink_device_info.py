@@ -194,9 +194,7 @@ EXTENSIONS = [
 #
 #  - struct_version: Vulkan version, as tuple, to use with structures and macros
 VERSIONS = [
-    # VkPhysicalDeviceVulkan11Properties and VkPhysicalDeviceVulkan11Features is new from Vk 1.2, not Vk 1.1
-    # https://www.khronos.org/registry/vulkan/specs/1.2-extensions/html/vkspec.html#_new_structures
-    Version((1,2,0), (1,1)),
+    Version((1,1,0), (1,1)),
     Version((1,2,0), (1,2)),
 ]
 
@@ -331,30 +329,10 @@ zink_get_physical_device_info(struct zink_screen *screen)
          %for ext in extensions:
          <%helpers:guard ext="${ext}">
             if (!strcmp(extensions[i].extensionName, "${ext.name}")) {
-         %if ext.core_since:
-         %for version in versions:
-         %if ext.core_since.struct_version == version.struct_version:
-               if (${version.version()} >= screen->vk_version) {
-         %if not (ext.has_features or ext.has_properties):
-                  info->have_${ext.name_with_vendor()} = true;
-         %else:
-                  support_${ext.name_with_vendor()} = true;
-         %endif
-               } else {
-         %if not (ext.has_features or ext.has_properties):
-                  info->have_${ext.name_with_vendor()} = true;
-         %else:
-                  support_${ext.name_with_vendor()} = true;
-         %endif
-               }
-         %endif
-         %endfor
-         %else:
          %if not (ext.has_features or ext.has_properties):
                info->have_${ext.name_with_vendor()} = true;
          %else:
                support_${ext.name_with_vendor()} = true;
-         %endif
          %endif
             }
          </%helpers:guard>
@@ -365,13 +343,34 @@ zink_get_physical_device_info(struct zink_screen *screen)
       }
    }
 
+   %for version in versions:
+   if (${version.version()} <= screen->vk_version) {
+   %for ext in extensions:
+   %if ext.core_since and ext.core_since.struct_version == version.struct_version:
+   <%helpers:guard ext="${ext}">
+   %if not (ext.has_features or ext.has_properties):
+       info->have_${ext.name_with_vendor()} = true;
+   %else:
+       support_${ext.name_with_vendor()} = true;
+   %endif
+   </%helpers:guard>
+   %endif
+   %endfor
+   }
+   %endfor
+
    // get device features
    if (screen->vk.GetPhysicalDeviceFeatures2) {
       // check for device extension features
       info->feats.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
 
 %for version in versions:
+%if version.device_version < (1,2,0):
+      if (VK_MAKE_VERSION(1,2,0) <= screen->vk_version) {
+         /* VkPhysicalDeviceVulkan11Features was added in 1.2, not 1.1 as one would think */
+%else:
       if (${version.version()} <= screen->vk_version) {
+%endif
          info->feats${version.struct()}.sType = ${version.stype("FEATURES")};
          info->feats${version.struct()}.pNext = info->feats.pNext;
          info->feats.pNext = &info->feats${version.struct()};
@@ -402,7 +401,12 @@ zink_get_physical_device_info(struct zink_screen *screen)
       props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
 
 %for version in versions:
+%if version.device_version < (1,2,0):
+      if (VK_MAKE_VERSION(1,2,0) <= screen->vk_version) {
+         /* VkPhysicalDeviceVulkan11Properties was added in 1.2, not 1.1 as one would think */
+%else:
       if (${version.version()} <= screen->vk_version) {
+%endif
          info->props${version.struct()}.sType = ${version.stype("PROPERTIES")};
          info->props${version.struct()}.pNext = props.pNext;
          props.pNext = &info->props${version.struct()};

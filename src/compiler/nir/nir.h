@@ -495,6 +495,12 @@ typedef struct nir_variable {
       unsigned per_view:1;
 
       /**
+       * Whether the variable is per-primitive.
+       * Can be use by Mesh Shader outputs and corresponding Fragment Shader inputs.
+       */
+      unsigned per_primitive:1;
+
+      /**
        * \brief Layout qualifier for gl_FragDepth. See nir_depth_layout.
        *
        * This is not equal to \c ir_depth_layout_none if and only if this
@@ -546,6 +552,9 @@ typedef struct nir_variable {
        *   - Geometry shader output: one of the values from \c gl_varying_slot.
        *   - Fragment shader input: one of the values from \c gl_varying_slot.
        *   - Fragment shader output: one of the values from \c gl_frag_result.
+       *   - Task shader output: one of the values from \c gl_varying_slot.
+       *   - Mesh shader input: one of the values from \c gl_varying_slot.
+       *   - Mesh shader output: one of the values from \c gl_varying_slot.
        *   - Uniforms: Per-stage uniform slot number for default uniform block.
        *   - Uniforms: Index within the uniform block definition for UBO members.
        *   - Non-UBO Uniforms: uniform slot number.
