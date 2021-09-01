@@ -528,7 +528,6 @@ struct si_vs_prolog_bits {
    uint16_t instance_divisor_is_one;     /* bitmask of inputs */
    uint16_t instance_divisor_is_fetched; /* bitmask of inputs */
    unsigned ls_vgpr_fix : 1;
-   unsigned unpack_instance_id_from_vertex_id : 1;
 };
 
 /* Common TCS bits between the shader key and the epilog key. */
@@ -641,9 +640,10 @@ struct si_shader_key {
    /* These three are initially set according to the NEXT_SHADER property,
     * or guessed if the property doesn't seem correct.
     */
-   unsigned as_es : 1;  /* export shader, which precedes GS */
-   unsigned as_ls : 1;  /* local shader, which precedes TCS */
-   unsigned as_ngg : 1; /* VS, TES, or GS compiled as NGG primitive shader */
+   unsigned as_es : 1;  /* whether it's a shader before GS */
+   unsigned as_ls : 1;  /* whether it's VS before TCS */
+   unsigned as_ngg : 1; /* whether it's the last GE stage and NGG is enabled,
+                           also set for the stage right before GS */
 
    /* Flags for monolithic compilation only. */
    struct {
@@ -688,7 +688,6 @@ struct si_shader_key {
       unsigned vs_as_prim_discard_cs : 1;
       unsigned cs_prim_type : 4;
       unsigned cs_indexed : 1;
-      unsigned cs_instancing : 1;
       unsigned cs_provoking_vertex_first : 1;
       unsigned cs_cull_front : 1;
       unsigned cs_cull_back : 1;

@@ -31,29 +31,6 @@
 #include "util/u_upload_mgr.h"
 #include "ac_debug.h"
 
-/* initialize */
-void si_need_gfx_cs_space(struct si_context *ctx, unsigned num_draws)
-{
-   struct radeon_cmdbuf *cs = &ctx->gfx_cs;
-
-   /* There are two memory usage counters in the winsys for all buffers
-    * that have been added (cs_add_buffer) and two counters in the pipe
-    * driver for those that haven't been added yet.
-    */
-   if (unlikely(!radeon_cs_memory_below_limit(ctx->screen, &ctx->gfx_cs, ctx->vram_kb, ctx->gtt_kb))) {
-      ctx->gtt_kb = 0;
-      ctx->vram_kb = 0;
-      si_flush_gfx_cs(ctx, RADEON_FLUSH_ASYNC_START_NEXT_GFX_IB_NOW, NULL);
-      return;
-   }
-   ctx->gtt_kb = 0;
-   ctx->vram_kb = 0;
-
-   unsigned need_dwords = si_get_minimum_num_gfx_cs_dwords(ctx, num_draws);
-   if (!ctx->ws->cs_check_space(cs, need_dwords, false))
-      si_flush_gfx_cs(ctx, RADEON_FLUSH_ASYNC_START_NEXT_GFX_IB_NOW, NULL);
-}
-
 void si_flush_gfx_cs(struct si_context *ctx, unsigned flags, struct pipe_fence_handle **fence)
 {
    struct radeon_cmdbuf *cs = &ctx->gfx_cs;

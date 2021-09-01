@@ -314,6 +314,9 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return modes;
    }
 
+   case PIPE_CAP_FBFETCH:
+      return 1;
+
    case PIPE_CAP_QUERY_MEMORY_INFO:
    case PIPE_CAP_NPOT_TEXTURES:
    case PIPE_CAP_TGSI_TEXCOORD:
@@ -1705,7 +1708,6 @@ check_base_requirements(struct zink_screen *screen)
        !screen->info.feats.features.fillModeNonSolid ||
        !screen->info.feats.features.wideLines ||
        !screen->info.feats.features.largePoints ||
-       !screen->info.feats.features.alphaToOne ||
        !screen->info.feats.features.shaderClipDistance ||
        !(screen->info.feats12.scalarBlockLayout ||
          screen->info.have_EXT_scalar_block_layout) ||
@@ -1722,7 +1724,6 @@ check_base_requirements(struct zink_screen *screen)
       CHECK_OR_PRINT(feats.features.fillModeNonSolid);
       CHECK_OR_PRINT(feats.features.wideLines);
       CHECK_OR_PRINT(feats.features.largePoints);
-      CHECK_OR_PRINT(feats.features.alphaToOne);
       CHECK_OR_PRINT(feats.features.shaderClipDistance);
       if (!screen->info.feats12.scalarBlockLayout && !screen->info.have_EXT_scalar_block_layout)
          printf("scalarBlockLayout OR EXT_scalar_block_layout ");
@@ -1904,7 +1905,7 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
       if (screen->heap_map[i] == UINT8_MAX) {
          /* only cached mem has a failure case for now */
          assert(i == ZINK_HEAP_HOST_VISIBLE_CACHED);
-         screen->heap_map[i] = screen->heap_map[ZINK_HEAP_HOST_VISIBLE_ANY];
+         screen->heap_map[i] = screen->heap_map[ZINK_HEAP_HOST_VISIBLE_COHERENT];
       }
    }
    {

@@ -207,9 +207,11 @@ get_image_usage_for_feats(struct zink_screen *screen, VkFormatFeatureFlags feats
    }
 
    if (bind & PIPE_BIND_RENDER_TARGET) {
-      if (feats & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)
+      if (feats & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) {
          usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-      else
+         if ((bind & (PIPE_BIND_LINEAR | PIPE_BIND_SHARED)) != (PIPE_BIND_LINEAR | PIPE_BIND_SHARED))
+            usage |= VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+      } else
          return 0;
    }
 
@@ -575,7 +577,7 @@ resource_object_create(struct zink_screen *screen, const struct pipe_resource *t
          heap = ZINK_HEAP_DEVICE_LOCAL;
          break;
       case ZINK_HEAP_HOST_VISIBLE_CACHED:
-         heap = ZINK_HEAP_HOST_VISIBLE_ANY;
+         heap = ZINK_HEAP_HOST_VISIBLE_COHERENT;
          break;
       default:
          break;
@@ -700,7 +702,11 @@ resource_create(struct pipe_screen *pscreen,
    res->base.b.screen = pscreen;
 
    bool optimal_tiling = false;
-   res->obj = resource_object_create(screen, templ, whandle, &optimal_tiling, modifiers, 0);
+   struct pipe_resource templ2 = *templ;
+   unsigned scanout_flags = templ->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_SHARED);
+   if (!(templ->bind & PIPE_BIND_LINEAR))
+      templ2.bind &= ~scanout_flags;
+   res->obj = resource_object_create(screen, &templ2, whandle, &optimal_tiling, modifiers, 0);
    if (!res->obj) {
       free(res->modifiers);
       FREE(res);
@@ -725,10 +731,10 @@ resource_create(struct pipe_screen *pscreen,
       res->layout = VK_IMAGE_LAYOUT_UNDEFINED;
       res->optimal_tiling = optimal_tiling;
       res->aspect = aspect_from_format(templ->format);
-      if (res->base.b.bind & (PIPE_BIND_SCANOUT | PIPE_BIND_SHARED) && optimal_tiling) {
+      if (scanout_flags && optimal_tiling) {
          // TODO: remove for wsi
-         struct pipe_resource templ2 = res->base.b;
-         templ2.bind = (res->base.b.bind & (PIPE_BIND_SCANOUT | PIPE_BIND_SHARED)) | PIPE_BIND_LINEAR;
+         templ2 = res->base.b;
+         templ2.bind = scanout_flags | PIPE_BIND_LINEAR;
          res->scanout_obj = resource_object_create(screen, &templ2, whandle, &optimal_tiling, modifiers, modifiers_count);
          assert(!optimal_tiling);
       }

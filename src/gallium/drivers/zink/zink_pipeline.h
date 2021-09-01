@@ -45,7 +45,7 @@ struct zink_gfx_pipeline_state {
    uint32_t void_alpha_attachments:PIPE_MAX_COLOR_BUFS;
    VkSampleMask sample_mask;
 
-   struct zink_render_pass *render_pass;
+   unsigned rp_state;
    struct zink_blend_state *blend_state;
 
    /* Pre-hashed value for table lookup, invalid when zero.
@@ -62,12 +62,10 @@ struct zink_gfx_pipeline_state {
    bool primitive_restart; //dynamic state2
 
    VkShaderModule modules[PIPE_SHADER_TYPES - 1];
-   uint32_t module_hash;
-
-   uint32_t combined_hash;
-   bool combined_dirty;
+   bool modules_changed;
 
    struct zink_vertex_elements_hw_state *element_state;
+   uint32_t vertex_hash;
 
    uint32_t final_hash;
 
@@ -76,6 +74,7 @@ struct zink_gfx_pipeline_state {
    bool sample_locations_enabled;
    bool have_EXT_extended_dynamic_state;
    bool have_EXT_extended_dynamic_state2;
+   struct zink_render_pass *render_pass;
    VkPipeline pipeline;
    uint8_t patch_vertices;
    unsigned idx : 8;

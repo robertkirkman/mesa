@@ -24,6 +24,7 @@
 #ifndef ZINK_CONTEXT_H
 #define ZINK_CONTEXT_H
 
+#define ZINK_FBFETCH_BINDING 6 //COMPUTE+1
 #define ZINK_SHADER_COUNT (PIPE_SHADER_TYPES - 1)
 
 #define ZINK_DEFAULT_MAX_DESCS 5000
@@ -161,6 +162,11 @@ typedef enum {
    ZINK_DYNAMIC_STATE2,
 } zink_dynamic_state2;
 
+typedef enum {
+   ZINK_NO_DYNAMIC_VERTEX_INPUT,
+   ZINK_DYNAMIC_VERTEX_INPUT,
+} zink_dynamic_vertex_input;
+
 struct zink_context {
    struct pipe_context base;
    struct threaded_context *tc;
@@ -212,6 +218,7 @@ struct zink_context {
     * thus only 3 stages need to be considered, giving 2^3 = 8 program caches.
     */
    struct hash_table program_cache[8];
+   uint32_t gfx_hash;
    struct zink_gfx_program *curr_program;
 
    struct zink_descriptor_data *dd;
@@ -225,6 +232,7 @@ struct zink_context {
    unsigned dirty_shader_stages : 6; /* mask of changed shader stages */
    bool last_vertex_stage_dirty;
 
+   struct set render_pass_state_cache;
    struct hash_table *render_pass_cache;
    bool new_swapchain;
    bool fb_changed;
@@ -234,6 +242,7 @@ struct zink_context {
    struct zink_framebuffer_clear fb_clears[PIPE_MAX_COLOR_BUFS + 1];
    uint16_t clears_enabled;
    uint16_t rp_clears_enabled;
+   uint16_t fbfetch_outputs;
 
    VkBuffer vbufs[PIPE_MAX_ATTRIBS];
    unsigned vbuf_offsets[PIPE_MAX_ATTRIBS];
@@ -298,6 +307,8 @@ struct zink_context {
       VkBufferView texel_images[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_IMAGES];
       uint8_t num_images[PIPE_SHADER_TYPES];
 
+      VkDescriptorImageInfo fbfetch;
+
       struct zink_resource *descriptor_res[ZINK_DESCRIPTOR_TYPES][PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
       struct zink_descriptor_surface sampler_surfaces[PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
       struct zink_descriptor_surface image_surfaces[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_IMAGES];
@@ -350,7 +361,8 @@ zink_check_batch_completion(struct zink_context *ctx, uint32_t batch_id, bool ha
 
 void
 zink_flush_queue(struct zink_context *ctx);
-
+void
+zink_update_fbfetch(struct zink_context *ctx);
 bool
 zink_resource_access_is_write(VkAccessFlags flags);
 

@@ -983,13 +983,6 @@ static void gfx10_emit_ge_pc_alloc(struct si_context *sctx, unsigned value)
       struct radeon_cmdbuf *cs = &sctx->gfx_cs;
 
       radeon_begin(cs);
-
-      if (sctx->chip_class == GFX10) {
-         /* SQ_NON_EVENT must be emitted before GE_PC_ALLOC is written. */
-         radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
-         radeon_emit(cs, EVENT_TYPE(V_028A90_SQ_NON_EVENT) | EVENT_INDEX(0));
-      }
-
       radeon_set_uconfig_reg(cs, R_030980_GE_PC_ALLOC, value);
       radeon_end();
 
@@ -1775,12 +1768,6 @@ static void si_shader_init_pm4_state(struct si_screen *sscreen, struct si_shader
    }
 }
 
-static unsigned si_get_alpha_test_func(struct si_context *sctx)
-{
-   /* Alpha-test should be disabled if colorbuffer 0 is integer. */
-   return sctx->queued.named.dsa->alpha_func;
-}
-
 void si_shader_selector_key_vs(struct si_context *sctx, struct si_shader_selector *vs,
                                struct si_shader_key *key, struct si_vs_prolog_bits *prolog_key)
 {
@@ -1791,7 +1778,6 @@ void si_shader_selector_key_vs(struct si_context *sctx, struct si_shader_selecto
 
    prolog_key->instance_divisor_is_one = elts->instance_divisor_is_one;
    prolog_key->instance_divisor_is_fetched = elts->instance_divisor_is_fetched;
-   prolog_key->unpack_instance_id_from_vertex_id = sctx->prim_discard_cs_instancing;
 
    /* Prefer a monolithic shader to allow scheduling divisions around
     * VBO loads. */
@@ -1838,7 +1824,7 @@ static void si_shader_selector_key_hw_vs(struct si_context *sctx, struct si_shad
       bool ps_modifies_zs = ps->info.base.fs.uses_discard || ps->info.writes_z || ps->info.writes_stencil ||
                             ps->info.writes_samplemask ||
                             sctx->queued.named.blend->alpha_to_coverage ||
-                            si_get_alpha_test_func(sctx) != PIPE_FUNC_ALWAYS;
+                            sctx->queued.named.dsa->alpha_func != PIPE_FUNC_ALWAYS;
       unsigned ps_colormask = si_get_total_colormask(sctx);
 
       ps_disabled = sctx->queued.named.rasterizer->rasterizer_discard ||
@@ -1879,12 +1865,13 @@ static void si_shader_selector_key_hw_vs(struct si_context *sctx, struct si_shad
 
 /* Compute the key for the hw shader variant */
 static inline void si_shader_selector_key(struct pipe_context *ctx, struct si_shader_selector *sel,
-                                          union si_vgt_stages_key stages_key,
                                           struct si_shader_key *key)
 {
    struct si_context *sctx = (struct si_context *)ctx;
 
-   memset(key, 0, sizeof(*key));
+   memset(&key->part, 0, sizeof(key->part));
+   memset(&key->mono, 0, sizeof(key->mono));
+   memset(&key->opt, 0, sizeof(key->opt));
 
    unsigned num_inlinable_uniforms = sel->info.base.num_inlinable_uniforms;
    if (num_inlinable_uniforms &&
@@ -1899,15 +1886,8 @@ static inline void si_shader_selector_key(struct pipe_context *ctx, struct si_sh
    case MESA_SHADER_VERTEX:
       si_shader_selector_key_vs(sctx, sel, key, &key->part.vs.prolog);
 
-      if (sctx->shader.tes.cso)
-         key->as_ls = 1;
-      else if (sctx->shader.gs.cso) {
-         key->as_es = 1;
-         key->as_ngg = stages_key.u.ngg;
-      } else {
-         key->as_ngg = stages_key.u.ngg;
+      if (!sctx->shader.tes.cso && !sctx->shader.gs.cso)
          si_shader_selector_key_hw_vs(sctx, sel, key);
-      }
       break;
    case MESA_SHADER_TESS_CTRL:
       if (sctx->chip_class >= GFX9) {
@@ -1940,13 +1920,8 @@ static inline void si_shader_selector_key(struct pipe_context *ctx, struct si_sh
          key->mono.u.ff_tcs_inputs_to_copy = sctx->shader.vs.cso->outputs_written;
       break;
    case MESA_SHADER_TESS_EVAL:
-      key->as_ngg = stages_key.u.ngg;
-
-      if (sctx->shader.gs.cso)
-         key->as_es = 1;
-      else {
+      if (!sctx->shader.gs.cso)
          si_shader_selector_key_hw_vs(sctx, sel, key);
-      }
       break;
    case MESA_SHADER_GEOMETRY:
       if (sctx->chip_class >= GFX9) {
@@ -1957,10 +1932,8 @@ static inline void si_shader_selector_key(struct pipe_context *ctx, struct si_sh
             key->part.gs.es = sctx->shader.vs.cso;
          }
 
-         key->as_ngg = stages_key.u.ngg;
-
          /* Only NGG can eliminate GS outputs, because the code is shared with VS. */
-         if (stages_key.u.ngg)
+         if (sctx->ngg)
             si_shader_selector_key_hw_vs(sctx, sel, key);
 
          /* This enables jumping over the VS prolog for GS-only waves. */
@@ -2080,7 +2053,7 @@ static inline void si_shader_selector_key(struct pipe_context *ctx, struct si_sh
             key->mono.u.ps.interpolate_at_sample_force_center = 1;
       }
 
-      key->part.ps.epilog.alpha_func = si_get_alpha_test_func(sctx);
+      key->part.ps.epilog.alpha_func = sctx->queued.named.dsa->alpha_func;
 
       /* ps_uses_fbfetch is true only if the color buffer is bound. */
       if (sctx->ps_uses_fbfetch && !sctx->blitter_running) {
@@ -2438,14 +2411,12 @@ current_not_ready:
 }
 
 static int si_shader_select(struct pipe_context *ctx, struct si_shader_ctx_state *state,
-                            union si_vgt_stages_key stages_key,
                             struct si_compiler_ctx_state *compiler_state)
 {
    struct si_context *sctx = (struct si_context *)ctx;
-   struct si_shader_key key;
 
-   si_shader_selector_key(ctx, state->cso, stages_key, &key);
-   return si_shader_select_with_key(sctx->screen, state, compiler_state, &key, -1, false);
+   si_shader_selector_key(ctx, state->cso, &state->key);
+   return si_shader_select_with_key(sctx->screen, state, compiler_state, &state->key, -1, false);
 }
 
 static void si_parse_next_shader_property(const struct si_shader_info *info, bool streamout,
@@ -3380,15 +3351,10 @@ static unsigned si_get_ps_input_cntl(struct si_context *sctx, struct si_shader *
          /* The input is loaded from parameter memory. */
          ps_input_cntl |= S_028644_OFFSET(offset);
       } else if (!G_028644_PT_SPRITE_TEX(ps_input_cntl)) {
-         if (offset == AC_EXP_PARAM_UNDEFINED) {
-            /* This can happen with depth-only rendering. */
-            offset = 0;
-         } else {
-            /* The input is a DEFAULT_VAL constant. */
-            assert(offset >= AC_EXP_PARAM_DEFAULT_VAL_0000 &&
-                   offset <= AC_EXP_PARAM_DEFAULT_VAL_1111);
-            offset -= AC_EXP_PARAM_DEFAULT_VAL_0000;
-         }
+         /* The input is a DEFAULT_VAL constant. */
+         assert(offset >= AC_EXP_PARAM_DEFAULT_VAL_0000 &&
+                offset <= AC_EXP_PARAM_DEFAULT_VAL_1111);
+         offset -= AC_EXP_PARAM_DEFAULT_VAL_0000;
 
          ps_input_cntl = S_028644_OFFSET(0x20) | S_028644_DEFAULT_VAL(offset);
       }
@@ -3995,8 +3961,26 @@ static struct si_pm4_state *si_build_vgt_shader_config(struct si_screen *screen,
    return pm4;
 }
 
-static void si_update_vgt_shader_config(struct si_context *sctx, union si_vgt_stages_key key)
+static void si_update_vgt_shader_config(struct si_context *sctx)
 {
+   union si_vgt_stages_key key;
+   key.index = 0;
+
+   if (sctx->shader.tes.cso)
+      key.u.tess = 1;
+   if (sctx->shader.gs.cso)
+      key.u.gs = 1;
+
+   if (sctx->ngg) {
+      struct si_shader *vs = si_get_vs(sctx)->current;
+
+      key.u.ngg = 1;
+      key.u.streamout = !!si_get_vs(sctx)->cso->so.num_outputs;
+      /* These must be done after the shader variant is selected. */
+      key.u.ngg_passthrough = gfx10_is_ngg_passthrough(vs);
+      key.u.ngg_gs_fast_launch = !!(vs->key.opt.ngg_culling & SI_NGG_CULL_GS_FAST_LAUNCH_ALL);
+   }
+
    struct si_pm4_state **pm4 = &sctx->vgt_shader_config[key.index];
 
    if (unlikely(!*pm4))
@@ -4012,7 +3996,6 @@ bool si_update_shaders(struct si_context *sctx)
    struct si_shader *old_vs = si_get_vs(sctx)->current;
    unsigned old_kill_clip_distances = old_vs ? old_vs->key.opt.kill_clip_distances : 0;
    struct si_shader *old_ps = sctx->shader.ps.current;
-   union si_vgt_stages_key key;
    unsigned old_spi_shader_col_format =
       old_ps ? old_ps->key.part.ps.epilog.spi_shader_col_format : 0;
    int r;
@@ -4024,18 +4007,6 @@ bool si_update_shaders(struct si_context *sctx)
    compiler_state.debug = sctx->debug;
    compiler_state.is_debug_context = sctx->is_debug;
 
-   key.index = 0;
-
-   if (sctx->shader.tes.cso)
-      key.u.tess = 1;
-   if (sctx->shader.gs.cso)
-      key.u.gs = 1;
-
-   if (sctx->ngg) {
-      key.u.ngg = 1;
-      key.u.streamout = !!si_get_vs(sctx)->cso->so.num_outputs;
-   }
-
    /* Update TCS and TES. */
    if (sctx->shader.tes.cso) {
       if (!sctx->tess_rings) {
@@ -4045,7 +4016,7 @@ bool si_update_shaders(struct si_context *sctx)
       }
 
       if (sctx->shader.tcs.cso) {
-         r = si_shader_select(ctx, &sctx->shader.tcs, key, &compiler_state);
+         r = si_shader_select(ctx, &sctx->shader.tcs, &compiler_state);
          if (r)
             return false;
          si_pm4_bind_state(sctx, hs, sctx->shader.tcs.current->pm4);
@@ -4056,14 +4027,14 @@ bool si_update_shaders(struct si_context *sctx)
                return false;
          }
 
-         r = si_shader_select(ctx, &sctx->fixed_func_tcs_shader, key, &compiler_state);
+         r = si_shader_select(ctx, &sctx->fixed_func_tcs_shader, &compiler_state);
          if (r)
             return false;
          si_pm4_bind_state(sctx, hs, sctx->fixed_func_tcs_shader.current->pm4);
       }
 
       if (!sctx->shader.gs.cso || sctx->chip_class <= GFX8) {
-         r = si_shader_select(ctx, &sctx->shader.tes, key, &compiler_state);
+         r = si_shader_select(ctx, &sctx->shader.tes, &compiler_state);
          if (r)
             return false;
 
@@ -4071,7 +4042,7 @@ bool si_update_shaders(struct si_context *sctx)
             /* TES as ES */
             assert(sctx->chip_class <= GFX8);
             si_pm4_bind_state(sctx, es, sctx->shader.tes.current->pm4);
-         } else if (key.u.ngg) {
+         } else if (sctx->ngg) {
             si_pm4_bind_state(sctx, gs, sctx->shader.tes.current->pm4);
          } else {
             si_pm4_bind_state(sctx, vs, sctx->shader.tes.current->pm4);
@@ -4085,11 +4056,11 @@ bool si_update_shaders(struct si_context *sctx)
 
    /* Update GS. */
    if (sctx->shader.gs.cso) {
-      r = si_shader_select(ctx, &sctx->shader.gs, key, &compiler_state);
+      r = si_shader_select(ctx, &sctx->shader.gs, &compiler_state);
       if (r)
          return false;
       si_pm4_bind_state(sctx, gs, sctx->shader.gs.current->pm4);
-      if (!key.u.ngg) {
+      if (!sctx->ngg) {
          si_pm4_bind_state(sctx, vs, sctx->shader.gs.cso->gs_copy_shader->pm4);
 
          if (!si_update_gs_ring_buffers(sctx))
@@ -4098,7 +4069,7 @@ bool si_update_shaders(struct si_context *sctx)
          si_pm4_bind_state(sctx, vs, NULL);
       }
    } else {
-      if (!key.u.ngg) {
+      if (!sctx->ngg) {
          si_pm4_bind_state(sctx, gs, NULL);
          if (sctx->chip_class <= GFX8)
             si_pm4_bind_state(sctx, es, NULL);
@@ -4106,13 +4077,13 @@ bool si_update_shaders(struct si_context *sctx)
    }
 
    /* Update VS. */
-   if ((!key.u.tess && !key.u.gs) || sctx->chip_class <= GFX8) {
-      r = si_shader_select(ctx, &sctx->shader.vs, key, &compiler_state);
+   if ((!sctx->shader.tes.cso && !sctx->shader.gs.cso) || sctx->chip_class <= GFX8) {
+      r = si_shader_select(ctx, &sctx->shader.vs, &compiler_state);
       if (r)
          return false;
 
-      if (!key.u.tess && !key.u.gs) {
-         if (key.u.ngg) {
+      if (!sctx->shader.tes.cso && !sctx->shader.gs.cso) {
+         if (sctx->ngg) {
             si_pm4_bind_state(sctx, gs, sctx->shader.vs.current->pm4);
             si_pm4_bind_state(sctx, vs, NULL);
          } else {
@@ -4126,20 +4097,12 @@ bool si_update_shaders(struct si_context *sctx)
       }
    }
 
-   /* This must be done after the shader variant is selected. */
-   if (sctx->ngg) {
-      struct si_shader *vs = si_get_vs(sctx)->current;
-
-      key.u.ngg_passthrough = gfx10_is_ngg_passthrough(vs);
-      key.u.ngg_gs_fast_launch = !!(vs->key.opt.ngg_culling & SI_NGG_CULL_GS_FAST_LAUNCH_ALL);
-   }
-
    sctx->vs_uses_base_instance =
       sctx->shader.vs.current ? sctx->shader.vs.current->uses_base_instance :
       sctx->queued.named.hs ? sctx->queued.named.hs->shader->uses_base_instance :
       sctx->shader.gs.current->uses_base_instance;
 
-   si_update_vgt_shader_config(sctx, key);
+   si_update_vgt_shader_config(sctx);
 
    if (old_kill_clip_distances != si_get_vs(sctx)->current->key.opt.kill_clip_distances)
       si_mark_atom_dirty(sctx, &sctx->atoms.s.clip_regs);
@@ -4147,16 +4110,16 @@ bool si_update_shaders(struct si_context *sctx)
    if (sctx->shader.ps.cso) {
       unsigned db_shader_control;
 
-      r = si_shader_select(ctx, &sctx->shader.ps, key, &compiler_state);
+      r = si_shader_select(ctx, &sctx->shader.ps, &compiler_state);
       if (r)
          return false;
       si_pm4_bind_state(sctx, ps, sctx->shader.ps.current->pm4);
 
       db_shader_control = sctx->shader.ps.cso->db_shader_control |
-                          S_02880C_KILL_ENABLE(si_get_alpha_test_func(sctx) != PIPE_FUNC_ALWAYS);
+                          S_02880C_KILL_ENABLE(sctx->queued.named.dsa->alpha_func != PIPE_FUNC_ALWAYS);
 
       if (si_pm4_state_changed(sctx, ps) || si_pm4_state_changed(sctx, vs) ||
-          (key.u.ngg && si_pm4_state_changed(sctx, gs)) ||
+          (sctx->ngg && si_pm4_state_changed(sctx, gs)) ||
           sctx->sprite_coord_enable != rs->sprite_coord_enable ||
           sctx->flatshade != rs->flatshade) {
          sctx->sprite_coord_enable = rs->sprite_coord_enable;

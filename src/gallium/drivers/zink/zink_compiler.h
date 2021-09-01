@@ -68,6 +68,7 @@ zink_tgsi_to_nir(struct pipe_screen *screen, const struct tgsi_token *tokens);
 
 struct zink_shader {
    struct util_live_shader base;
+   uint32_t hash;
    struct nir_shader *nir;
 
    struct zink_so_info streamout;
@@ -89,6 +90,7 @@ struct zink_shader {
    union {
       struct zink_shader *generated; // a generated shader that this shader "owns"
       bool is_generated; // if this is a driver-created shader (e.g., tcs)
+      nir_variable *fbfetch; //for fs output
    };
 };
 

@@ -117,6 +117,8 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    ms_state.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
    ms_state.rasterizationSamples = state->rast_samples + 1;
    ms_state.alphaToCoverageEnable = state->blend_state->alpha_to_coverage;
+   if (state->blend_state->alpha_to_one && !screen->info.feats.features.alphaToOne)
+      warn_missing_feature("alphaToOne");
    ms_state.alphaToOneEnable = state->blend_state->alpha_to_one;
    ms_state.pSampleMask = state->sample_mask ? &state->sample_mask : NULL;
    if (hw_rast_state->force_persample_interp) {
@@ -187,7 +189,6 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK;
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_STENCIL_OP_EXT;
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT;
-      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE_EXT;
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_FRONT_FACE_EXT;
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY_EXT;
       if (state->sample_locations_enabled)
@@ -196,9 +197,10 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VIEWPORT;
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_SCISSOR;
    }
-   if (screen->info.have_EXT_vertex_input_dynamic_state) {
+   if (screen->info.have_EXT_vertex_input_dynamic_state)
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VERTEX_INPUT_EXT;
-   }
+   else if (screen->info.have_EXT_extended_dynamic_state)
+      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE_EXT;
    if (screen->info.have_EXT_extended_dynamic_state2)
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE_EXT;
 

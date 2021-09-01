@@ -292,8 +292,7 @@ struct si_resource {
    struct pb_buffer *buf;
    uint64_t gpu_address;
    /* Memory usage if the buffer placement is optimal. */
-   uint32_t vram_usage_kb;
-   uint32_t gart_usage_kb;
+   uint32_t memory_usage_kb;
 
    /* Resource properties. */
    uint64_t bo_size;
@@ -527,6 +526,7 @@ struct si_screen {
                                    uint32_t *fmask_state);
 
    unsigned num_vbos_in_user_sgprs;
+   unsigned max_memory_usage_kb;
    unsigned pa_sc_raster_config;
    unsigned pa_sc_raster_config_1;
    unsigned se_tile_repeat;
@@ -804,6 +804,8 @@ struct si_streamout {
 struct si_shader_ctx_state {
    struct si_shader_selector *cso;
    struct si_shader *current;
+   /* The shader variant key representing the current state. */
+   struct si_shader_key key;
 };
 
 #define SI_NUM_VGT_PARAM_KEY_BITS 12
@@ -986,8 +988,7 @@ struct si_context {
    unsigned last_num_draw_calls;
    unsigned flags; /* flush flags */
    /* Current unaccounted memory usage. */
-   uint32_t vram_kb;
-   uint32_t gtt_kb;
+   uint32_t memory_usage_kb;
 
    /* NGG streamout. */
    struct pb_buffer *gds;
@@ -1139,7 +1140,6 @@ struct si_context {
    /* Emitted draw state. */
    bool gs_tri_strip_adj_fix : 1;
    bool ls_vgpr_fix : 1;
-   bool prim_discard_cs_instancing : 1;
    bool ngg : 1;
    bool same_patch_vertices : 1;
    uint8_t ngg_culling;
@@ -1457,6 +1457,7 @@ void si_init_debug_functions(struct si_context *sctx);
 void si_check_vm_faults(struct si_context *sctx, struct radeon_saved_cs *saved,
                         enum ring_type ring);
 bool si_replace_shader(unsigned num, struct si_shader_binary *binary);
+void si_print_current_ib(struct si_context *sctx, FILE *f);
 
 /* si_fence.c */
 void si_cp_release_mem(struct si_context *ctx, struct radeon_cmdbuf *cs, unsigned event,
@@ -1479,7 +1480,6 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags, struct pipe_fence_h
 void si_allocate_gds(struct si_context *ctx);
 void si_set_tracked_regs_to_clear_state(struct si_context *ctx);
 void si_begin_new_gfx_cs(struct si_context *ctx, bool first_cs);
-void si_need_gfx_cs_space(struct si_context *ctx, unsigned num_draws);
 void si_trace_emit(struct si_context *sctx);
 void si_prim_discard_signal_next_compute_ib_start(struct si_context *sctx);
 void si_emit_surface_sync(struct si_context *sctx, struct radeon_cmdbuf *cs,
@@ -1695,8 +1695,7 @@ static inline void si_context_add_resource_size(struct si_context *sctx, struct 
 {
    if (r) {
       /* Add memory usage for need_gfx_cs_space */
-      sctx->vram_kb += si_resource(r)->vram_usage_kb;
-      sctx->gtt_kb += si_resource(r)->gart_usage_kb;
+      sctx->memory_usage_kb += si_resource(r)->memory_usage_kb;
    }
 }
 
@@ -1925,17 +1924,27 @@ static inline bool util_rast_prim_is_triangles(unsigned prim)
  * \param gtt       GTT memory size not added to the buffer list yet
  */
 static inline bool radeon_cs_memory_below_limit(struct si_screen *screen, struct radeon_cmdbuf *cs,
-                                                uint32_t vram_kb, uint32_t gtt_kb)
+                                                uint32_t kb)
 {
-   vram_kb += cs->used_vram_kb;
-   gtt_kb += cs->used_gart_kb;
+   return kb + cs->used_vram_kb + cs->used_gart_kb < screen->max_memory_usage_kb;
+}
 
-   /* Anything that goes above the VRAM size should go to GTT. */
-   if (vram_kb > screen->info.vram_size_kb)
-      gtt_kb += vram_kb - screen->info.vram_size_kb;
+static inline void si_need_gfx_cs_space(struct si_context *ctx, unsigned num_draws)
+{
+   struct radeon_cmdbuf *cs = &ctx->gfx_cs;
 
-   /* Now we just need to check if we have enough GTT (the limit is 75% of max). */
-   return gtt_kb < screen->info.gart_size_kb / 4 * 3;
+   /* There are two memory usage counters in the winsys for all buffers
+    * that have been added (cs_add_buffer) and one counter in the pipe
+    * driver for those that haven't been added yet.
+    */
+   uint32_t kb = ctx->memory_usage_kb;
+   ctx->memory_usage_kb = 0;
+
+   if (radeon_cs_memory_below_limit(ctx->screen, &ctx->gfx_cs, kb) &&
+       ctx->ws->cs_check_space(cs, si_get_minimum_num_gfx_cs_dwords(ctx, num_draws), false))
+      return;
+
+   si_flush_gfx_cs(ctx, RADEON_FLUSH_ASYNC_START_NEXT_GFX_IB_NOW, NULL);
 }
 
 /**
@@ -1979,8 +1988,7 @@ static inline void radeon_add_to_gfx_buffer_list_check_mem(struct si_context *sc
                                                            bool check_mem)
 {
    if (check_mem &&
-       !radeon_cs_memory_below_limit(sctx->screen, &sctx->gfx_cs, sctx->vram_kb + bo->vram_usage_kb,
-                                     sctx->gtt_kb + bo->gart_usage_kb))
+       !radeon_cs_memory_below_limit(sctx->screen, &sctx->gfx_cs, sctx->memory_usage_kb + bo->memory_usage_kb))
       si_flush_gfx_cs(sctx, RADEON_FLUSH_ASYNC_START_NEXT_GFX_IB_NOW, NULL);
 
    radeon_add_to_buffer_list(sctx, &sctx->gfx_cs, bo, usage, priority);
@@ -2032,14 +2040,6 @@ static inline void si_select_draw_vbo(struct si_context *sctx)
       sctx->real_draw_vbo = draw_vbo;
    else
       sctx->b.draw_vbo = draw_vbo;
-
-   if (!has_prim_discard_cs) {
-      /* Reset this to false if prim discard CS is disabled because draw_vbo doesn't reset it. */
-      if (sctx->prim_discard_cs_instancing) {
-         sctx->do_update_shaders = true;
-         sctx->prim_discard_cs_instancing = false;
-      }
-   }
 }
 
 /* Return the number of samples that the rasterizer uses. */

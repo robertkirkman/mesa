@@ -42,6 +42,7 @@ zink_create_vertex_elements_state(struct pipe_context *pctx,
    struct zink_vertex_elements_state *ves = CALLOC_STRUCT(zink_vertex_elements_state);
    if (!ves)
       return NULL;
+   ves->hw_state.hash = _mesa_hash_pointer(ves);
 
    int buffer_map[PIPE_MAX_ATTRIBS];
    for (int i = 0; i < ARRAY_SIZE(buffer_map); ++i)
@@ -119,7 +120,7 @@ zink_bind_vertex_elements_state(struct pipe_context *pctx,
    ctx->element_state = cso;
    if (cso) {
       if (state->element_state != &ctx->element_state->hw_state) {
-         ctx->vertex_state_changed = true;
+         ctx->vertex_state_changed = !zink_screen(pctx->screen)->info.have_EXT_vertex_input_dynamic_state;
          ctx->vertex_buffers_dirty = ctx->element_state->hw_state.num_bindings > 0;
       }
       state->element_state = &ctx->element_state->hw_state;
