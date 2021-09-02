@@ -60,6 +60,10 @@ typedef struct
 
    uint64_t inputs_needed_by_pos;
    uint64_t inputs_needed_by_others;
+   uint32_t instance_rate_inputs;
+
+   nir_instr *compact_arg_stores[4];
+   nir_intrinsic_instr *overwrite_args;
 } lower_ngg_nogs_state;
 
 typedef struct
@@ -96,11 +100,6 @@ typedef struct {
 typedef struct {
    nir_variable *pos_value_replacement;
 } remove_extra_position_output_state;
-
-typedef struct {
-   nir_ssa_def *reduction_result;
-   nir_ssa_def *excl_scan_result;
-} wg_scan_result;
 
 /* Per-vertex LDS layout of culling shaders */
 enum {
@@ -531,6 +530,105 @@ remove_extra_pos_outputs(nir_shader *shader, lower_ngg_nogs_state *nogs_state)
                                 nir_metadata_block_index | nir_metadata_dominance, &s);
 }
 
+static bool
+remove_compacted_arg(lower_ngg_nogs_state *state, nir_builder *b, unsigned idx)
+{
+   nir_instr *store_instr = state->compact_arg_stores[idx];
+   if (!store_instr)
+      return false;
+
+   /* Simply remove the store. */
+   nir_instr_remove(store_instr);
+
+   /* Find the intrinsic that overwrites the shader arguments,
+    * and change its corresponding source.
+    * This will cause NIR's DCE to recognize the load and its phis as dead.
+    */
+   b->cursor = nir_before_instr(&state->overwrite_args->instr);
+   nir_ssa_def *undef_arg = nir_ssa_undef(b, 1, 32);
+   nir_ssa_def_rewrite_uses(state->overwrite_args->src[idx].ssa, undef_arg);
+
+   state->compact_arg_stores[idx] = NULL;
+   return true;
+}
+
+static bool
+cleanup_culling_shader_after_dce(nir_shader *shader,
+                                 nir_function_impl *function_impl,
+                                 lower_ngg_nogs_state *state)
+{
+   bool uses_vs_vertex_id = false;
+   bool uses_vs_instance_id = false;
+   bool uses_tes_u = false;
+   bool uses_tes_v = false;
+   bool uses_tes_rel_patch_id = false;
+   bool uses_tes_patch_id = false;
+
+   bool progress = false;
+   nir_builder b;
+   nir_builder_init(&b, function_impl);
+
+   nir_foreach_block_reverse_safe(block, function_impl) {
+      nir_foreach_instr_reverse_safe(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+
+         nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
+
+         switch (intrin->intrinsic) {
+         case nir_intrinsic_alloc_vertices_and_primitives_amd:
+            goto cleanup_culling_shader_after_dce_done;
+         case nir_intrinsic_load_vertex_id:
+         case nir_intrinsic_load_vertex_id_zero_base:
+            uses_vs_vertex_id = true;
+            break;
+         case nir_intrinsic_load_instance_id:
+            uses_vs_instance_id = true;
+            break;
+         case nir_intrinsic_load_input:
+            if (state->instance_rate_inputs &
+                (1 << (nir_intrinsic_base(intrin) - VERT_ATTRIB_GENERIC0)))
+               uses_vs_instance_id = true;
+            else
+               uses_vs_vertex_id = true;
+            break;
+         case nir_intrinsic_load_tess_coord:
+            uses_tes_u = uses_tes_v = true;
+            break;
+         case nir_intrinsic_load_tess_rel_patch_id_amd:
+            uses_tes_rel_patch_id = true;
+            break;
+         case nir_intrinsic_load_primitive_id:
+            if (shader->info.stage == MESA_SHADER_TESS_EVAL)
+               uses_tes_patch_id = true;
+            break;
+         default:
+            break;
+         }
+      }
+   }
+
+   cleanup_culling_shader_after_dce_done:
+
+   if (shader->info.stage == MESA_SHADER_VERTEX) {
+      if (!uses_vs_vertex_id)
+         progress |= remove_compacted_arg(state, &b, 0);
+      if (!uses_vs_instance_id)
+         progress |= remove_compacted_arg(state, &b, 1);
+   } else if (shader->info.stage == MESA_SHADER_TESS_EVAL) {
+      if (!uses_tes_u)
+         progress |= remove_compacted_arg(state, &b, 0);
+      if (!uses_tes_v)
+         progress |= remove_compacted_arg(state, &b, 1);
+      if (!uses_tes_rel_patch_id)
+         progress |= remove_compacted_arg(state, &b, 2);
+      if (!uses_tes_patch_id)
+         progress |= remove_compacted_arg(state, &b, 3);
+   }
+
+   return progress;
+}
+
 /**
  * Perform vertex compaction after culling.
  *
@@ -547,6 +645,9 @@ compact_vertices_after_culling(nir_builder *b,
                                nir_variable **gs_vtxaddr_vars,
                                nir_ssa_def *invocation_index,
                                nir_ssa_def *es_vertex_lds_addr,
+                               nir_ssa_def *es_exporter_tid,
+                               nir_ssa_def *num_live_vertices_in_workgroup,
+                               nir_ssa_def *fully_culled,
                                unsigned ngg_scratch_lds_base_addr,
                                unsigned pervertex_lds_bytes,
                                unsigned max_exported_args)
@@ -556,15 +657,7 @@ compact_vertices_after_culling(nir_builder *b,
    nir_variable *position_value_var = nogs_state->position_value_var;
    nir_variable *prim_exp_arg_var = nogs_state->prim_exp_arg_var;
 
-   nir_ssa_def *es_accepted = nir_load_var(b, es_accepted_var);
-
-   /* Repack the vertices that survived the culling. */
-   wg_repack_result rep = repack_invocations_in_workgroup(b, es_accepted, ngg_scratch_lds_base_addr,
-                                                          nogs_state->max_num_waves, nogs_state->wave_size);
-   nir_ssa_def *num_live_vertices_in_workgroup = rep.num_repacked_invocations;
-   nir_ssa_def *es_exporter_tid = rep.repacked_invocation_index;
-
-   nir_if *if_es_accepted = nir_push_if(b, es_accepted);
+   nir_if *if_es_accepted = nir_push_if(b, nir_load_var(b, es_accepted_var));
    {
       nir_ssa_def *exporter_addr = pervertex_lds_addr(b, es_exporter_tid, pervertex_lds_bytes);
 
@@ -578,24 +671,12 @@ compact_vertices_after_culling(nir_builder *b,
       /* Store the current thread's repackable arguments to the exporter thread's LDS space */
       for (unsigned i = 0; i < max_exported_args; ++i) {
          nir_ssa_def *arg_val = nir_load_var(b, repacked_arg_vars[i]);
-         nir_build_store_shared(b, arg_val, exporter_addr, .base = lds_es_arg_0 + 4u * i, .align_mul = 4u, .write_mask = 0x1u);
+         nir_intrinsic_instr *store = nir_build_store_shared(b, arg_val, exporter_addr, .base = lds_es_arg_0 + 4u * i, .align_mul = 4u, .write_mask = 0x1u);
+
+         nogs_state->compact_arg_stores[i] = &store->instr;
       }
    }
    nir_pop_if(b, if_es_accepted);
-
-   /* If all vertices are culled, set primitive count to 0 as well. */
-   nir_ssa_def *num_exported_prims = nir_build_load_workgroup_num_input_primitives_amd(b);
-   nir_ssa_def *fully_culled = nir_ieq_imm(b, num_live_vertices_in_workgroup, 0u);
-   num_exported_prims = nir_bcsel(b, fully_culled, nir_imm_int(b, 0u), num_exported_prims);
-
-   nir_if *if_wave_0 = nir_push_if(b, nir_ieq(b, nir_build_load_subgroup_id(b), nir_imm_int(b, 0)));
-   {
-      /* Tell the final vertex and primitive count to the HW.
-       * We do this here to mask some of the latency of the LDS.
-       */
-      nir_build_alloc_vertices_and_primitives_amd(b, num_live_vertices_in_workgroup, num_exported_prims);
-   }
-   nir_pop_if(b, if_wave_0);
 
    /* TODO: Consider adding a shortcut exit.
     * Waves that have no vertices and primitives left can s_endpgm right here.
@@ -845,8 +926,7 @@ apply_reusable_variables(nir_builder *b, lower_ngg_nogs_state *nogs_state)
          /* When we found any of these intrinsics, it means
           * we reached the top part and we must stop.
           */
-         if (intrin->intrinsic == nir_intrinsic_alloc_vertices_and_primitives_amd ||
-             intrin->intrinsic == nir_intrinsic_export_primitive_amd)
+         if (intrin->intrinsic == nir_intrinsic_alloc_vertices_and_primitives_amd)
             goto done;
 
          if (intrin->intrinsic != nir_intrinsic_store_deref)
@@ -1044,10 +1124,31 @@ add_deferred_attribute_culling(nir_builder *b, nir_cf_list *original_extracted_c
       }
       nir_pop_if(b, if_es_thread);
 
+      nir_ssa_def *es_accepted = nir_load_var(b, es_accepted_var);
+
+      /* Repack the vertices that survived the culling. */
+      wg_repack_result rep = repack_invocations_in_workgroup(b, es_accepted, ngg_scratch_lds_base_addr,
+                                                            nogs_state->max_num_waves, nogs_state->wave_size);
+      nir_ssa_def *num_live_vertices_in_workgroup = rep.num_repacked_invocations;
+      nir_ssa_def *es_exporter_tid = rep.repacked_invocation_index;
+
+      /* If all vertices are culled, set primitive count to 0 as well. */
+      nir_ssa_def *num_exported_prims = nir_build_load_workgroup_num_input_primitives_amd(b);
+      nir_ssa_def *fully_culled = nir_ieq_imm(b, num_live_vertices_in_workgroup, 0u);
+      num_exported_prims = nir_bcsel(b, fully_culled, nir_imm_int(b, 0u), num_exported_prims);
+
+      nir_if *if_wave_0 = nir_push_if(b, nir_ieq(b, nir_build_load_subgroup_id(b), nir_imm_int(b, 0)));
+      {
+         /* Tell the final vertex and primitive count to the HW. */
+         nir_build_alloc_vertices_and_primitives_amd(b, num_live_vertices_in_workgroup, num_exported_prims);
+      }
+      nir_pop_if(b, if_wave_0);
+
       /* Vertex compaction. */
       compact_vertices_after_culling(b, nogs_state,
                                      repacked_arg_vars, gs_vtxaddr_vars,
                                      invocation_index, es_vertex_lds_addr,
+                                     es_exporter_tid, num_live_vertices_in_workgroup, fully_culled,
                                      ngg_scratch_lds_base_addr, pervertex_lds_bytes, max_exported_args);
    }
    nir_push_else(b, if_cull_en);
@@ -1082,12 +1183,14 @@ add_deferred_attribute_culling(nir_builder *b, nir_cf_list *original_extracted_c
     */
 
    if (b->shader->info.stage == MESA_SHADER_VERTEX)
-      nir_build_overwrite_vs_arguments_amd(b,
-         nir_load_var(b, repacked_arg_vars[0]), nir_load_var(b, repacked_arg_vars[1]));
+      nogs_state->overwrite_args =
+         nir_build_overwrite_vs_arguments_amd(b,
+            nir_load_var(b, repacked_arg_vars[0]), nir_load_var(b, repacked_arg_vars[1]));
    else if (b->shader->info.stage == MESA_SHADER_TESS_EVAL)
-      nir_build_overwrite_tes_arguments_amd(b,
-         nir_load_var(b, repacked_arg_vars[0]), nir_load_var(b, repacked_arg_vars[1]),
-         nir_load_var(b, repacked_arg_vars[2]), nir_load_var(b, repacked_arg_vars[3]));
+      nogs_state->overwrite_args =
+         nir_build_overwrite_tes_arguments_amd(b,
+            nir_load_var(b, repacked_arg_vars[0]), nir_load_var(b, repacked_arg_vars[1]),
+            nir_load_var(b, repacked_arg_vars[2]), nir_load_var(b, repacked_arg_vars[3]));
    else
       unreachable("Should be VS or TES.");
 }
@@ -1122,7 +1225,8 @@ ac_nir_lower_ngg_nogs(nir_shader *shader,
                       bool consider_culling,
                       bool consider_passthrough,
                       bool export_prim_id,
-                      bool provoking_vtx_last)
+                      bool provoking_vtx_last,
+                      uint32_t instance_rate_inputs)
 {
    nir_function_impl *impl = nir_shader_get_entrypoint(shader);
    assert(impl);
@@ -1151,6 +1255,7 @@ ac_nir_lower_ngg_nogs(nir_shader *shader,
       .max_num_waves = DIV_ROUND_UP(max_workgroup_size, wave_size),
       .max_es_num_vertices = max_num_es_vertices,
       .wave_size = wave_size,
+      .instance_rate_inputs = instance_rate_inputs,
    };
 
    /* We need LDS space when VS needs to export the primitive ID. */
@@ -1266,6 +1371,9 @@ ac_nir_lower_ngg_nogs(nir_shader *shader,
       NIR_PASS(progress, shader, nir_opt_undef);
       NIR_PASS(progress, shader, nir_opt_dce);
       NIR_PASS(progress, shader, nir_opt_dead_cf);
+
+      if (can_cull)
+         progress |= cleanup_culling_shader_after_dce(shader, b->impl, &state);
    } while (progress);
 
    shader->info.shared_size = state.total_lds_bytes;

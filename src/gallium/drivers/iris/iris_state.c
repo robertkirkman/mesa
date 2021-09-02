@@ -3231,6 +3231,12 @@ iris_set_constant_buffer(struct pipe_context *ctx,
          assert(map);
          memcpy(map, input->user_buffer, input->buffer_size);
       } else if (input->buffer) {
+         if (cbuf->buffer != input->buffer) {
+            ice->state.dirty |= (IRIS_DIRTY_RENDER_MISC_BUFFER_FLUSHES |
+                                 IRIS_DIRTY_COMPUTE_MISC_BUFFER_FLUSHES);
+            shs->dirty_cbufs |= 1u << index;
+         }
+
          if (take_ownership) {
             pipe_resource_reference(&cbuf->buffer, NULL);
             cbuf->buffer = input->buffer;
@@ -3400,6 +3406,8 @@ iris_set_shader_buffers(struct pipe_context *ctx,
       }
    }
 
+   ice->state.dirty |= (IRIS_DIRTY_RENDER_MISC_BUFFER_FLUSHES |
+                        IRIS_DIRTY_COMPUTE_MISC_BUFFER_FLUSHES);
    ice->state.stage_dirty |= IRIS_STAGE_DIRTY_BINDINGS_VS << stage;
 }
 
@@ -3440,6 +3448,10 @@ iris_set_vertex_buffers(struct pipe_context *ctx,
 
       /* We may see user buffers that are NULL bindings. */
       assert(!(buffer->is_user_buffer && buffer->buffer.user != NULL));
+
+      if (buffer->buffer.resource &&
+          state->resource != buffer->buffer.resource)
+         ice->state.dirty |= IRIS_DIRTY_VERTEX_BUFFER_FLUSHES;
 
       if (take_ownership) {
          pipe_resource_reference(&state->resource, NULL);
@@ -5235,7 +5247,7 @@ iris_restore_render_saved_bos(struct iris_context *ice,
    }
 
    iris_use_optional_res(batch, ice->state.last_res.index_buffer, false,
-                         IRIS_DOMAIN_OTHER_READ);
+                         IRIS_DOMAIN_VF_READ);
 
    if (clean & IRIS_DIRTY_VERTEX_BUFFERS) {
       uint64_t bound = ice->state.bound_vertex_buffers;
@@ -5243,7 +5255,7 @@ iris_restore_render_saved_bos(struct iris_context *ice,
          const int i = u_bit_scan64(&bound);
          struct pipe_resource *res = genx->vertex_buffers[i].resource;
          iris_use_pinned_bo(batch, iris_resource_bo(res), false,
-                            IRIS_DOMAIN_OTHER_READ);
+                            IRIS_DOMAIN_VF_READ);
       }
    }
 }
@@ -6401,7 +6413,7 @@ iris_upload_dirty_render_state(struct iris_context *ice,
          while (bound) {
             const int i = u_bit_scan64(&bound);
             iris_use_optional_res(batch, genx->vertex_buffers[i].resource,
-                                  false, IRIS_DOMAIN_OTHER_READ);
+                                  false, IRIS_DOMAIN_VF_READ);
          }
 #else
          /* The VF cache designers cut corners, and made the cache key's
@@ -6423,7 +6435,7 @@ iris_upload_dirty_render_state(struct iris_context *ice,
             struct iris_resource *res =
                (void *) genx->vertex_buffers[i].resource;
             if (res) {
-               iris_use_pinned_bo(batch, res->bo, false, IRIS_DOMAIN_OTHER_READ);
+               iris_use_pinned_bo(batch, res->bo, false, IRIS_DOMAIN_VF_READ);
 
                high_bits = res->bo->address >> 32ull;
                if (high_bits != ice->state.last_vbo_high_bits[i]) {
@@ -6602,6 +6614,18 @@ iris_upload_dirty_render_state(struct iris_context *ice,
 }
 
 static void
+flush_vbos(struct iris_context *ice, struct iris_batch *batch)
+{
+   struct iris_genx_state *genx = ice->state.genx;
+   uint64_t bound = ice->state.bound_vertex_buffers;
+   while (bound) {
+      const int i = u_bit_scan64(&bound);
+      struct iris_bo *bo = iris_resource_bo(genx->vertex_buffers[i].resource);
+      iris_emit_buffer_barrier_for(batch, bo, IRIS_DOMAIN_VF_READ);
+   }
+}
+
+static void
 iris_upload_render_state(struct iris_context *ice,
                          struct iris_batch *batch,
                          const struct pipe_draw_info *draw,
@@ -6610,6 +6634,9 @@ iris_upload_render_state(struct iris_context *ice,
                          const struct pipe_draw_start_count_bias *sc)
 {
    bool use_predicate = ice->state.predicate == IRIS_PREDICATE_STATE_USE_BIT;
+
+   if (ice->state.dirty & IRIS_DIRTY_VERTEX_BUFFER_FLUSHES)
+      flush_vbos(ice, batch);
 
    iris_batch_sync_region_start(batch);
 
@@ -6662,6 +6689,8 @@ iris_upload_render_state(struct iris_context *ice,
          pipe_resource_reference(&ice->state.last_res.index_buffer,
                                  draw->index.resource);
          offset = 0;
+
+         iris_emit_buffer_barrier_for(batch, res->bo, IRIS_DOMAIN_VF_READ);
       }
 
       struct iris_genx_state *genx = ice->state.genx;
@@ -6682,7 +6711,7 @@ iris_upload_render_state(struct iris_context *ice,
       if (memcmp(genx->last_index_buffer, ib_packet, sizeof(ib_packet)) != 0) {
          memcpy(genx->last_index_buffer, ib_packet, sizeof(ib_packet));
          iris_batch_emit(batch, ib_packet, sizeof(ib_packet));
-         iris_use_pinned_bo(batch, bo, false, IRIS_DOMAIN_OTHER_READ);
+         iris_use_pinned_bo(batch, bo, false, IRIS_DOMAIN_VF_READ);
       }
 
 #if GFX_VER < 11
@@ -6713,10 +6742,6 @@ iris_upload_render_state(struct iris_context *ice,
             iris_resource_bo(indirect->indirect_draw_count);
          unsigned draw_count_offset =
             indirect->indirect_draw_count_offset;
-
-         iris_emit_pipe_control_flush(batch,
-                                      "ensure indirect draw buffer is flushed",
-                                      PIPE_CONTROL_FLUSH_ENABLE);
 
          if (ice->state.predicate == IRIS_PREDICATE_STATE_USE_BIT) {
             struct mi_builder b;
@@ -7239,7 +7264,8 @@ iris_rebind_buffer(struct iris_context *ice,
 
          if (*addr != bo->address + state->offset) {
             *addr = bo->address + state->offset;
-            ice->state.dirty |= IRIS_DIRTY_VERTEX_BUFFERS;
+            ice->state.dirty |= IRIS_DIRTY_VERTEX_BUFFERS |
+                                IRIS_DIRTY_VERTEX_BUFFER_FLUSHES;
          }
       }
    }
@@ -7290,6 +7316,9 @@ iris_rebind_buffer(struct iris_context *ice,
 
             if (res->bo == iris_resource_bo(cbuf->buffer)) {
                pipe_resource_reference(&surf_state->res, NULL);
+               shs->dirty_cbufs |= 1u << i;
+               ice->state.dirty |= (IRIS_DIRTY_RENDER_MISC_BUFFER_FLUSHES |
+                                    IRIS_DIRTY_COMPUTE_MISC_BUFFER_FLUSHES);
                ice->state.stage_dirty |= IRIS_STAGE_DIRTY_CONSTANTS_VS << s;
             }
          }
@@ -7362,12 +7391,17 @@ batch_mark_sync_for_pipe_control(struct iris_batch *batch, uint32_t flags)
       if ((flags & PIPE_CONTROL_DEPTH_CACHE_FLUSH))
          iris_batch_mark_flush_sync(batch, IRIS_DOMAIN_DEPTH_WRITE);
 
+      if ((flags & PIPE_CONTROL_DATA_CACHE_FLUSH))
+         iris_batch_mark_flush_sync(batch, IRIS_DOMAIN_DATA_WRITE);
+
       if ((flags & PIPE_CONTROL_FLUSH_ENABLE))
          iris_batch_mark_flush_sync(batch, IRIS_DOMAIN_OTHER_WRITE);
 
       if ((flags & (PIPE_CONTROL_CACHE_FLUSH_BITS |
-                    PIPE_CONTROL_STALL_AT_SCOREBOARD)))
+                    PIPE_CONTROL_STALL_AT_SCOREBOARD))) {
+         iris_batch_mark_flush_sync(batch, IRIS_DOMAIN_VF_READ);
          iris_batch_mark_flush_sync(batch, IRIS_DOMAIN_OTHER_READ);
+      }
    }
 
    if ((flags & PIPE_CONTROL_RENDER_TARGET_FLUSH))
@@ -7376,8 +7410,14 @@ batch_mark_sync_for_pipe_control(struct iris_batch *batch, uint32_t flags)
    if ((flags & PIPE_CONTROL_DEPTH_CACHE_FLUSH))
       iris_batch_mark_invalidate_sync(batch, IRIS_DOMAIN_DEPTH_WRITE);
 
+   if ((flags & PIPE_CONTROL_DATA_CACHE_FLUSH))
+      iris_batch_mark_invalidate_sync(batch, IRIS_DOMAIN_DATA_WRITE);
+
    if ((flags & PIPE_CONTROL_FLUSH_ENABLE))
       iris_batch_mark_invalidate_sync(batch, IRIS_DOMAIN_OTHER_WRITE);
+
+   if ((flags & PIPE_CONTROL_VF_CACHE_INVALIDATE))
+      iris_batch_mark_invalidate_sync(batch, IRIS_DOMAIN_VF_READ);
 
    if ((flags & PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE) &&
        (flags & PIPE_CONTROL_CONST_CACHE_INVALIDATE))

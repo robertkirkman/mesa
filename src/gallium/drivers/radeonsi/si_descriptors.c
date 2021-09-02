@@ -360,7 +360,10 @@ void si_set_mutable_tex_desc_fields(struct si_screen *sscreen, struct si_texture
 
          state[6] |= S_00A018_META_PIPE_ALIGNED(meta.pipe_aligned) |
                      S_00A018_META_DATA_ADDRESS_LO(meta_va >> 8) |
-                     S_00A018_WRITE_COMPRESS_ENABLE((access & SI_IMAGE_ACCESS_DCC_WRITE) != 0);
+                     /* DCC image stores require INDEPENDENT_128B_BLOCKS, which is not set
+                      * with displayable DCC on Navi12-14 due to DCN limitations. */
+                     S_00A018_WRITE_COMPRESS_ENABLE(tex->surface.u.gfx9.color.dcc.independent_128B_blocks &&
+                                                    access & SI_IMAGE_ACCESS_ALLOW_DCC_STORE);
       }
 
       state[7] = meta_va >> 16;
@@ -738,12 +741,15 @@ static void si_set_shader_image_desc(struct si_context *ctx, const struct pipe_i
       bool uses_dcc = vi_dcc_enabled(tex, level);
       unsigned access = view->access;
 
+      if (uses_dcc && screen->always_allow_dcc_stores)
+         access |= SI_IMAGE_ACCESS_ALLOW_DCC_STORE;
+
       assert(!tex->is_depth);
       assert(fmask_desc || tex->surface.fmask_offset == 0);
 
       if (uses_dcc && !skip_decompress &&
           !(access & SI_IMAGE_ACCESS_DCC_OFF) &&
-          ((!(access & SI_IMAGE_ACCESS_DCC_WRITE) && (access & PIPE_IMAGE_ACCESS_WRITE)) ||
+          ((!(access & SI_IMAGE_ACCESS_ALLOW_DCC_STORE) && (access & PIPE_IMAGE_ACCESS_WRITE)) ||
            !vi_dcc_formats_compatible(screen, res->b.b.format, view->format))) {
          /* If DCC can't be disabled, at least decompress it.
           * The decompression is relatively cheap if the surface
@@ -779,7 +785,7 @@ static void si_set_shader_image_desc(struct si_context *ctx, const struct pipe_i
          view->u.tex.first_layer, view->u.tex.last_layer, width, height, depth, desc, fmask_desc);
       si_set_mutable_tex_desc_fields(screen, tex, &tex->surface.u.legacy.level[level], level, level,
                                      util_format_get_blockwidth(view->format),
-                                     false, view->access, desc);
+                                     false, access, desc);
    }
 }
 
@@ -817,10 +823,15 @@ static void si_set_shader_image(struct si_context *ctx, unsigned shader, unsigne
          images->needs_color_decompress_mask &= ~(1 << slot);
       }
 
-      if (tex->surface.display_dcc_offset && view->access & PIPE_IMAGE_ACCESS_WRITE)
+      if (tex->surface.display_dcc_offset && view->access & PIPE_IMAGE_ACCESS_WRITE) {
          images->display_dcc_store_mask |= 1u << slot;
-      else
+
+         /* Set displayable_dcc_dirty for non-compute stages conservatively (before draw calls). */
+         if (shader != PIPE_SHADER_COMPUTE)
+            tex->displayable_dcc_dirty = true;
+      } else {
          images->display_dcc_store_mask &= ~(1u << slot);
+      }
 
       if (vi_dcc_enabled(tex, level) && p_atomic_read(&tex->framebuffers_bound))
          ctx->need_check_render_feedback = true;
