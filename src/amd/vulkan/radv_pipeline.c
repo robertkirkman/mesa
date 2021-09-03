@@ -254,7 +254,7 @@ radv_pipeline_init_scratch(const struct radv_device *device, struct radv_pipelin
 
          max_stage_waves =
             MIN2(max_stage_waves, 4 * device->physical_device->rad_info.num_good_compute_units *
-                                     (256 / pipeline->shaders[i]->config.num_vgprs));
+                 radv_get_max_waves(device, pipeline->shaders[i], i));
          max_waves = MAX2(max_waves, max_stage_waves);
       }
    }
@@ -3224,6 +3224,9 @@ lower_bit_size_callback(const nir_instr *instr, void *_)
       case nir_op_uadd_sat:
          return (bit_size == 8 || !(chip >= GFX8 && nir_dest_is_divergent(alu->dest.dest))) ? 32
                                                                                             : 0;
+      case nir_op_iadd_sat:
+         return bit_size == 8 || !nir_dest_is_divergent(alu->dest.dest) ? 32 : 0;
+
       default:
          return 0;
       }
@@ -3495,9 +3498,7 @@ radv_create_shaders(struct radv_pipeline *pipeline, struct radv_device *device,
          /* lower ALU operations */
          nir_lower_int64(nir[i]);
 
-         /* TODO: Implement nir_op_uadd_sat with LLVM. */
-         if (!radv_use_llvm_for_stage(device, i))
-            nir_opt_idiv_const(nir[i], 8);
+         nir_opt_idiv_const(nir[i], 8);
 
          nir_lower_idiv(nir[i],
                         &(nir_lower_idiv_options){

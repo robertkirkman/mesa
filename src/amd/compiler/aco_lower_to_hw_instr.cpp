@@ -516,11 +516,9 @@ emit_reduction(lower_context* ctx, aco_opcode op, ReduceOp reduce_op, unsigned c
             aco_opcode::v_mov_b32, asSDWA(Format::VOP1), 1, 1)};
          sdwa->operands[0] = Operand(PhysReg{tmp}, v1);
          sdwa->definitions[0] = Definition(PhysReg{tmp}, v1);
-         if (reduce_op == imin8 || reduce_op == imax8)
-            sdwa->sel[0] = sdwa_sbyte;
-         else
-            sdwa->sel[0] = sdwa_ubyte;
-         sdwa->dst_sel = sdwa_udword;
+         bool sext = reduce_op == imin8 || reduce_op == imax8;
+         sdwa->sel[0] = SubdwordSel(1, 0, sext);
+         sdwa->dst_sel = SubdwordSel::dword;
          bld.insert(std::move(sdwa));
       } else {
          aco_opcode opcode;
@@ -541,11 +539,9 @@ emit_reduction(lower_context* ctx, aco_opcode op, ReduceOp reduce_op, unsigned c
             aco_opcode::v_mov_b32, asSDWA(Format::VOP1), 1, 1)};
          sdwa->operands[0] = Operand(PhysReg{tmp}, v1);
          sdwa->definitions[0] = Definition(PhysReg{tmp}, v1);
-         if (reduce_op == imin16 || reduce_op == imax16 || reduce_op == iadd16)
-            sdwa->sel[0] = sdwa_sword;
-         else
-            sdwa->sel[0] = sdwa_uword;
-         sdwa->dst_sel = sdwa_udword;
+         bool sext = reduce_op == imin16 || reduce_op == imax16 || reduce_op == iadd16;
+         sdwa->sel[0] = SubdwordSel(2, 0, sext);
+         sdwa->dst_sel = SubdwordSel::dword;
          bld.insert(std::move(sdwa));
       } else if (ctx->program->chip_class == GFX6 || ctx->program->chip_class == GFX7) {
          aco_opcode opcode;
@@ -1429,7 +1425,9 @@ try_coalesce_copies(lower_context* ctx, std::map<PhysReg, copy_operation>& copy_
    if (copy.op.isConstant()) {
       uint64_t val =
          copy.op.constantValue64() | (other->second.op.constantValue64() << (copy.bytes * 8u));
-      if (!Operand::is_constant_representable(val, copy.bytes + other->second.bytes, true,
+      if (!util_is_power_of_two_or_zero(new_size))
+         return;
+      if (!Operand::is_constant_representable(val, new_size, true,
                                               copy.def.regClass().type() == RegType::vgpr))
          return;
       copy.op = Operand::get_const(ctx->program->chip_class, val, new_size);
@@ -2093,17 +2091,8 @@ lower_to_hw_instr(Program* program)
                               Operand::c32(offset), Operand::c32(bits));
                   }
                } else if (dst.regClass() == v2b) {
-                  aco_ptr<SDWA_instruction> sdwa{create_instruction<SDWA_instruction>(
-                     aco_opcode::v_mov_b32,
-                     (Format)((uint16_t)Format::VOP1 | (uint16_t)Format::SDWA), 1, 1)};
-                  sdwa->operands[0] = Operand(op.physReg().advance(-op.physReg().byte()),
-                                              RegClass::get(op.regClass().type(), 4));
-                  sdwa->definitions[0] = dst;
-                  sdwa->sel[0] = sdwa_ubyte0 + op.physReg().byte() + index;
-                  if (signext)
-                     sdwa->sel[0] |= sdwa_sext;
-                  sdwa->dst_sel = sdwa_uword;
-                  bld.insert(std::move(sdwa));
+                  bld.vop1_sdwa(aco_opcode::v_mov_b32, dst, op).instr->sdwa().sel[0] =
+                     SubdwordSel(1, offset / 8, signext);
                }
                break;
             }
@@ -2138,14 +2127,8 @@ lower_to_hw_instr(Program* program)
                      bld.vop3(aco_opcode::v_bfe_u32, dst, op, Operand::zero(), Operand::c32(bits));
                   } else if (program->chip_class >= GFX9 ||
                              (op.regClass() != s1 && program->chip_class >= GFX8)) {
-                     aco_ptr<SDWA_instruction> sdwa{create_instruction<SDWA_instruction>(
-                        aco_opcode::v_mov_b32,
-                        (Format)((uint16_t)Format::VOP1 | (uint16_t)Format::SDWA), 1, 1)};
-                     sdwa->operands[0] = op;
-                     sdwa->definitions[0] = dst;
-                     sdwa->sel[0] = sdwa_udword;
-                     sdwa->dst_sel = (bits == 8 ? sdwa_ubyte0 : sdwa_uword0) + (offset / bits);
-                     bld.insert(std::move(sdwa));
+                     bld.vop1_sdwa(aco_opcode::v_mov_b32, dst, op).instr->sdwa().dst_sel =
+                        SubdwordSel(bits / 8, offset / 8, false);
                   } else {
                      bld.vop3(aco_opcode::v_bfe_u32, dst, op, Operand::zero(), Operand::c32(bits));
                      bld.vop2(aco_opcode::v_lshlrev_b32, dst, Operand::c32(offset),
@@ -2153,16 +2136,9 @@ lower_to_hw_instr(Program* program)
                   }
                } else {
                   assert(dst.regClass() == v2b);
-                  aco_ptr<SDWA_instruction> sdwa{create_instruction<SDWA_instruction>(
-                     aco_opcode::v_mov_b32,
-                     (Format)((uint16_t)Format::VOP1 | (uint16_t)Format::SDWA), 1, 1)};
-                  sdwa->operands[0] = op;
-                  sdwa->definitions[0] =
-                     Definition(dst.physReg().advance(-dst.physReg().byte()), v1);
-                  sdwa->sel[0] = sdwa_uword;
-                  sdwa->dst_sel = sdwa_ubyte0 + dst.physReg().byte() + index;
-                  sdwa->dst_preserve = 1;
-                  bld.insert(std::move(sdwa));
+                  bld.vop2_sdwa(aco_opcode::v_lshlrev_b32, dst, Operand::c32(offset), op)
+                     .instr->sdwa()
+                     .sel[1] = SubdwordSel::ubyte;
                }
                break;
             }

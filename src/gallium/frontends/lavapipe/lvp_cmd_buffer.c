@@ -257,51 +257,6 @@ VKAPI_ATTR void VKAPI_CALL lvp_TrimCommandPool(
    }
 }
 
-VKAPI_ATTR void VKAPI_CALL lvp_CmdBeginRenderPass2(
-    VkCommandBuffer                             commandBuffer,
-    const VkRenderPassBeginInfo*                pRenderPassBeginInfo,
-    const VkSubpassBeginInfo*                   pSubpassBeginInfo)
-{
-   LVP_FROM_HANDLE(lvp_cmd_buffer, cmd_buffer, commandBuffer);
-   const struct VkRenderPassAttachmentBeginInfo *attachment_info =
-      vk_find_struct_const(pRenderPassBeginInfo->pNext,
-                           RENDER_PASS_ATTACHMENT_BEGIN_INFO);
-
-   struct vk_cmd_queue_entry *cmd = vk_zalloc(cmd_buffer->queue.alloc,
-                                              sizeof(*cmd), 8,
-                                              VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
-   if (!cmd)
-      return;
-
-   cmd->type = VK_CMD_BEGIN_RENDER_PASS2;
-   list_addtail(&cmd->cmd_link, &cmd_buffer->queue.cmds);
-
-   if (pRenderPassBeginInfo) {
-      cmd->u.begin_render_pass2.render_pass_begin = vk_zalloc(cmd_buffer->queue.alloc, sizeof(*cmd->u.begin_render_pass2.render_pass_begin), 8, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
-      memcpy(cmd->u.begin_render_pass2.render_pass_begin, pRenderPassBeginInfo, sizeof(*cmd->u.begin_render_pass2.render_pass_begin));
-      cmd->u.begin_render_pass2.render_pass_begin->pClearValues = vk_zalloc(cmd_buffer->queue.alloc, sizeof(*cmd->u.begin_render_pass2.render_pass_begin->pClearValues) * cmd->u.begin_render_pass2.render_pass_begin->clearValueCount, 8, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
-      memcpy(( VkClearValue*    )cmd->u.begin_render_pass2.render_pass_begin->pClearValues, pRenderPassBeginInfo->pClearValues, sizeof(*cmd->u.begin_render_pass2.render_pass_begin->pClearValues) * cmd->u.begin_render_pass2.render_pass_begin->clearValueCount);
-      if (attachment_info) {
-         VkRenderPassAttachmentBeginInfo *att = malloc(sizeof(VkRenderPassAttachmentBeginInfo) + attachment_info->attachmentCount * sizeof(void*));
-         att->sType = VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO;
-         att->attachmentCount = attachment_info->attachmentCount;
-         /* I hate everything. */
-         att->pAttachments = (void*)((uint8_t*)att + sizeof(VkRenderPassAttachmentBeginInfo));
-         memcpy((void*)att->pAttachments, attachment_info->pAttachments, att->attachmentCount * sizeof(void*));
-         att->pNext = NULL;
-         cmd->u.begin_render_pass2.render_pass_begin->pNext = att;
-      }
-   } else {
-      cmd->u.begin_render_pass2.render_pass_begin = NULL;
-   }
-   if (pSubpassBeginInfo) {
-      cmd->u.begin_render_pass2.subpass_begin_info = vk_zalloc(cmd_buffer->queue.alloc, sizeof(*cmd->u.begin_render_pass2.subpass_begin_info), 8, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
-      memcpy(cmd->u.begin_render_pass2.subpass_begin_info, pSubpassBeginInfo, sizeof(*cmd->u.begin_render_pass2.subpass_begin_info));
-   } else {
-      cmd->u.begin_render_pass2.subpass_begin_info = NULL;
-   }
-}
-
 VKAPI_ATTR void VKAPI_CALL lvp_CmdDrawMultiEXT(
     VkCommandBuffer                             commandBuffer,
     uint32_t                                    drawCount,
@@ -488,34 +443,60 @@ VKAPI_ATTR void VKAPI_CALL lvp_CmdPushDescriptorSetWithTemplateKHR(
    for (unsigned i = 0; i < templ->entry_count; i++) {
       VkDescriptorUpdateTemplateEntry *entry = &templ->entry[i];
 
-      if (entry->descriptorCount > 1) {
-         info_size += entry->stride * entry->descriptorCount;
-      } else {
-         switch (entry->descriptorType) {
-         case VK_DESCRIPTOR_TYPE_SAMPLER:
-         case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-         case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-         case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-         case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
-            info_size += sizeof(VkDescriptorImageInfo);
-            break;
-         case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
-         case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-            info_size += sizeof(VkBufferView);
-            break;
-         case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-         case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-         case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
-         case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
-         default:
-            info_size += sizeof(VkDescriptorBufferInfo);
-            break;
-         }
+      switch (entry->descriptorType) {
+      case VK_DESCRIPTOR_TYPE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+      case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+      case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+         info_size += sizeof(VkDescriptorImageInfo) * entry->descriptorCount;
+         break;
+      case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+      case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+         info_size += sizeof(VkBufferView) * entry->descriptorCount;
+         break;
+      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+      default:
+         info_size += sizeof(VkDescriptorBufferInfo) * entry->descriptorCount;
+         break;
       }
    }
 
    cmd->u.push_descriptor_set_with_template_khr.data = vk_zalloc(cmd_buffer->queue.alloc, info_size, 8, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
-   memcpy(cmd->u.push_descriptor_set_with_template_khr.data, pData, info_size);
+
+   uint64_t offset = 0;
+   for (unsigned i = 0; i < templ->entry_count; i++) {
+      VkDescriptorUpdateTemplateEntry *entry = &templ->entry[i];
+
+      unsigned size = 0;
+      switch (entry->descriptorType) {
+      case VK_DESCRIPTOR_TYPE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+      case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+      case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+         size = sizeof(VkDescriptorImageInfo);
+         break;
+      case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+      case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+         size = sizeof(VkBufferView);
+         break;
+      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+      default:
+         size = sizeof(VkDescriptorBufferInfo);
+         break;
+      }
+      for (unsigned i = 0; i < entry->descriptorCount; i++) {
+         memcpy((uint8_t*)cmd->u.push_descriptor_set_with_template_khr.data + offset, (const uint8_t*)pData + entry->offset + i * entry->stride, size);
+         offset += size;
+      }
+   }
 }
 
 VKAPI_ATTR void VKAPI_CALL lvp_CmdBindDescriptorSets(

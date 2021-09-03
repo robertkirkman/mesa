@@ -2413,8 +2413,8 @@ radv_cmd_buffer_get_vrs_image(struct radv_cmd_buffer *cmd_buffer)
    if (!device->vrs.image) {
       VkResult result;
 
-      /* The global VRS image is created on-demand to avoid wasting space */
-      result = radv_device_init_vrs_image(device);
+      /* The global VRS state is initialized on-demand to avoid wasting VRAM. */
+      result = radv_device_init_vrs_state(device);
       if (result != VK_SUCCESS) {
          cmd_buffer->record_result = result;
          return NULL;
@@ -2483,6 +2483,7 @@ radv_emit_framebuffer_state(struct radv_cmd_buffer *cmd_buffer)
        * bind our internal depth buffer that contains the VRS data as part of HTILE.
        */
       VkImageLayout layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+      struct radv_buffer *htile_buffer = cmd_buffer->device->vrs.buffer;
       struct radv_image *image = cmd_buffer->device->vrs.image;
       struct radv_ds_buffer_info ds;
       struct radv_image_view iview;
@@ -2504,9 +2505,9 @@ radv_emit_framebuffer_state(struct radv_cmd_buffer *cmd_buffer)
                            },
                            NULL);
 
-      radv_initialise_ds_surface(cmd_buffer->device, &ds, &iview);
+      radv_initialise_vrs_surface(image, htile_buffer, &ds);
 
-      radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, image->bo);
+      radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, htile_buffer->bo);
 
       radv_emit_fb_ds_state(cmd_buffer, &ds, &iview, layout, false);
    } else {
@@ -5142,45 +5143,40 @@ radv_cmd_buffer_begin_subpass(struct radv_cmd_buffer *cmd_buffer, uint32_t subpa
           */
          int ds_idx = subpass->depth_stencil_attachment->attachment;
          struct radv_image_view *ds_iview = cmd_buffer->state.attachments[ds_idx].iview;
+         struct radv_image *ds_image = ds_iview->image;
 
          VkExtent2D extent = {
-            .width = ds_iview->image->info.width,
-            .height = ds_iview->image->info.height,
+            .width = ds_image->info.width,
+            .height = ds_image->info.height,
          };
 
+         /* HTILE buffer */
+         uint64_t htile_offset = ds_image->offset + ds_image->planes[0].surface.meta_offset;
+         uint64_t htile_size = ds_image->planes[0].surface.meta_slice_size;
+         struct radv_buffer htile_buffer = {.bo = ds_image->bo,
+                                            .offset = htile_offset,
+                                            .size = htile_size};
+
          /* Copy the VRS rates to the HTILE buffer. */
-         radv_copy_vrs_htile(cmd_buffer, vrs_iview->image, &extent, ds_iview->image);
+         radv_copy_vrs_htile(cmd_buffer, vrs_iview->image, &extent, ds_image, &htile_buffer, true);
       } else {
          /* When a subpass uses a VRS attachment without binding a depth/stencil attachment, we have
           * to copy the VRS rates to our internal HTILE buffer.
           */
          struct radv_framebuffer *fb = cmd_buffer->state.framebuffer;
          struct radv_image *ds_image = radv_cmd_buffer_get_vrs_image(cmd_buffer);
-         uint32_t htile_value;
 
          if (ds_image) {
-            htile_value = radv_get_htile_initial_value(cmd_buffer->device, ds_image);
+            /* HTILE buffer */
+            struct radv_buffer *htile_buffer = cmd_buffer->device->vrs.buffer;
 
             VkExtent2D extent = {
                .width = MIN2(fb->width, ds_image->info.width),
                .height = MIN2(fb->height, ds_image->info.height),
             };
 
-            /* Clear the HTILE buffer before copying VRS rates because it's a read-modify-write
-             * operation.
-             */
-            VkImageSubresourceRange range = {
-               .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-               .baseMipLevel = 0,
-               .levelCount = 1,
-               .baseArrayLayer = 0,
-               .layerCount = 1,
-            };
-
-            cmd_buffer->state.flush_bits |= radv_clear_htile(cmd_buffer, ds_image, &range, htile_value);
-
             /* Copy the VRS rates to the HTILE buffer. */
-            radv_copy_vrs_htile(cmd_buffer, vrs_iview->image, &extent, ds_image);
+            radv_copy_vrs_htile(cmd_buffer, vrs_iview->image, &extent, ds_image, htile_buffer, false);
          }
       }
    }

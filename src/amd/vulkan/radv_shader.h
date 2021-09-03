@@ -41,6 +41,7 @@
 
 #define RADV_VERT_ATTRIB_MAX MAX2(VERT_ATTRIB_MAX, VERT_ATTRIB_GENERIC0 + MAX_VERTEX_ATTRIBS)
 
+struct radv_physical_device;
 struct radv_device;
 struct radv_pipeline;
 struct radv_pipeline_cache;
@@ -137,7 +138,6 @@ struct radv_nir_compiler_options {
    bool check_ir;
    bool has_ls_vgpr_init_bug;
    bool has_image_load_dcc_bug;
-   bool use_ngg_streamout;
    bool enable_mrt_output_nan_fixup;
    bool disable_optimizations; /* only used by ACO */
    bool wgp_mode;
@@ -470,7 +470,7 @@ struct radv_shader_variant *radv_create_trap_handler_shader(struct radv_device *
 
 void radv_shader_variant_destroy(struct radv_device *device, struct radv_shader_variant *variant);
 
-unsigned radv_get_max_waves(struct radv_device *device, struct radv_shader_variant *variant,
+unsigned radv_get_max_waves(const struct radv_device *device, struct radv_shader_variant *variant,
                             gl_shader_stage stage);
 
 const char *radv_get_shader_name(struct radv_shader_info *info, gl_shader_stage stage);
@@ -573,5 +573,7 @@ void radv_lower_ngg(struct radv_device *device, struct nir_shader *nir,
 
 bool radv_consider_culling(struct radv_device *device, struct nir_shader *nir,
                            uint64_t ps_inputs_read);
+
+void radv_get_nir_options(struct radv_physical_device *device);
 
 #endif

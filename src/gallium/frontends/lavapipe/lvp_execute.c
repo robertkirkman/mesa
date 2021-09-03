@@ -1710,7 +1710,7 @@ static void begin_render_pass(const VkRenderPassBeginInfo *render_pass_begin,
 {
    LVP_FROM_HANDLE(lvp_render_pass, pass, render_pass_begin->renderPass);
    LVP_FROM_HANDLE(lvp_framebuffer, framebuffer, render_pass_begin->framebuffer);
-   VkRenderPassAttachmentBeginInfo *attachment_info = (void*)
+   const struct VkRenderPassAttachmentBeginInfo *attachment_info =
       vk_find_struct_const(render_pass_begin->pNext,
                            RENDER_PASS_ATTACHMENT_BEGIN_INFO);
 
@@ -1766,8 +1766,8 @@ static void begin_render_pass(const VkRenderPassBeginInfo *render_pass_begin,
       state->cleared_views[i] = 0;
    }
    begin_render_subpass(state, 0);
-   free(attachment_info);
 }
+
 
 static void handle_begin_render_pass(struct vk_cmd_queue_entry *cmd,
                                      struct rendering_state *state)
@@ -3277,10 +3277,10 @@ static void handle_push_descriptor_set_with_template(struct vk_cmd_queue_entry *
    pds->descriptor_writes = (struct VkWriteDescriptorSet *)(pds + 1);
    const uint8_t *next_info = (const uint8_t *) (pds->descriptor_writes + templ->entry_count);
 
+   const uint8_t *pSrc = cmd->u.push_descriptor_set_with_template_khr.data;
    for (unsigned i = 0; i < templ->entry_count; i++) {
       struct VkWriteDescriptorSet *desc = &pds->descriptor_writes[i];
       struct VkDescriptorUpdateTemplateEntry *entry = &templ->entry[i];
-      const uint8_t *pSrc = ((const uint8_t *) cmd->u.push_descriptor_set_with_template_khr.data) + entry->offset;
 
       /* dstSet is ignored */
       desc->dstBinding = entry->dstBinding;
@@ -3300,11 +3300,13 @@ static void handle_push_descriptor_set_with_template(struct vk_cmd_queue_entry *
          case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
             memcpy((VkDescriptorImageInfo*)&desc->pImageInfo[j], pSrc, sizeof(VkDescriptorImageInfo));
             next_info += sizeof(VkDescriptorImageInfo);
+            pSrc += sizeof(VkDescriptorImageInfo);
             break;
          case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
          case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
             memcpy((VkBufferView*)&desc->pTexelBufferView[j], pSrc, sizeof(VkBufferView));
             next_info += sizeof(VkBufferView);
+            pSrc += sizeof(VkBufferView);
             break;
          case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
          case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
@@ -3313,9 +3315,9 @@ static void handle_push_descriptor_set_with_template(struct vk_cmd_queue_entry *
          default:
             memcpy((VkDescriptorBufferInfo*)&desc->pBufferInfo[j], pSrc, sizeof(VkDescriptorBufferInfo));
             next_info += sizeof(VkDescriptorBufferInfo);
+            pSrc += sizeof(VkDescriptorBufferInfo);
             break;
          }
-         pSrc += entry->stride;
       }
    }
    handle_push_descriptor_set_generic(pds, state);

@@ -47,51 +47,58 @@
 #include "sid.h"
 #include "vk_format.h"
 
-static const struct nir_shader_compiler_options nir_options = {
-   .vertex_id_zero_based = true,
-   .lower_scmp = true,
-   .lower_flrp16 = true,
-   .lower_flrp32 = true,
-   .lower_flrp64 = true,
-   .lower_device_index_to_zero = true,
-   .lower_fdiv = true,
-   .lower_fmod = true,
-   .lower_ineg = true,
-   .lower_bitfield_insert_to_bitfield_select = true,
-   .lower_bitfield_extract = true,
-   .lower_pack_snorm_2x16 = true,
-   .lower_pack_snorm_4x8 = true,
-   .lower_pack_unorm_2x16 = true,
-   .lower_pack_unorm_4x8 = true,
-   .lower_pack_half_2x16 = true,
-   .lower_pack_64_2x32 = true,
-   .lower_pack_64_4x16 = true,
-   .lower_pack_32_2x16 = true,
-   .lower_unpack_snorm_2x16 = true,
-   .lower_unpack_snorm_4x8 = true,
-   .lower_unpack_unorm_2x16 = true,
-   .lower_unpack_unorm_4x8 = true,
-   .lower_unpack_half_2x16 = true,
-   .lower_ffma16 = true,
-   .lower_ffma32 = true,
-   .lower_ffma64 = true,
-   .lower_fpow = true,
-   .lower_mul_2x32_64 = true,
-   .lower_rotate = true,
-   .has_fsub = true,
-   .has_isub = true,
-   .use_scoped_barrier = true,
-   .max_unroll_iterations = 32,
-   .max_unroll_iterations_aggressive = 128,
-   .use_interpolated_input_intrinsics = true,
-   .vectorize_vec2_16bit = true,
-   /* nir_lower_int64() isn't actually called for the LLVM backend, but
-    * this helps the loop unrolling heuristics. */
-   .lower_int64_options = nir_lower_imul64 | nir_lower_imul_high64 | nir_lower_imul_2x32_64 |
-                          nir_lower_divmod64 | nir_lower_minmax64 | nir_lower_iabs64,
-   .lower_doubles_options = nir_lower_drcp | nir_lower_dsqrt | nir_lower_drsq | nir_lower_ddiv,
-   .divergence_analysis_options = nir_divergence_view_index_uniform,
-};
+void
+radv_get_nir_options(struct radv_physical_device *device)
+{
+   device->nir_options = (nir_shader_compiler_options){
+      .vertex_id_zero_based = true,
+      .lower_scmp = true,
+      .lower_flrp16 = true,
+      .lower_flrp32 = true,
+      .lower_flrp64 = true,
+      .lower_device_index_to_zero = true,
+      .lower_fdiv = true,
+      .lower_fmod = true,
+      .lower_ineg = true,
+      .lower_bitfield_insert_to_bitfield_select = true,
+      .lower_bitfield_extract = true,
+      .lower_pack_snorm_2x16 = true,
+      .lower_pack_snorm_4x8 = true,
+      .lower_pack_unorm_2x16 = true,
+      .lower_pack_unorm_4x8 = true,
+      .lower_pack_half_2x16 = true,
+      .lower_pack_64_2x32 = true,
+      .lower_pack_64_4x16 = true,
+      .lower_pack_32_2x16 = true,
+      .lower_unpack_snorm_2x16 = true,
+      .lower_unpack_snorm_4x8 = true,
+      .lower_unpack_unorm_2x16 = true,
+      .lower_unpack_unorm_4x8 = true,
+      .lower_unpack_half_2x16 = true,
+      .lower_ffma16 = true,
+      .lower_ffma32 = true,
+      .lower_ffma64 = true,
+      .lower_fpow = true,
+      .lower_mul_2x32_64 = true,
+      .lower_rotate = true,
+      .lower_iadd_sat = device->rad_info.chip_class <= GFX8,
+      .has_fsub = true,
+      .has_isub = true,
+      .has_dot_4x8 = device->rad_info.has_accelerated_dot_product,
+      .has_dot_2x16 = device->rad_info.has_accelerated_dot_product,
+      .use_scoped_barrier = true,
+      .max_unroll_iterations = 32,
+      .max_unroll_iterations_aggressive = 128,
+      .use_interpolated_input_intrinsics = true,
+      .vectorize_vec2_16bit = true,
+      /* nir_lower_int64() isn't actually called for the LLVM backend,
+       * but this helps the loop unrolling heuristics. */
+      .lower_int64_options = nir_lower_imul64 | nir_lower_imul_high64 | nir_lower_imul_2x32_64 |
+                             nir_lower_divmod64 | nir_lower_minmax64 | nir_lower_iabs64,
+      .lower_doubles_options = nir_lower_drcp | nir_lower_dsqrt | nir_lower_drsq | nir_lower_ddiv,
+      .divergence_analysis_options = nir_divergence_view_index_uniform,
+   };
+}
 
 bool
 radv_can_dump_shader(struct radv_device *device, struct vk_shader_module *module,
@@ -427,7 +434,7 @@ radv_shader_compile_to_nir(struct radv_device *device, struct vk_shader_module *
        * shader directly.  In that case, we just ignore the SPIR-V entirely
        * and just use the NIR shader */
       nir = module->nir;
-      nir->options = &nir_options;
+      nir->options = &device->physical_device->nir_options;
       nir_validate_shader(nir, "in internal shader");
 
       assert(exec_list_length(&nir->functions) == 1);
@@ -518,7 +525,7 @@ radv_shader_compile_to_nir(struct radv_device *device, struct vk_shader_module *
             },
       };
       nir = spirv_to_nir(spirv, module->size / 4, spec_entries, num_spec_entries, stage,
-                         entrypoint_name, &spirv_options, &nir_options);
+                         entrypoint_name, &spirv_options, &device->physical_device->nir_options);
       assert(nir->info.stage == stage);
       nir_validate_shader(nir, "after spirv_to_nir");
 
@@ -1538,7 +1545,6 @@ shader_variant_compile(struct radv_device *device, struct vk_shader_module *modu
    options->tess_offchip_block_dw_size = device->tess_offchip_block_dw_size;
    options->address32_hi = device->physical_device->rad_info.address32_hi;
    options->has_ls_vgpr_init_bug = device->physical_device->rad_info.has_ls_vgpr_init_bug;
-   options->use_ngg_streamout = device->physical_device->use_ngg_streamout;
    options->enable_mrt_output_nan_fixup =
       module && !module->nir && device->instance->enable_mrt_output_nan_fixup;
    options->adjust_frag_coord_z = device->adjust_frag_coord_z;
@@ -1737,7 +1743,7 @@ radv_get_shader_name(struct radv_shader_info *info, gl_shader_stage stage)
 }
 
 unsigned
-radv_get_max_waves(struct radv_device *device, struct radv_shader_variant *variant,
+radv_get_max_waves(const struct radv_device *device, struct radv_shader_variant *variant,
                    gl_shader_stage stage)
 {
    struct radeon_info *info = &device->physical_device->rad_info;

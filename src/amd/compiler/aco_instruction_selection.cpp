@@ -644,11 +644,8 @@ convert_int(isel_context* ctx, Builder& bld, Temp src, unsigned src_bits, unsign
          create_instruction<SDWA_instruction>(aco_opcode::v_mov_b32, asSDWA(Format::VOP1), 1, 1)};
       sdwa->operands[0] = Operand(src);
       sdwa->definitions[0] = Definition(tmp);
-      if (sign_extend)
-         sdwa->sel[0] = src_bits == 8 ? sdwa_sbyte : sdwa_sword;
-      else
-         sdwa->sel[0] = src_bits == 8 ? sdwa_ubyte : sdwa_uword;
-      sdwa->dst_sel = tmp.bytes() == 2 ? sdwa_uword : sdwa_udword;
+      sdwa->sel[0] = SubdwordSel(src_bits / 8, 0, sign_extend);
+      sdwa->dst_sel = tmp.bytes() == 2 ? SubdwordSel::uword : SubdwordSel::dword;
       bld.insert(std::move(sdwa));
    } else {
       assert(src_bits < 32);
@@ -716,7 +713,7 @@ get_alu_src(struct isel_context* ctx, nir_alu_src src, unsigned size = 1)
       return get_ssa_temp(ctx, src.src.ssa);
 
    Temp vec = get_ssa_temp(ctx, src.src.ssa);
-   unsigned elem_size = vec.bytes() / src.src.ssa->num_components;
+   unsigned elem_size = src.src.ssa->bit_size / 8u;
    bool identity_swizzle = true;
 
    for (unsigned i = 0; identity_swizzle && i < size; i++) {
@@ -729,12 +726,15 @@ get_alu_src(struct isel_context* ctx, nir_alu_src src, unsigned size = 1)
    assert(elem_size > 0);
    assert(vec.bytes() % elem_size == 0);
 
-   if (elem_size < 4 && vec.type() == RegType::sgpr) {
+   if (elem_size < 4 && vec.type() == RegType::sgpr && size == 1) {
       assert(src.src.ssa->bit_size == 8 || src.src.ssa->bit_size == 16);
-      assert(size == 1);
       return extract_8_16_bit_sgpr_element(ctx, ctx->program->allocateTmp(s1), &src,
                                            sgpr_extract_undef);
    }
+
+   bool as_uniform = elem_size < 4 && vec.type() == RegType::sgpr;
+   if (as_uniform)
+      vec = as_vgpr(ctx, vec);
 
    RegClass elem_rc = elem_size < 4 ? RegClass(vec.type(), elem_size).as_subdword()
                                     : RegClass(vec.type(), elem_size / 4);
@@ -753,7 +753,7 @@ get_alu_src(struct isel_context* ctx, nir_alu_src src, unsigned size = 1)
       vec_instr->definitions[0] = Definition(dst);
       ctx->block->instructions.emplace_back(std::move(vec_instr));
       ctx->allocated_vec.emplace(dst.id(), elems);
-      return dst;
+      return vec.type() == RegType::sgpr ? Builder(ctx->program, ctx->block).as_uniform(dst) : dst;
    }
 }
 
@@ -958,6 +958,24 @@ emit_vop3p_instruction(isel_context* ctx, nir_alu_instr* instr, aco_opcode op, T
    Builder::Result res = bld.vop3p(op, Definition(dst), src0, src1, opsel_lo, opsel_hi);
    emit_split_vector(ctx, dst, 2);
    return res;
+}
+
+void
+emit_idot_instruction(isel_context* ctx, nir_alu_instr* instr, aco_opcode op, Temp dst, bool clamp)
+{
+   Temp src[3] = {Temp(0, v1), Temp(0, v1), Temp(0, v1)};
+   bool has_sgpr = false;
+   for (unsigned i = 0; i < 3; i++) {
+      src[i] = get_alu_src(ctx, instr->src[i]);
+      if (has_sgpr)
+         src[i] = as_vgpr(ctx, src[i]);
+      else
+         has_sgpr = src[i].type() == RegType::sgpr;
+   }
+
+   Builder bld(ctx->program, ctx->block);
+   bld.is_precise = instr->exact;
+   bld.vop3p(op, Definition(dst), src[0], src[1], src[2], 0x0, 0x7).instr->vop3p().clamp = clamp;
 }
 
 void
@@ -1812,6 +1830,22 @@ visit_alu_instr(isel_context* ctx, nir_alu_instr* instr)
       }
       break;
    }
+   case nir_op_iadd_sat: {
+      Temp src0 = get_alu_src(ctx, instr->src[0]);
+      Temp src1 = as_vgpr(ctx, get_alu_src(ctx, instr->src[1]));
+      if (dst.regClass() == v2b) {
+         Instruction* add_instr =
+            bld.vop3(aco_opcode::v_add_i16, Definition(dst), src0, src1).instr;
+         add_instr->vop3().clamp = 1;
+      } else if (dst.regClass() == v1) {
+         Instruction* add_instr =
+            bld.vop3(aco_opcode::v_add_i32, Definition(dst), src0, src1).instr;
+         add_instr->vop3().clamp = 1;
+      } else {
+         isel_err(&instr->instr, "Unimplemented NIR instr bit size");
+      }
+      break;
+   }
    case nir_op_uadd_carry: {
       Temp src0 = get_alu_src(ctx, instr->src[0]);
       Temp src1 = get_alu_src(ctx, instr->src[1]);
@@ -2094,6 +2128,38 @@ visit_alu_instr(isel_context* ctx, nir_alu_instr* instr)
       } else {
          isel_err(&instr->instr, "Unimplemented NIR instr bit size");
       }
+      break;
+   }
+   case nir_op_sdot_4x8_iadd: {
+      emit_idot_instruction(ctx, instr, aco_opcode::v_dot4_i32_i8, dst, false);
+      break;
+   }
+   case nir_op_sdot_4x8_iadd_sat: {
+      emit_idot_instruction(ctx, instr, aco_opcode::v_dot4_i32_i8, dst, true);
+      break;
+   }
+   case nir_op_udot_4x8_uadd: {
+      emit_idot_instruction(ctx, instr, aco_opcode::v_dot4_u32_u8, dst, false);
+      break;
+   }
+   case nir_op_udot_4x8_uadd_sat: {
+      emit_idot_instruction(ctx, instr, aco_opcode::v_dot4_u32_u8, dst, true);
+      break;
+   }
+   case nir_op_sdot_2x16_iadd: {
+      emit_idot_instruction(ctx, instr, aco_opcode::v_dot2_i32_i16, dst, false);
+      break;
+   }
+   case nir_op_sdot_2x16_iadd_sat: {
+      emit_idot_instruction(ctx, instr, aco_opcode::v_dot2_i32_i16, dst, true);
+      break;
+   }
+   case nir_op_udot_2x16_uadd: {
+      emit_idot_instruction(ctx, instr, aco_opcode::v_dot2_u32_u16, dst, false);
+      break;
+   }
+   case nir_op_udot_2x16_uadd_sat: {
+      emit_idot_instruction(ctx, instr, aco_opcode::v_dot2_u32_u16, dst, true);
       break;
    }
    case nir_op_cube_face_coord_amd: {
@@ -3135,6 +3201,7 @@ visit_alu_instr(isel_context* ctx, nir_alu_instr* instr)
       }
       break;
    }
+   case nir_op_pack_32_4x8: bld.copy(Definition(dst), get_alu_src(ctx, instr->src[0], 4)); break;
    case nir_op_pack_half_2x16_split: {
       if (dst.regClass() == v1) {
          nir_const_value* val = nir_src_as_const_value(instr->src[1].src);

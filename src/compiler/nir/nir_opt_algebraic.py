@@ -197,6 +197,10 @@ optimizations = [
    (('udot_4x8_uadd', a, 0, b), b),
    (('sdot_4x8_iadd_sat', a, 0, b), b),
    (('udot_4x8_uadd_sat', a, 0, b), b),
+   (('sdot_2x16_iadd', a, 0, b), b),
+   (('udot_2x16_uadd', a, 0, b), b),
+   (('sdot_2x16_iadd_sat', a, 0, b), b),
+   (('udot_2x16_uadd_sat', a, 0, b), b),
 
    # sudot_4x8_iadd is not commutative at all, so the patterns must be
    # duplicated with zeros on each of the first positions.
@@ -208,6 +212,8 @@ optimizations = [
    (('iadd', ('sdot_4x8_iadd(is_used_once)', a, b, '#c'), '#d'), ('sdot_4x8_iadd', a, b, ('iadd', c, d))),
    (('iadd', ('udot_4x8_uadd(is_used_once)', a, b, '#c'), '#d'), ('udot_4x8_uadd', a, b, ('iadd', c, d))),
    (('iadd', ('sudot_4x8_iadd(is_used_once)', a, b, '#c'), '#d'), ('sudot_4x8_iadd', a, b, ('iadd', c, d))),
+   (('iadd', ('sdot_2x16_iadd(is_used_once)', a, b, '#c'), '#d'), ('sdot_2x16_iadd', a, b, ('iadd', c, d))),
+   (('iadd', ('udot_2x16_uadd(is_used_once)', a, b, '#c'), '#d'), ('udot_2x16_uadd', a, b, ('iadd', c, d))),
 
    # Try to let constant folding eliminate the dot-product part.  These are
    # safe because the dot product cannot overflow 32 bits.
@@ -215,12 +221,18 @@ optimizations = [
    (('iadd', ('udot_4x8_uadd', 'a(is_not_const)', b, 0), c), ('udot_4x8_uadd', a, b, c)),
    (('iadd', ('sudot_4x8_iadd', 'a(is_not_const)', b, 0), c), ('sudot_4x8_iadd', a, b, c)),
    (('iadd', ('sudot_4x8_iadd', a, 'b(is_not_const)', 0), c), ('sudot_4x8_iadd', a, b, c)),
+   (('iadd', ('sdot_2x16_iadd', 'a(is_not_const)', b, 0), c), ('sdot_2x16_iadd', a, b, c)),
+   (('iadd', ('udot_2x16_uadd', 'a(is_not_const)', b, 0), c), ('udot_2x16_uadd', a, b, c)),
    (('sdot_4x8_iadd', '#a', '#b', 'c(is_not_const)'), ('iadd', ('sdot_4x8_iadd', a, b, 0), c)),
    (('udot_4x8_uadd', '#a', '#b', 'c(is_not_const)'), ('iadd', ('udot_4x8_uadd', a, b, 0), c)),
    (('sudot_4x8_iadd', '#a', '#b', 'c(is_not_const)'), ('iadd', ('sudot_4x8_iadd', a, b, 0), c)),
-   (('sdot_4x8_iadd_sat', '#a', '#b', 'c(is_not_const)'), ('iadd_sat', ('sdot_4x8_iadd', a, b, 0), c), '!options->lower_add_sat'),
-   (('udot_4x8_uadd_sat', '#a', '#b', 'c(is_not_const)'), ('uadd_sat', ('udot_4x8_uadd', a, b, 0), c), '!options->lower_add_sat'),
-   (('sudot_4x8_iadd_sat', '#a', '#b', 'c(is_not_const)'), ('iadd_sat', ('sudot_4x8_iadd', a, b, 0), c), '!options->lower_add_sat'),
+   (('sdot_2x16_iadd', '#a', '#b', 'c(is_not_const)'), ('iadd', ('sdot_2x16_iadd', a, b, 0), c)),
+   (('udot_2x16_uadd', '#a', '#b', 'c(is_not_const)'), ('iadd', ('udot_2x16_uadd', a, b, 0), c)),
+   (('sdot_4x8_iadd_sat', '#a', '#b', 'c(is_not_const)'), ('iadd_sat', ('sdot_4x8_iadd', a, b, 0), c), '!options->lower_iadd_sat'),
+   (('udot_4x8_uadd_sat', '#a', '#b', 'c(is_not_const)'), ('uadd_sat', ('udot_4x8_uadd', a, b, 0), c), '!options->lower_uadd_sat'),
+   (('sudot_4x8_iadd_sat', '#a', '#b', 'c(is_not_const)'), ('iadd_sat', ('sudot_4x8_iadd', a, b, 0), c), '!options->lower_iadd_sat'),
+   (('sdot_2x16_iadd_sat', '#a', '#b', 'c(is_not_const)'), ('iadd_sat', ('sdot_2x16_iadd', a, b, 0), c), '!options->lower_iadd_sat'),
+   (('udot_2x16_uadd_sat', '#a', '#b', 'c(is_not_const)'), ('uadd_sat', ('udot_2x16_uadd', a, b, 0), c), '!options->lower_uadd_sat'),
 ]
 
 # Shorthand for the expansion of just the dot product part of the [iu]dp4a
@@ -237,11 +249,17 @@ sudot_4x8_a_b = ('iadd', ('iadd', ('imul', ('extract_i8', a, 0), ('extract_u8', 
                                   ('imul', ('extract_i8', a, 1), ('extract_u8', b, 1))),
                          ('iadd', ('imul', ('extract_i8', a, 2), ('extract_u8', b, 2)),
                                   ('imul', ('extract_i8', a, 3), ('extract_u8', b, 3))))
+sdot_2x16_a_b = ('iadd', ('imul', ('extract_i16', a, 0), ('extract_i16', b, 0)),
+                         ('imul', ('extract_i16', a, 1), ('extract_i16', b, 1)))
+udot_2x16_a_b = ('iadd', ('imul', ('extract_u16', a, 0), ('extract_u16', b, 0)),
+                         ('imul', ('extract_u16', a, 1), ('extract_u16', b, 1)))
 
 optimizations.extend([
    (('sdot_4x8_iadd', a, b, c), ('iadd', sdot_4x8_a_b, c), '!options->has_dot_4x8'),
    (('udot_4x8_uadd', a, b, c), ('iadd', udot_4x8_a_b, c), '!options->has_dot_4x8'),
    (('sudot_4x8_iadd', a, b, c), ('iadd', sudot_4x8_a_b, c), '!options->has_sudot_4x8'),
+   (('sdot_2x16_iadd', a, b, c), ('iadd', sdot_2x16_a_b, c), '!options->has_dot_2x16'),
+   (('udot_2x16_uadd', a, b, c), ('iadd', udot_2x16_a_b, c), '!options->has_dot_2x16'),
 
    # For the unsigned dot-product, the largest possible value 4*(255*255) =
    # 0x3f804, so we don't have to worry about that intermediate result
@@ -257,6 +275,9 @@ optimizations.extend([
    (('sdot_4x8_iadd_sat', a, b, c), ('iadd_sat', sdot_4x8_a_b, c), '!options->has_dot_4x8'),
 
    (('sudot_4x8_iadd_sat', a, b, c), ('iadd_sat', sudot_4x8_a_b, c), '!options->has_sudot_4x8'),
+
+   (('udot_2x16_uadd_sat', a, b, c), ('uadd_sat', udot_2x16_a_b, c), '!options->has_dot_2x16'),
+   (('sdot_2x16_iadd_sat', a, b, c), ('iadd_sat', sdot_2x16_a_b, c), '!options->has_dot_2x16'),
 ])
 
 # Float sizes
@@ -1538,9 +1559,9 @@ optimizations.extend([
    (('irhadd@64', a, b), ('isub', ('ior', a, b), ('ishr', ('ixor', a, b), 1)), 'options->lower_hadd64 || (options->lower_int64_options & nir_lower_iadd64) != 0'),
    (('urhadd@64', a, b), ('isub', ('ior', a, b), ('ushr', ('ixor', a, b), 1)), 'options->lower_hadd64 || (options->lower_int64_options & nir_lower_iadd64) != 0'),
 
-   (('uadd_sat@64', a, b), ('bcsel', ('ult', ('iadd', a, b), a), -1, ('iadd', a, b)), 'options->lower_add_sat || (options->lower_int64_options & nir_lower_iadd64) != 0'),
-   (('uadd_sat', a, b), ('bcsel', ('ult', ('iadd', a, b), a), -1, ('iadd', a, b)), 'options->lower_add_sat'),
-   (('usub_sat', a, b), ('bcsel', ('ult', a, b), 0, ('isub', a, b)), 'options->lower_add_sat'),
+   (('uadd_sat@64', a, b), ('bcsel', ('ult', ('iadd', a, b), a), -1, ('iadd', a, b)), 'options->lower_uadd_sat || (options->lower_int64_options & nir_lower_iadd64) != 0'),
+   (('uadd_sat', a, b), ('bcsel', ('ult', ('iadd', a, b), a), -1, ('iadd', a, b)), 'options->lower_uadd_sat'),
+   (('usub_sat', a, b), ('bcsel', ('ult', a, b), 0, ('isub', a, b)), 'options->lower_uadd_sat'),
    (('usub_sat@64', a, b), ('bcsel', ('ult', a, b), 0, ('isub', a, b)), 'options->lower_usub_sat64 || (options->lower_int64_options & nir_lower_iadd64) != 0'),
 
    # int64_t sum = a + b;
@@ -1860,10 +1881,10 @@ for bit_size in [8, 16, 32, 64]:
    optimizations += [
       (('iadd_sat@' + str(bit_size), a, b),
        ('bcsel', ('ige', b, 1), ('bcsel', ('ilt', ('iadd', a, b), a), intmax, ('iadd', a, b)),
-                                ('bcsel', ('ilt', a, ('iadd', a, b)), intmin, ('iadd', a, b))), 'options->lower_add_sat'),
+                                ('bcsel', ('ilt', a, ('iadd', a, b)), intmin, ('iadd', a, b))), 'options->lower_iadd_sat'),
       (('isub_sat@' + str(bit_size), a, b),
        ('bcsel', ('ilt', b, 0), ('bcsel', ('ilt', ('isub', a, b), a), intmax, ('isub', a, b)),
-                                ('bcsel', ('ilt', a, ('isub', a, b)), intmin, ('isub', a, b))), 'options->lower_add_sat'),
+                                ('bcsel', ('ilt', a, ('isub', a, b)), intmin, ('isub', a, b))), 'options->lower_iadd_sat'),
    ]
 
 invert = OrderedDict([('feq', 'fneu'), ('fneu', 'feq')])

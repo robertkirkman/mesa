@@ -74,7 +74,7 @@ GL 3.1, GLSL 1.40 --- all DONE: freedreno, i965, nv50, nvc0, r600, radeonsi, llv
   Forward compatible context support/deprecations       DONE
   GL_ARB_draw_instanced (Instanced drawing)             DONE (v3d)
   GL_ARB_copy_buffer (Buffer copying)                   DONE (v3d, vc4, lima)
-  GL_NV_primitive_restart (Primitive restart)           DONE ()
+  GL_NV_primitive_restart (Primitive restart)           DONE (v3d)
   16 vertex texture image units                         DONE ()
   GL_ARB_texture_buffer_object (Texture buffer objs)    DONE ()
   GL_ARB_texture_rectangle (Rectangular textures)       DONE (v3d, vc4, lima)
@@ -491,6 +491,7 @@ Khronos extensions that are not part of any Vulkan version:
   VK_KHR_pipeline_executable_properties                 DONE (anv, radv, tu)
   VK_KHR_push_descriptor                                DONE (anv, lvp, radv, tu)
   VK_KHR_shader_clock                                   DONE (anv, radv)
+  VK_KHR_shader_integer_dot_product                     DONE (radv)
   VK_KHR_shader_non_semantic_info                       DONE (anv, radv)
   VK_KHR_shader_subgroup_uniform_control_flow           DONE (anv, radv)
   VK_KHR_shader_terminate_invocation                    DONE (anv, radv, tu)

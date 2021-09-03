@@ -582,6 +582,7 @@ static void visit_alu(struct ac_nir_context *ctx, const nir_alu_instr *instr)
    case nir_op_cube_face_index_amd:
       src_components = 3;
       break;
+   case nir_op_pack_32_4x8:
    case nir_op_pack_64_4x16:
       src_components = 4;
       break;
@@ -625,6 +626,15 @@ static void visit_alu(struct ac_nir_context *ctx, const nir_alu_instr *instr)
       else
          result = LLVMBuildAdd(ctx->ac.builder, src[0], src[1], "");
       break;
+   case nir_op_uadd_sat:
+   case nir_op_iadd_sat: {
+      char name[64], type[64];
+      ac_build_type_name_for_intr(def_type, type, sizeof(type));
+      snprintf(name, sizeof(name), "llvm.%cadd.sat.%s",
+               instr->op == nir_op_uadd_sat ? 'u' : 's', type);
+      result = ac_build_intrinsic(&ctx->ac, name, def_type, src, 2, AC_FUNC_ATTR_READNONE);
+      break;
+   }
    case nir_op_fadd:
       src[0] = ac_to_float(&ctx->ac, src[0]);
       src[1] = ac_to_float(&ctx->ac, src[1]);
@@ -1153,6 +1163,7 @@ static void visit_alu(struct ac_nir_context *ctx, const nir_alu_instr *instr)
       break;
    }
 
+   case nir_op_pack_32_4x8:
    case nir_op_pack_32_2x16: {
       result = LLVMBuildBitCast(ctx->ac.builder, src[0],
             ctx->ac.i32, "");
@@ -1233,6 +1244,34 @@ static void visit_alu(struct ac_nir_context *ctx, const nir_alu_instr *instr)
       LLVMValueRef offset = LLVMConstInt(LLVMTypeOf(src[0]), nir_src_as_uint(instr->src[1].src) * size, false);
       LLVMValueRef mask = LLVMConstInt(LLVMTypeOf(src[0]), u_bit_consecutive(0, size), false);
       result = LLVMBuildShl(ctx->ac.builder, LLVMBuildAnd(ctx->ac.builder, src[0], mask, ""), offset, "");
+      break;
+   }
+
+   case nir_op_sdot_4x8_iadd:
+   case nir_op_udot_4x8_uadd:
+   case nir_op_sdot_4x8_iadd_sat:
+   case nir_op_udot_4x8_uadd_sat: {
+      const char *name = instr->op == nir_op_sdot_4x8_iadd ||
+                         instr->op == nir_op_sdot_4x8_iadd_sat
+                         ? "llvm.amdgcn.sdot4" : "llvm.amdgcn.udot4";
+      src[3] = LLVMConstInt(ctx->ac.i1, instr->op == nir_op_sdot_4x8_iadd_sat ||
+                                        instr->op == nir_op_udot_4x8_uadd_sat, false);
+      result = ac_build_intrinsic(&ctx->ac, name, def_type, src, 4, AC_FUNC_ATTR_READNONE);
+      break;
+   }
+
+   case nir_op_sdot_2x16_iadd:
+   case nir_op_udot_2x16_uadd:
+   case nir_op_sdot_2x16_iadd_sat:
+   case nir_op_udot_2x16_uadd_sat: {
+      const char *name = instr->op == nir_op_sdot_2x16_iadd ||
+                         instr->op == nir_op_sdot_2x16_iadd_sat
+                         ? "llvm.amdgcn.sdot2" : "llvm.amdgcn.udot2";
+      src[0] = LLVMBuildBitCast(ctx->ac.builder, src[0], ctx->ac.v2i16, "");
+      src[1] = LLVMBuildBitCast(ctx->ac.builder, src[1], ctx->ac.v2i16, "");
+      src[3] = LLVMConstInt(ctx->ac.i1, instr->op == nir_op_sdot_2x16_iadd_sat ||
+                                        instr->op == nir_op_udot_2x16_uadd_sat, false);
+      result = ac_build_intrinsic(&ctx->ac, name, def_type, src, 4, AC_FUNC_ATTR_READNONE);
       break;
    }
 

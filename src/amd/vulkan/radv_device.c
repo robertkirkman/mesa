@@ -437,6 +437,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .KHR_shader_draw_parameters = true,
       .KHR_shader_float16_int8 = true,
       .KHR_shader_float_controls = true,
+      .KHR_shader_integer_dot_product = true,
       .KHR_shader_non_semantic_info = true,
       .KHR_shader_subgroup_extended_types = true,
       .KHR_shader_subgroup_uniform_control_flow = true,
@@ -707,6 +708,8 @@ radv_physical_device_try_create(struct radv_instance *instance, drmDevicePtr drm
    radv_physical_device_init_mem_types(device);
 
    radv_physical_device_get_supported_extensions(device, &device->vk.supported_extensions);
+
+   radv_get_nir_options(device);
 
 #ifndef _WIN32
    if (drm_device) {
@@ -1704,6 +1707,12 @@ radv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          features->primitiveTopologyPatchListRestart = false;
          break;
       }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_FEATURES_KHR: {
+         VkPhysicalDeviceShaderIntegerDotProductFeaturesKHR *features =
+            (VkPhysicalDeviceShaderIntegerDotProductFeaturesKHR *)ext;
+         features->shaderIntegerDotProduct = true;
+         break;
+      }
       default:
          break;
       }
@@ -2416,6 +2425,45 @@ radv_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
          props->maxMultiDrawCount = 2048;
          break;
       }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_PROPERTIES_KHR: {
+         VkPhysicalDeviceShaderIntegerDotProductPropertiesKHR *props =
+            (VkPhysicalDeviceShaderIntegerDotProductPropertiesKHR *)ext;
+
+         bool accel = pdevice->rad_info.has_accelerated_dot_product;
+
+         props->integerDotProduct8BitUnsignedAccelerated = accel;
+         props->integerDotProduct8BitSignedAccelerated = accel;
+         props->integerDotProduct8BitMixedSignednessAccelerated = false;
+         props->integerDotProduct4x8BitPackedUnsignedAccelerated = accel;
+         props->integerDotProduct4x8BitPackedSignedAccelerated = accel;
+         props->integerDotProduct4x8BitPackedMixedSignednessAccelerated = false;
+         props->integerDotProduct16BitUnsignedAccelerated = accel;
+         props->integerDotProduct16BitSignedAccelerated = accel;
+         props->integerDotProduct16BitMixedSignednessAccelerated = false;
+         props->integerDotProduct32BitUnsignedAccelerated = false;
+         props->integerDotProduct32BitSignedAccelerated = false;
+         props->integerDotProduct32BitMixedSignednessAccelerated = false;
+         props->integerDotProduct64BitUnsignedAccelerated = false;
+         props->integerDotProduct64BitSignedAccelerated = false;
+         props->integerDotProduct64BitMixedSignednessAccelerated = false;
+         props->integerDotProductAccumulatingSaturating8BitUnsignedAccelerated = accel;
+         props->integerDotProductAccumulatingSaturating8BitSignedAccelerated = accel;
+         props->integerDotProductAccumulatingSaturating8BitMixedSignednessAccelerated = false;
+         props->integerDotProductAccumulatingSaturating4x8BitPackedUnsignedAccelerated = accel;
+         props->integerDotProductAccumulatingSaturating4x8BitPackedSignedAccelerated = accel;
+         props->integerDotProductAccumulatingSaturating4x8BitPackedMixedSignednessAccelerated =
+            false;
+         props->integerDotProductAccumulatingSaturating16BitUnsignedAccelerated = accel;
+         props->integerDotProductAccumulatingSaturating16BitSignedAccelerated = accel;
+         props->integerDotProductAccumulatingSaturating16BitMixedSignednessAccelerated = false;
+         props->integerDotProductAccumulatingSaturating32BitUnsignedAccelerated = false;
+         props->integerDotProductAccumulatingSaturating32BitSignedAccelerated = false;
+         props->integerDotProductAccumulatingSaturating32BitMixedSignednessAccelerated = false;
+         props->integerDotProductAccumulatingSaturating64BitUnsignedAccelerated = false;
+         props->integerDotProductAccumulatingSaturating64BitSignedAccelerated = false;
+         props->integerDotProductAccumulatingSaturating64BitMixedSignednessAccelerated = false;
+         break;
+      }
       default:
          break;
       }
@@ -2837,14 +2885,14 @@ radv_device_finish_border_color(struct radv_device *device)
 }
 
 VkResult
-radv_device_init_vrs_image(struct radv_device *device)
+radv_device_init_vrs_state(struct radv_device *device)
 {
    /* FIXME: 4k depth buffers should be large enough for now but we might want to adjust this
-    * dynamically at some point. Also, it's probably better to use S8_UINT but no HTILE support yet.
+    * dynamically at some point.
     */
    uint32_t width = 4096, height = 4096;
-   VkMemoryRequirements mem_req;
    VkDeviceMemory mem;
+   VkBuffer buffer;
    VkResult result;
    VkImage image;
 
@@ -2869,11 +2917,30 @@ radv_device_init_vrs_image(struct radv_device *device)
    if (result != VK_SUCCESS)
       return result;
 
-   radv_GetImageMemoryRequirements(radv_device_to_handle(device), image, &mem_req);
+   VkBufferCreateInfo buffer_create_info = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+      .size = radv_image_from_handle(image)->planes[0].surface.meta_size,
+      .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+   };
+
+   result = radv_CreateBuffer(radv_device_to_handle(device), &buffer_create_info,
+                              &device->meta_state.alloc, &buffer);
+   if (result != VK_SUCCESS)
+      goto fail_create;
+
+   VkBufferMemoryRequirementsInfo2 info = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2,
+      .buffer = buffer,
+   };
+   VkMemoryRequirements2 mem_req = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
+   };
+   radv_GetBufferMemoryRequirements2(radv_device_to_handle(device), &info, &mem_req);
 
    VkMemoryAllocateInfo alloc_info = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-      .allocationSize = mem_req.size,
+      .allocationSize = mem_req.memoryRequirements.size,
    };
 
    result = radv_AllocateMemory(radv_device_to_handle(device), &alloc_info,
@@ -2881,11 +2948,19 @@ radv_device_init_vrs_image(struct radv_device *device)
    if (result != VK_SUCCESS)
       goto fail_alloc;
 
-   result = radv_BindImageMemory(radv_device_to_handle(device), image, mem, 0);
+   VkBindBufferMemoryInfo bind_info = {
+      .sType = VK_STRUCTURE_TYPE_BIND_BUFFER_MEMORY_INFO,
+      .buffer = buffer,
+      .memory = mem,
+      .memoryOffset = 0
+   };
+
+   result = radv_BindBufferMemory2(radv_device_to_handle(device), 1, &bind_info);
    if (result != VK_SUCCESS)
       goto fail_bind;
 
    device->vrs.image = radv_image_from_handle(image);
+   device->vrs.buffer = radv_buffer_from_handle(buffer);
    device->vrs.mem = radv_device_memory_from_handle(mem);
 
    return VK_SUCCESS;
@@ -2893,6 +2968,8 @@ radv_device_init_vrs_image(struct radv_device *device)
 fail_bind:
    radv_FreeMemory(radv_device_to_handle(device), mem, &device->meta_state.alloc);
 fail_alloc:
+   radv_DestroyBuffer(radv_device_to_handle(device), buffer, &device->meta_state.alloc);
+fail_create:
    radv_DestroyImage(radv_device_to_handle(device), image, &device->meta_state.alloc);
 
    return result;
@@ -2903,6 +2980,8 @@ radv_device_finish_vrs_image(struct radv_device *device)
 {
    radv_FreeMemory(radv_device_to_handle(device), radv_device_memory_to_handle(device->vrs.mem),
                    &device->meta_state.alloc);
+   radv_DestroyBuffer(radv_device_to_handle(device), radv_buffer_to_handle(device->vrs.buffer),
+                     &device->meta_state.alloc);
    radv_DestroyImage(radv_device_to_handle(device), radv_image_to_handle(device->vrs.image),
                      &device->meta_state.alloc);
 }
@@ -2939,6 +3018,7 @@ radv_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCr
    bool custom_border_colors = false;
    bool vrs_enabled = false;
    bool attachment_vrs_enabled = false;
+   bool image_float32_atomics = false;
 
    /* Check enabled features */
    if (pCreateInfo->pEnabledFeatures) {
@@ -2987,6 +3067,20 @@ radv_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCr
          const VkPhysicalDeviceRobustness2FeaturesEXT *features = (const void *)ext;
          if (features->robustBufferAccess2)
             robust_buffer_access2 = true;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT: {
+         const VkPhysicalDeviceShaderAtomicFloatFeaturesEXT *features = (const void *)ext;
+         if (features->shaderImageFloat32Atomics ||
+             features->sparseImageFloat32Atomics)
+            image_float32_atomics = true;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_2_FEATURES_EXT: {
+         const VkPhysicalDeviceShaderAtomicFloat2FeaturesEXT *features = (const void *)ext;
+         if (features->shaderImageFloat32AtomicMinMax ||
+             features->sparseImageFloat32AtomicMinMax)
+            image_float32_atomics = true;
          break;
       }
       default:
@@ -3042,6 +3136,8 @@ radv_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCr
        device->physical_device->rad_info.family == CHIP_NAVY_FLOUNDER ||
        device->physical_device->rad_info.family == CHIP_VANGOGH);
    device->attachment_vrs_enabled = attachment_vrs_enabled;
+
+   device->image_float32_atomics = image_float32_atomics;
 
    mtx_init(&device->shader_slab_mutex, mtx_plain);
    list_inithead(&device->shader_slabs);
@@ -3402,18 +3498,6 @@ radv_GetDeviceQueue2(VkDevice _device, const VkDeviceQueueInfo2 *pQueueInfo, VkQ
    }
 
    *pQueue = radv_queue_to_handle(queue);
-}
-
-void
-radv_GetDeviceQueue(VkDevice _device, uint32_t queueFamilyIndex, uint32_t queueIndex,
-                    VkQueue *pQueue)
-{
-   const VkDeviceQueueInfo2 info =
-      (VkDeviceQueueInfo2){.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_INFO_2,
-                           .queueFamilyIndex = queueFamilyIndex,
-                           .queueIndex = queueIndex};
-
-   radv_GetDeviceQueue2(_device, &info, pQueue);
 }
 
 static void
@@ -5551,29 +5635,23 @@ radv_InvalidateMappedMemoryRanges(VkDevice _device, uint32_t memoryRangeCount,
 }
 
 void
-radv_GetBufferMemoryRequirements(VkDevice _device, VkBuffer _buffer,
-                                 VkMemoryRequirements *pMemoryRequirements)
+radv_GetBufferMemoryRequirements2(VkDevice _device, const VkBufferMemoryRequirementsInfo2 *pInfo,
+                                  VkMemoryRequirements2 *pMemoryRequirements)
 {
    RADV_FROM_HANDLE(radv_device, device, _device);
-   RADV_FROM_HANDLE(radv_buffer, buffer, _buffer);
+   RADV_FROM_HANDLE(radv_buffer, buffer, pInfo->buffer);
 
-   pMemoryRequirements->memoryTypeBits =
+   pMemoryRequirements->memoryRequirements.memoryTypeBits =
       (1u << device->physical_device->memory_properties.memoryTypeCount) - 1;
 
    if (buffer->flags & VK_BUFFER_CREATE_SPARSE_BINDING_BIT)
-      pMemoryRequirements->alignment = 4096;
+      pMemoryRequirements->memoryRequirements.alignment = 4096;
    else
-      pMemoryRequirements->alignment = 16;
+      pMemoryRequirements->memoryRequirements.alignment = 16;
 
-   pMemoryRequirements->size = align64(buffer->size, pMemoryRequirements->alignment);
-}
+   pMemoryRequirements->memoryRequirements.size =
+      align64(buffer->size, pMemoryRequirements->memoryRequirements.alignment);
 
-void
-radv_GetBufferMemoryRequirements2(VkDevice device, const VkBufferMemoryRequirementsInfo2 *pInfo,
-                                  VkMemoryRequirements2 *pMemoryRequirements)
-{
-   radv_GetBufferMemoryRequirements(device, pInfo->buffer,
-                                    &pMemoryRequirements->memoryRequirements);
    vk_foreach_struct(ext, pMemoryRequirements->pNext)
    {
       switch (ext->sType) {
@@ -5590,26 +5668,17 @@ radv_GetBufferMemoryRequirements2(VkDevice device, const VkBufferMemoryRequireme
 }
 
 void
-radv_GetImageMemoryRequirements(VkDevice _device, VkImage _image,
-                                VkMemoryRequirements *pMemoryRequirements)
-{
-   RADV_FROM_HANDLE(radv_device, device, _device);
-   RADV_FROM_HANDLE(radv_image, image, _image);
-
-   pMemoryRequirements->memoryTypeBits =
-      (1u << device->physical_device->memory_properties.memoryTypeCount) - 1;
-
-   pMemoryRequirements->size = image->size;
-   pMemoryRequirements->alignment = image->alignment;
-}
-
-void
-radv_GetImageMemoryRequirements2(VkDevice device, const VkImageMemoryRequirementsInfo2 *pInfo,
+radv_GetImageMemoryRequirements2(VkDevice _device, const VkImageMemoryRequirementsInfo2 *pInfo,
                                  VkMemoryRequirements2 *pMemoryRequirements)
 {
-   radv_GetImageMemoryRequirements(device, pInfo->image, &pMemoryRequirements->memoryRequirements);
-
+   RADV_FROM_HANDLE(radv_device, device, _device);
    RADV_FROM_HANDLE(radv_image, image, pInfo->image);
+
+   pMemoryRequirements->memoryRequirements.memoryTypeBits =
+      (1u << device->physical_device->memory_properties.memoryTypeCount) - 1;
+
+   pMemoryRequirements->memoryRequirements.size = image->size;
+   pMemoryRequirements->memoryRequirements.alignment = image->alignment;
 
    vk_foreach_struct(ext, pMemoryRequirements->pNext)
    {
@@ -5646,11 +5715,17 @@ radv_BindBufferMemory2(VkDevice _device, uint32_t bindInfoCount,
 
       if (mem) {
          if (mem->alloc_size) {
-            VkMemoryRequirements req;
+            VkBufferMemoryRequirementsInfo2 info = {
+               .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2,
+               .buffer = pBindInfos[i].buffer,
+            };
+            VkMemoryRequirements2 reqs = {
+               .sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
+            };
 
-            radv_GetBufferMemoryRequirements(_device, pBindInfos[i].buffer, &req);
+            radv_GetBufferMemoryRequirements2(_device, &info, &reqs);
 
-            if (pBindInfos[i].memoryOffset + req.size > mem->alloc_size) {
+            if (pBindInfos[i].memoryOffset + reqs.memoryRequirements.size > mem->alloc_size) {
                return vk_errorf(device->instance, VK_ERROR_UNKNOWN,
                                 "Device memory object too small for the buffer.\n");
             }
@@ -5666,18 +5741,6 @@ radv_BindBufferMemory2(VkDevice _device, uint32_t bindInfoCount,
 }
 
 VkResult
-radv_BindBufferMemory(VkDevice device, VkBuffer buffer, VkDeviceMemory memory,
-                      VkDeviceSize memoryOffset)
-{
-   const VkBindBufferMemoryInfo info = {.sType = VK_STRUCTURE_TYPE_BIND_BUFFER_MEMORY_INFO,
-                                        .buffer = buffer,
-                                        .memory = memory,
-                                        .memoryOffset = memoryOffset};
-
-   return radv_BindBufferMemory2(device, 1, &info);
-}
-
-VkResult
 radv_BindImageMemory2(VkDevice _device, uint32_t bindInfoCount,
                       const VkBindImageMemoryInfo *pBindInfos)
 {
@@ -5689,11 +5752,17 @@ radv_BindImageMemory2(VkDevice _device, uint32_t bindInfoCount,
 
       if (mem) {
          if (mem->alloc_size) {
-            VkMemoryRequirements req;
+            VkImageMemoryRequirementsInfo2 info = {
+               .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2,
+               .image = pBindInfos[i].image,
+            };
+            VkMemoryRequirements2 reqs = {
+               .sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
+            };
 
-            radv_GetImageMemoryRequirements(_device, pBindInfos[i].image, &req);
+            radv_GetImageMemoryRequirements2(_device, &info, &reqs);
 
-            if (pBindInfos[i].memoryOffset + req.size > mem->alloc_size) {
+            if (pBindInfos[i].memoryOffset + reqs.memoryRequirements.size > mem->alloc_size) {
                return vk_errorf(device->instance, VK_ERROR_UNKNOWN,
                                 "Device memory object too small for the image.\n");
             }
@@ -5707,18 +5776,6 @@ radv_BindImageMemory2(VkDevice _device, uint32_t bindInfoCount,
       }
    }
    return VK_SUCCESS;
-}
-
-VkResult
-radv_BindImageMemory(VkDevice device, VkImage image, VkDeviceMemory memory,
-                     VkDeviceSize memoryOffset)
-{
-   const VkBindImageMemoryInfo info = {.sType = VK_STRUCTURE_TYPE_BIND_BUFFER_MEMORY_INFO,
-                                       .image = image,
-                                       .memory = memory,
-                                       .memoryOffset = memoryOffset};
-
-   return radv_BindImageMemory2(device, 1, &info);
 }
 
 static bool
@@ -6858,6 +6915,31 @@ radv_calc_decompress_on_z_planes(struct radv_device *device, struct radv_image_v
    }
 
    return max_zplanes;
+}
+
+void
+radv_initialise_vrs_surface(struct radv_image *image, struct radv_buffer *htile_buffer,
+                            struct radv_ds_buffer_info *ds)
+{
+   const struct radeon_surf *surf = &image->planes[0].surface;
+
+   assert(image->vk_format == VK_FORMAT_D16_UNORM);
+   memset(ds, 0, sizeof(*ds));
+
+   ds->pa_su_poly_offset_db_fmt_cntl = S_028B78_POLY_OFFSET_NEG_NUM_DB_BITS(-16);
+
+   ds->db_z_info = S_028038_FORMAT(V_028040_Z_16) |
+                   S_028038_SW_MODE(surf->u.gfx9.swizzle_mode) |
+                   S_028038_ZRANGE_PRECISION(1) |
+                   S_028038_TILE_SURFACE_ENABLE(1);
+   ds->db_stencil_info = S_02803C_FORMAT(V_028044_STENCIL_INVALID);
+
+   ds->db_depth_size = S_02801C_X_MAX(image->info.width - 1) |
+                       S_02801C_Y_MAX(image->info.height - 1);
+
+   ds->db_htile_data_base = radv_buffer_get_va(htile_buffer->bo) >> 8;
+   ds->db_htile_surface = S_028ABC_FULL_CACHE(1) | S_028ABC_PIPE_ALIGNED(1) |
+                          S_028ABC_VRS_HTILE_ENCODING(V_028ABC_VRS_HTILE_4BIT_ENCODING);
 }
 
 void
