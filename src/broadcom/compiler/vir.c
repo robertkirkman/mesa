@@ -984,14 +984,6 @@ v3d_nir_lower_fs_early(struct v3d_compile *c)
                 /* The lowering pass can introduce new sysval reads */
                 nir_shader_gather_info(c->s, nir_shader_get_entrypoint(c->s));
         }
-
-        /* If the shader has no non-TLB side effects, we can promote it to
-         * enabling early_fragment_tests even if the user didn't.
-         */
-        if (!(c->s->info.num_images ||
-              c->s->info.num_ssbos)) {
-                c->s->info.fs.early_fragment_tests = true;
-        }
 }
 
 static void
@@ -1877,6 +1869,21 @@ try_opt_ldunif(struct v3d_compile *c, uint32_t index, struct qreg *unif)
 {
         uint32_t count = 20;
         struct qinst *prev_inst = NULL;
+        assert(c->cur_block);
+
+#ifdef DEBUG
+        /* Check if the current instruction is part of the current block */
+        bool found = false;
+        vir_for_each_inst(inst, c->cur_block) {
+                if (&inst->link == c->cursor.link) {
+                        found = true;
+                        break;
+                }
+        }
+
+        assert(found || list_is_empty(&c->cur_block->instructions));
+#endif
+
         list_for_each_entry_from_rev(struct qinst, inst, c->cursor.link->prev,
                                      &c->cur_block->instructions, link) {
                 if ((inst->qpu.sig.ldunif || inst->qpu.sig.ldunifrf) &&
