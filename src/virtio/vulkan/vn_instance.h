@@ -39,6 +39,30 @@ struct vn_instance {
    struct vn_renderer *renderer;
    struct vn_renderer_info renderer_info;
 
+   /* XXX staged features to be merged to core venus protocol */
+   VkVenusExperimentalFeatures100000MESA experimental;
+
+   struct {
+      mtx_t mutex;
+      struct vn_renderer_shmem *shmem;
+      struct vn_ring ring;
+      uint64_t id;
+
+      struct vn_cs_encoder upload;
+      uint32_t command_dropped;
+
+      /* to synchronize renderer/ring */
+      mtx_t roundtrip_mutex;
+      uint32_t roundtrip_next;
+   } ring;
+
+   struct {
+      struct vn_renderer_shmem *shmem;
+      size_t size;
+      size_t used;
+      void *ptr;
+   } reply;
+
    /* Between the driver and the app, VN_MAX_API_VERSION is what we advertise
     * and base.base.app_info.api_version is what the app requests.
     *
@@ -50,27 +74,6 @@ struct vn_instance {
    uint32_t renderer_api_version;
    uint32_t renderer_version;
 
-   /* to synchronize renderer/ring */
-   mtx_t roundtrip_mutex;
-   uint32_t roundtrip_next;
-
-   struct {
-      mtx_t mutex;
-      struct vn_renderer_shmem *shmem;
-      struct vn_ring ring;
-      uint64_t id;
-
-      struct vn_cs_encoder upload;
-      uint32_t command_dropped;
-   } ring;
-
-   struct {
-      struct vn_renderer_shmem *shmem;
-      size_t size;
-      size_t used;
-      void *ptr;
-   } reply;
-
    struct {
       mtx_t mutex;
       bool initialized;
@@ -80,9 +83,6 @@ struct vn_instance {
       VkPhysicalDeviceGroupProperties *groups;
       uint32_t group_count;
    } physical_device;
-
-   /* XXX staged features to be merged to core venus protocol */
-   VkVenusExperimentalFeatures100000MESA experimental;
 };
 VK_DEFINE_HANDLE_CASTS(vn_instance,
                        base.base.base,
@@ -128,10 +128,8 @@ vn_instance_submit_command_init(struct vn_instance *instance,
                                 size_t cmd_size,
                                 size_t reply_size)
 {
-   submit->command = VN_CS_ENCODER_INITIALIZER_LOCAL(cmd_data, cmd_size);
-   /* fix submit->command.buffers to not point to a local variable */
-   submit->buffer = submit->command.buffers[0];
-   submit->command.buffers = &submit->buffer;
+   submit->buffer = VN_CS_ENCODER_BUFFER_INITIALIZER(cmd_data);
+   submit->command = VN_CS_ENCODER_INITIALIZER(&submit->buffer, cmd_size);
 
    submit->reply_size = reply_size;
    submit->reply_shmem = NULL;

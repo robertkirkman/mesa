@@ -56,6 +56,13 @@ struct ac_nir_context {
    LLVMValueRef main_function;
    LLVMBasicBlockRef continue_block;
    LLVMBasicBlockRef break_block;
+
+   LLVMValueRef vertex_id_replaced;
+   LLVMValueRef instance_id_replaced;
+   LLVMValueRef tes_u_replaced;
+   LLVMValueRef tes_v_replaced;
+   LLVMValueRef tes_rel_patch_id_replaced;
+   LLVMValueRef tes_patch_id_replaced;
 };
 
 static LLVMValueRef get_sampler_desc_index(struct ac_nir_context *ctx, nir_deref_instr *deref_instr,
@@ -1274,6 +1281,12 @@ static void visit_alu(struct ac_nir_context *ctx, const nir_alu_instr *instr)
       result = ac_build_intrinsic(&ctx->ac, name, def_type, src, 4, AC_FUNC_ATTR_READNONE);
       break;
    }
+
+   case nir_op_sad_u8x4:
+      result = ac_build_intrinsic(&ctx->ac, "llvm.amdgcn.sad.u8", ctx->ac.i32,
+                                  (LLVMValueRef[]){src[0], src[1], src[2]}, 3,
+                                  AC_FUNC_ATTR_READNONE);
+      break;
 
    default:
       fprintf(stderr, "Unknown NIR alu instr: ");
@@ -2948,6 +2961,8 @@ static LLVMValueRef visit_load_subgroup_id(struct ac_nir_context *ctx)
       result = LLVMBuildAnd(ctx->ac.builder, ac_get_arg(&ctx->ac, ctx->args->tg_size),
                             LLVMConstInt(ctx->ac.i32, 0xfc0, false), "");
       return LLVMBuildLShr(ctx->ac.builder, result, LLVMConstInt(ctx->ac.i32, 6, false), "");
+   } else if (ctx->args->merged_wave_info.used) {
+      return ac_unpack_param(&ctx->ac, ac_get_arg(&ctx->ac, ctx->args->merged_wave_info), 24, 4);
    } else {
       return LLVMConstInt(ctx->ac.i32, 0, false);
    }
@@ -3329,22 +3344,22 @@ static LLVMValueRef visit_load(struct ac_nir_context *ctx, nir_intrinsic_instr *
        nir_intrinsic_io_semantics(instr).fb_fetch_output)
       return ctx->abi->emit_fbfetch(ctx->abi);
 
-   /* Other non-fragment cases have inputs and outputs in temporaries. */
-   if (ctx->stage != MESA_SHADER_FRAGMENT) {
-      for (unsigned chan = component; chan < count + component; chan++) {
-         if (is_output) {
-            values[chan] = LLVMBuildLoad(ctx->ac.builder, ctx->abi->outputs[base * 4 + chan], "");
-         } else {
-            values[chan] = ctx->abi->inputs[base * 4 + chan];
-            if (!values[chan])
-               values[chan] = LLVMGetUndef(ctx->ac.i32);
-         }
-      }
+   if (ctx->stage == MESA_SHADER_VERTEX && !is_output)
+      return ctx->abi->load_inputs(ctx->abi, base, component, count, 0, component_type);
+
+   /* Other non-fragment cases have outputs in temporaries. */
+   if (is_output && (ctx->stage == MESA_SHADER_VERTEX || ctx->stage == MESA_SHADER_TESS_EVAL)) {
+      assert(is_output);
+
+      for (unsigned chan = component; chan < count + component; chan++)
+         values[chan] = LLVMBuildLoad(ctx->ac.builder, ctx->abi->outputs[base * 4 + chan], "");
+
       LLVMValueRef result = ac_build_varying_gather_values(&ctx->ac, values, count, component);
       return LLVMBuildBitCast(ctx->ac.builder, result, dest_type, "");
    }
 
    /* Fragment shader inputs. */
+   assert(ctx->stage == MESA_SHADER_FRAGMENT);
    unsigned vertex_id = 2; /* P0 */
 
    if (instr->intrinsic == nir_intrinsic_load_input_vertex) {
@@ -3481,11 +3496,13 @@ static void visit_intrinsic(struct ac_nir_context *ctx, nir_intrinsic_instr *ins
       result = ctx->abi->load_local_group_size(ctx->abi);
       break;
    case nir_intrinsic_load_vertex_id:
-      result = LLVMBuildAdd(ctx->ac.builder, ac_get_arg(&ctx->ac, ctx->args->vertex_id),
+      result = LLVMBuildAdd(ctx->ac.builder,
+                            ctx->vertex_id_replaced ? ctx->vertex_id_replaced :
+                                                      ac_get_arg(&ctx->ac, ctx->args->vertex_id),
                             ac_get_arg(&ctx->ac, ctx->args->base_vertex), "");
       break;
    case nir_intrinsic_load_vertex_id_zero_base: {
-      result = ctx->abi->vertex_id;
+      result = ctx->vertex_id_replaced ? ctx->vertex_id_replaced : ctx->abi->vertex_id;
       break;
    }
    case nir_intrinsic_load_local_invocation_id: {
@@ -3532,7 +3549,8 @@ static void visit_intrinsic(struct ac_nir_context *ctx, nir_intrinsic_instr *ins
       } else if (ctx->stage == MESA_SHADER_TESS_CTRL) {
          result = ac_get_arg(&ctx->ac, ctx->args->tcs_patch_id);
       } else if (ctx->stage == MESA_SHADER_TESS_EVAL) {
-         result = ac_get_arg(&ctx->ac, ctx->args->tes_patch_id);
+         result = ctx->tes_patch_id_replaced ? ctx->tes_patch_id_replaced
+                                             : ac_get_arg(&ctx->ac, ctx->args->tes_patch_id);
       } else
          fprintf(stderr, "Unknown primitive id intrinsic: %d", ctx->stage);
       break;
@@ -3550,9 +3568,6 @@ static void visit_intrinsic(struct ac_nir_context *ctx, nir_intrinsic_instr *ins
       break;
    case nir_intrinsic_load_frag_shading_rate:
       result = emit_load_frag_shading_rate(ctx);
-      break;
-   case nir_intrinsic_load_layer_id:
-      result = ctx->abi->inputs[ac_llvm_reg_index_soa(VARYING_SLOT_LAYER, 0)];
       break;
    case nir_intrinsic_load_front_face:
       result = emit_i2b(&ctx->ac, ac_get_arg(&ctx->ac, ctx->args->front_face));
@@ -3574,7 +3589,7 @@ static void visit_intrinsic(struct ac_nir_context *ctx, nir_intrinsic_instr *ins
       result = ctx->abi->user_data;
       break;
    case nir_intrinsic_load_instance_id:
-      result = ctx->abi->instance_id;
+      result = ctx->instance_id_replaced ? ctx->instance_id_replaced : ctx->abi->instance_id;
       break;
    case nir_intrinsic_load_num_workgroups:
       result = ac_get_arg(&ctx->ac, ctx->args->num_work_groups);
@@ -3837,9 +3852,21 @@ static void visit_intrinsic(struct ac_nir_context *ctx, nir_intrinsic_instr *ins
    case nir_intrinsic_end_primitive_with_counter:
       ctx->abi->emit_primitive(ctx->abi, nir_intrinsic_stream_id(instr));
       break;
-   case nir_intrinsic_load_tess_coord:
-      result = ctx->abi->load_tess_coord(ctx->abi);
+   case nir_intrinsic_load_tess_coord: {
+      LLVMValueRef coord[] = {
+         ctx->tes_u_replaced ? ctx->tes_u_replaced : ac_get_arg(&ctx->ac, ctx->args->tes_u),
+         ctx->tes_v_replaced ? ctx->tes_v_replaced : ac_get_arg(&ctx->ac, ctx->args->tes_v),
+         ctx->ac.f32_0,
+      };
+
+      /* For triangles, the vector should be (u, v, 1-u-v). */
+      if (ctx->info->tess.primitive_mode == GL_TRIANGLES) {
+         coord[2] = LLVMBuildFSub(ctx->ac.builder, ctx->ac.f32_1,
+                                  LLVMBuildFAdd(ctx->ac.builder, coord[0], coord[1], ""), "");
+      }
+      result = ac_build_gather_values(&ctx->ac, coord, 3);
       break;
+   }
    case nir_intrinsic_load_tess_level_outer:
       result = ctx->abi->load_tess_level(ctx->abi, VARYING_SLOT_TESS_LEVEL_OUTER, false);
       break;
@@ -3859,7 +3886,8 @@ static void visit_intrinsic(struct ac_nir_context *ctx, nir_intrinsic_instr *ins
       if (ctx->stage == MESA_SHADER_TESS_CTRL)
          result = ac_unpack_param(&ctx->ac, ac_get_arg(&ctx->ac, ctx->args->tcs_rel_ids), 0, 8);
       else if (ctx->stage == MESA_SHADER_TESS_EVAL)
-         result = ac_get_arg(&ctx->ac, ctx->args->tes_rel_patch_id);
+         result = ctx->tes_rel_patch_id_replaced ? ctx->tes_rel_patch_id_replaced
+                                                 : ac_get_arg(&ctx->ac, ctx->args->tes_rel_patch_id);
       else
          unreachable("tess_rel_patch_id_amd is only supported by tessellation shaders");
       break;
@@ -4081,6 +4109,85 @@ static void visit_intrinsic(struct ac_nir_context *ctx, nir_intrinsic_instr *ins
                                   cache_policy);
       break;
    }
+   case nir_intrinsic_load_packed_passthrough_primitive_amd:
+      result = ac_get_arg(&ctx->ac, ctx->args->gs_vtx_offset[0]);
+      break;
+   case nir_intrinsic_load_initial_edgeflags_amd:
+      if (ctx->stage == MESA_SHADER_VERTEX && !ctx->info->vs.blit_sgprs_amd)
+         result = ac_pack_edgeflags_for_export(&ctx->ac, ctx->args);
+      else
+         result = ctx->ac.i32_0;
+      break;
+   case nir_intrinsic_has_input_vertex_amd: {
+      LLVMValueRef num =
+         ac_unpack_param(&ctx->ac, ac_get_arg(&ctx->ac, ctx->args->merged_wave_info), 0, 8);
+      result = LLVMBuildICmp(ctx->ac.builder, LLVMIntULT, ac_get_thread_id(&ctx->ac), num, "");
+      break;
+   }
+   case nir_intrinsic_has_input_primitive_amd: {
+      LLVMValueRef num =
+         ac_unpack_param(&ctx->ac, ac_get_arg(&ctx->ac, ctx->args->merged_wave_info), 8, 8);
+      result = LLVMBuildICmp(ctx->ac.builder, LLVMIntULT, ac_get_thread_id(&ctx->ac), num, "");
+      break;
+   }
+   case nir_intrinsic_load_workgroup_num_input_vertices_amd:
+      result = ac_unpack_param(&ctx->ac, ac_get_arg(&ctx->ac, ctx->args->gs_tg_info), 12, 9);
+      break;
+   case nir_intrinsic_load_workgroup_num_input_primitives_amd:
+      result = ac_unpack_param(&ctx->ac, ac_get_arg(&ctx->ac, ctx->args->gs_tg_info), 22, 9);
+      break;
+   case nir_intrinsic_alloc_vertices_and_primitives_amd:
+      /* The caller should only call this conditionally for wave 0, so assume that the current
+       * wave is always wave 0.
+       */
+      ac_build_sendmsg_gs_alloc_req(&ctx->ac, ctx->ac.i32_0,
+                                    get_src(ctx, instr->src[0]),
+                                    get_src(ctx, instr->src[1]));
+      break;
+   case nir_intrinsic_overwrite_vs_arguments_amd:
+      ctx->vertex_id_replaced = get_src(ctx, instr->src[0]);
+      ctx->instance_id_replaced = get_src(ctx, instr->src[1]);
+      break;
+   case nir_intrinsic_overwrite_tes_arguments_amd:
+      ctx->tes_u_replaced = get_src(ctx, instr->src[0]);
+      ctx->tes_v_replaced = get_src(ctx, instr->src[1]);
+      ctx->tes_rel_patch_id_replaced = get_src(ctx, instr->src[2]);
+      ctx->tes_patch_id_replaced = get_src(ctx, instr->src[3]);
+      break;
+   case nir_intrinsic_export_primitive_amd: {
+      struct ac_ngg_prim prim = {0};
+      prim.passthrough = get_src(ctx, instr->src[0]);
+      ac_build_export_prim(&ctx->ac, &prim);
+      break;
+   }
+   case nir_intrinsic_export_vertex_amd:
+      ctx->abi->export_vertex(ctx->abi);
+      break;
+   case nir_intrinsic_elect:
+      result = LLVMBuildICmp(ctx->ac.builder, LLVMIntEQ, visit_first_invocation(ctx),
+                             ac_get_thread_id(&ctx->ac), "");
+      break;
+   case nir_intrinsic_byte_permute_amd:
+      if (LLVM_VERSION_MAJOR < 13) {
+         assert("unimplemented byte_permute, LLVM 12 doesn't have amdgcn.perm");
+         break;
+      }
+      result = ac_build_intrinsic(&ctx->ac, "llvm.amdgcn.perm", ctx->ac.i32,
+                                  (LLVMValueRef[]){get_src(ctx, instr->src[0]),
+                                                   get_src(ctx, instr->src[1]),
+                                                   get_src(ctx, instr->src[2])},
+                                  3, AC_FUNC_ATTR_READNONE);
+      break;
+   case nir_intrinsic_lane_permute_16_amd:
+      result = ac_build_intrinsic(&ctx->ac, "llvm.amdgcn.permlane16", ctx->ac.i32,
+                                  (LLVMValueRef[]){get_src(ctx, instr->src[0]),
+                                                   get_src(ctx, instr->src[0]),
+                                                   get_src(ctx, instr->src[1]),
+                                                   get_src(ctx, instr->src[2]),
+                                                   ctx->ac.i1false,
+                                                   ctx->ac.i1false},
+                                  6, AC_FUNC_ATTR_READNONE | AC_FUNC_ATTR_CONVERGENT);
+      break;
    default:
       fprintf(stderr, "Unknown intrinsic: ");
       nir_print_instr(&instr->instr, stderr);
@@ -5159,7 +5266,7 @@ void ac_nir_translate(struct ac_llvm_context *ac, struct ac_shader_abi *abi,
       ac_build_kill_if_false(&ctx.ac, LLVMBuildLoad(ctx.ac.builder, ctx.ac.postponed_kill, ""));
 
    if (!gl_shader_stage_is_compute(nir->info.stage))
-      ctx.abi->emit_outputs(ctx.abi, AC_LLVM_MAX_OUTPUTS, ctx.abi->outputs);
+      ctx.abi->emit_outputs(ctx.abi);
 
    free(ctx.ssa_defs);
    ralloc_free(ctx.defs);

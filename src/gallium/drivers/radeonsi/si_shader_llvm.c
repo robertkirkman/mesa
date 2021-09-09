@@ -441,9 +441,7 @@ static void si_llvm_declare_compute_memory(struct si_shader_context *ctx)
 
 static bool si_nir_build_llvm(struct si_shader_context *ctx, struct nir_shader *nir)
 {
-   if (nir->info.stage == MESA_SHADER_VERTEX) {
-      si_llvm_load_vs_inputs(ctx, nir);
-   } else if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
       unsigned colors_read = ctx->shader->selector->info.colors_read;
       LLVMValueRef main_fn = ctx->main_fn;
 
@@ -490,7 +488,6 @@ static bool si_nir_build_llvm(struct si_shader_context *ctx, struct nir_shader *
          si_llvm_declare_compute_memory(ctx);
    }
 
-   ctx->abi.inputs = &ctx->inputs[0];
    ctx->abi.clamp_shadow_reference = true;
    ctx->abi.robust_buffer_access = true;
    ctx->abi.convert_undef_to_zero = true;

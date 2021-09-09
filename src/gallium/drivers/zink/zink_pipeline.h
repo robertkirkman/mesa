@@ -46,7 +46,7 @@ struct zink_gfx_pipeline_state {
    VkSampleMask sample_mask;
 
    unsigned rp_state;
-   struct zink_blend_state *blend_state;
+   uint32_t blend_id;
 
    /* Pre-hashed value for table lookup, invalid when zero.
     * Members after this point are not included in pipeline state hash key */
@@ -74,6 +74,11 @@ struct zink_gfx_pipeline_state {
    bool sample_locations_enabled;
    bool have_EXT_extended_dynamic_state;
    bool have_EXT_extended_dynamic_state2;
+   uint8_t has_points; //either gs outputs points or prim type is points
+   uint8_t coord_replace_bits;
+   bool coord_replace_yinvert;
+   bool drawid_broken;
+   struct zink_blend_state *blend_state;
    struct zink_render_pass *render_pass;
    VkPipeline pipeline;
    uint8_t patch_vertices;

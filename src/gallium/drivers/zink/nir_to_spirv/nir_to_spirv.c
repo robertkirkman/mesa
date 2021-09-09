@@ -51,7 +51,7 @@ struct ntv_context {
 
    SpvId ubos[128];
 
-   SpvId ssbos[PIPE_MAX_SHADER_BUFFERS];
+   SpvId ssbos[PIPE_MAX_SHADER_BUFFERS][3]; //8, 16, 32
    nir_variable *ssbo_vars[PIPE_MAX_SHADER_BUFFERS];
    SpvId image_types[PIPE_MAX_SAMPLERS];
    SpvId images[PIPE_MAX_SAMPLERS];
@@ -240,14 +240,14 @@ emit_float_const(struct ntv_context *ctx, int bit_size, double value)
 static SpvId
 emit_uint_const(struct ntv_context *ctx, int bit_size, uint64_t value)
 {
-   assert(bit_size == 16 || bit_size == 32 || bit_size == 64);
+   assert(bit_size == 8 || bit_size == 16 || bit_size == 32 || bit_size == 64);
    return spirv_builder_const_uint(&ctx->builder, bit_size, value);
 }
 
 static SpvId
 emit_int_const(struct ntv_context *ctx, int bit_size, int64_t value)
 {
-   assert(bit_size == 16 || bit_size == 32 || bit_size == 64);
+   assert(bit_size == 8 || bit_size == 16 || bit_size == 32 || bit_size == 64);
    return spirv_builder_const_int(&ctx->builder, bit_size, value);
 }
 
@@ -268,7 +268,7 @@ get_fvec_type(struct ntv_context *ctx, unsigned bit_size, unsigned num_component
 static SpvId
 get_ivec_type(struct ntv_context *ctx, unsigned bit_size, unsigned num_components)
 {
-   assert(bit_size == 16 || bit_size == 32 || bit_size == 64);
+   assert(bit_size == 8 || bit_size == 16 || bit_size == 32 || bit_size == 64);
 
    SpvId int_type = spirv_builder_type_int(&ctx->builder, bit_size);
    if (num_components > 1)
@@ -282,7 +282,7 @@ get_ivec_type(struct ntv_context *ctx, unsigned bit_size, unsigned num_component
 static SpvId
 get_uvec_type(struct ntv_context *ctx, unsigned bit_size, unsigned num_components)
 {
-   assert(bit_size == 16 || bit_size == 32 || bit_size == 64);
+   assert(bit_size == 8 || bit_size == 16 || bit_size == 32 || bit_size == 64);
 
    SpvId uint_type = spirv_builder_type_uint(&ctx->builder, bit_size);
    if (num_components > 1)
@@ -877,43 +877,48 @@ emit_image(struct ntv_context *ctx, struct nir_variable *var)
 }
 
 static SpvId
-get_sized_uint_array_type(struct ntv_context *ctx, unsigned array_size)
+get_sized_uint_array_type(struct ntv_context *ctx, unsigned array_size, unsigned bitsize)
 {
    SpvId array_length = emit_uint_const(ctx, 32, array_size);
-   SpvId array_type = spirv_builder_type_array(&ctx->builder, get_uvec_type(ctx, 32, 1),
+   SpvId array_type = spirv_builder_type_array(&ctx->builder, get_uvec_type(ctx, bitsize, 1),
                                             array_length);
-   spirv_builder_emit_array_stride(&ctx->builder, array_type, 4);
+   spirv_builder_emit_array_stride(&ctx->builder, array_type, bitsize / 8);
    return array_type;
 }
 
 static SpvId
-get_bo_array_type(struct ntv_context *ctx, struct nir_variable *var)
+get_bo_array_type(struct ntv_context *ctx, struct nir_variable *var, unsigned bitsize)
 {
+   assert(bitsize);
    SpvId array_type;
-   SpvId uint_type = spirv_builder_type_uint(&ctx->builder, 32);
-   if (glsl_type_is_unsized_array(var->type)) {
-      array_type = spirv_builder_type_runtime_array(&ctx->builder, uint_type);
-      spirv_builder_emit_array_stride(&ctx->builder, array_type, 4);
-   } else {
-      uint32_t array_size = glsl_get_length(glsl_get_struct_field(var->interface_type, 0));
-      array_type = get_sized_uint_array_type(ctx, array_size);
+   const struct glsl_type *type = var->type;
+   if (!glsl_type_is_unsized_array(type)) {
+      type = glsl_get_struct_field(var->interface_type, 0);
+      if (!glsl_type_is_unsized_array(type)) {
+         uint32_t array_size = glsl_get_length(type) * (bitsize / 4);
+         assert(array_size);
+         return get_sized_uint_array_type(ctx, array_size, bitsize);
+      }
    }
+   SpvId uint_type = spirv_builder_type_uint(&ctx->builder, bitsize);
+   array_type = spirv_builder_type_runtime_array(&ctx->builder, uint_type);
+   spirv_builder_emit_array_stride(&ctx->builder, array_type, bitsize / 8);
    return array_type;
 }
 
 static SpvId
-get_bo_struct_type(struct ntv_context *ctx, struct nir_variable *var)
+get_bo_struct_type(struct ntv_context *ctx, struct nir_variable *var, unsigned bitsize)
 {
-   SpvId array_type = get_bo_array_type(ctx, var);
+   SpvId array_type = get_bo_array_type(ctx, var, bitsize);
    bool ssbo = var->data.mode == nir_var_mem_ssbo;
 
    // wrap UBO-array in a struct
    SpvId runtime_array = 0;
-   if (ssbo) {
+   if (ssbo && glsl_get_length(var->interface_type) > 1) {
        const struct glsl_type *last_member = glsl_get_struct_field(var->interface_type, glsl_get_length(var->interface_type) - 1);
        if (glsl_type_is_unsized_array(last_member)) {
           bool is_64bit = glsl_type_is_64bit(glsl_without_array(last_member));
-          runtime_array = spirv_builder_type_runtime_array(&ctx->builder, get_uvec_type(ctx, is_64bit ? 64 : 32, 1));
+          runtime_array = spirv_builder_type_runtime_array(&ctx->builder, get_uvec_type(ctx, is_64bit ? 64 : bitsize, 1));
           spirv_builder_emit_array_stride(&ctx->builder, runtime_array, glsl_get_explicit_stride(last_member));
        }
    }
@@ -940,11 +945,14 @@ get_bo_struct_type(struct ntv_context *ctx, struct nir_variable *var)
 }
 
 static void
-emit_bo(struct ntv_context *ctx, struct nir_variable *var)
+emit_bo(struct ntv_context *ctx, struct nir_variable *var, unsigned force_bitsize)
 {
    bool ssbo = var->data.mode == nir_var_mem_ssbo;
+   unsigned bitsize = force_bitsize ? force_bitsize : 32;
+   unsigned idx = bitsize >> 4;
+   assert(idx < ARRAY_SIZE(ctx->ssbos[0]));
 
-   SpvId pointer_type = get_bo_struct_type(ctx, var);
+   SpvId pointer_type = get_bo_struct_type(ctx, var, bitsize);
 
    SpvId var_id = spirv_builder_emit_var(&ctx->builder, pointer_type,
                                          ssbo ? SpvStorageClassStorageBuffer : SpvStorageClassUniform);
@@ -952,8 +960,8 @@ emit_bo(struct ntv_context *ctx, struct nir_variable *var)
       spirv_builder_emit_name(&ctx->builder, var_id, var->name);
 
    if (ssbo) {
-      assert(!ctx->ssbos[var->data.driver_location]);
-      ctx->ssbos[var->data.driver_location] = var_id;
+      assert(!ctx->ssbos[var->data.driver_location][idx]);
+      ctx->ssbos[var->data.driver_location][idx] = var_id;
       ctx->ssbo_vars[var->data.driver_location] = var;
    } else {
       assert(!ctx->ubos[var->data.driver_location]);
@@ -972,7 +980,7 @@ static void
 emit_uniform(struct ntv_context *ctx, struct nir_variable *var)
 {
    if (var->data.mode == nir_var_mem_ubo || var->data.mode == nir_var_mem_ssbo)
-      emit_bo(ctx, var);
+      emit_bo(ctx, var, 0);
    else {
       assert(var->data.mode == nir_var_uniform);
       const struct glsl_type *type = glsl_without_array(var->type);
@@ -986,7 +994,7 @@ get_vec_from_bit_size(struct ntv_context *ctx, uint32_t bit_size, uint32_t num_c
 {
    if (bit_size == 1)
       return get_bvec_type(ctx, num_components);
-   if (bit_size == 16 || bit_size == 32 || bit_size == 64)
+   if (bit_size == 8 || bit_size == 16 || bit_size == 32 || bit_size == 64)
       return get_uvec_type(ctx, bit_size, num_components);
    unreachable("unhandled register bit size");
    return 0;
@@ -1058,7 +1066,7 @@ get_alu_src_raw(struct ntv_context *ctx, nir_alu_instr *alu, unsigned src)
       return def;
 
    int bit_size = nir_src_bit_size(alu->src[src].src);
-   assert(bit_size == 1 || bit_size == 16 || bit_size == 32 || bit_size == 64);
+   assert(bit_size == 1 || bit_size == 8 || bit_size == 16 || bit_size == 32 || bit_size == 64);
 
    SpvId raw_type = bit_size == 1 ? spirv_builder_type_bool(&ctx->builder) :
                                     spirv_builder_type_uint(&ctx->builder, bit_size);
@@ -1466,7 +1474,7 @@ static SpvId
 get_ivec_constant(struct ntv_context *ctx, unsigned bit_size,
                   unsigned num_components, int64_t value)
 {
-   assert(bit_size == 16 || bit_size == 32 || bit_size == 64);
+   assert(bit_size == 8 || bit_size == 16 || bit_size == 32 || bit_size == 64);
 
    SpvId result = emit_int_const(ctx, bit_size, value);
    if (num_components == 1)
@@ -1621,6 +1629,7 @@ emit_alu(struct ntv_context *ctx, nir_alu_instr *alu)
    UNOP(nir_op_u2f32, SpvOpConvertUToF)
    UNOP(nir_op_i2i16, SpvOpSConvert)
    UNOP(nir_op_i2i32, SpvOpSConvert)
+   UNOP(nir_op_u2u8, SpvOpUConvert)
    UNOP(nir_op_u2u16, SpvOpUConvert)
    UNOP(nir_op_u2u32, SpvOpUConvert)
    UNOP(nir_op_f2f16, SpvOpFConvert)
@@ -1799,6 +1808,12 @@ emit_alu(struct ntv_context *ctx, nir_alu_instr *alu)
       result = emit_select(ctx, dest_type, src[0], src[1], src[2]);
       break;
 
+   case nir_op_pack_half_2x16_split: {
+      SpvId fvec = spirv_builder_emit_composite_construct(&ctx->builder, get_fvec_type(ctx, 32, 2),
+                                                          src, 2);
+      result = emit_builtin_unop(ctx, GLSLstd450PackHalf2x16, dest_type, fvec);
+      break;
+   }
    case nir_op_vec2:
    case nir_op_vec3:
    case nir_op_vec4: {
@@ -1876,8 +1891,16 @@ emit_load_bo(struct ntv_context *ctx, nir_intrinsic_instr *intr)
    bool ssbo = intr->intrinsic == nir_intrinsic_load_ssbo;
    assert(const_block_index); // no dynamic indexing for now
 
-   SpvId bo = ssbo ? ctx->ssbos[const_block_index->u32] : ctx->ubos[const_block_index->u32];
+   unsigned ssbo_idx = 0;
    unsigned bit_size = nir_dest_bit_size(intr->dest);
+   if (ssbo) {
+      ssbo_idx = MIN2(bit_size, 32) >> 4;
+      ssbo_idx = 2;
+      assert(ssbo_idx < ARRAY_SIZE(ctx->ssbos[0]));
+      if (!ctx->ssbos[const_block_index->u32][ssbo_idx])
+         emit_bo(ctx, ctx->ssbo_vars[const_block_index->u32], nir_dest_bit_size(intr->dest));
+   }
+   SpvId bo = ssbo ? ctx->ssbos[const_block_index->u32][ssbo_idx] : ctx->ubos[const_block_index->u32];
    SpvId uint_type = get_uvec_type(ctx, 32, 1);
    SpvId one = emit_uint_const(ctx, 32, 1);
 
@@ -1892,7 +1915,7 @@ emit_load_bo(struct ntv_context *ctx, nir_intrinsic_instr *intr)
    /* destination type for the load */
    SpvId type = get_dest_uvec_type(ctx, &intr->dest);
    /* an id of an array member in bytes */
-   SpvId uint_size = emit_uint_const(ctx, 32, sizeof(uint32_t));
+   SpvId uint_size = emit_uint_const(ctx, 32, ssbo ? MIN2(bit_size, 32) / 8 : sizeof(uint32_t));
 
    /* we grab a single array member at a time, so it's a pointer to a uint */
    SpvId pointer_type = spirv_builder_type_pointer(&ctx->builder,
@@ -1977,7 +2000,11 @@ emit_store_ssbo(struct ntv_context *ctx, nir_intrinsic_instr *intr)
    nir_const_value *const_block_index = nir_src_as_const_value(intr->src[1]);
    assert(const_block_index);
 
-   SpvId bo = ctx->ssbos[const_block_index->u32];
+   unsigned idx = MIN2(nir_src_bit_size(intr->src[0]), 32) >> 4;
+   assert(idx < ARRAY_SIZE(ctx->ssbos[0]));
+   if (!ctx->ssbos[const_block_index->u32][idx])
+      emit_bo(ctx, ctx->ssbo_vars[const_block_index->u32], nir_src_bit_size(intr->src[0]));
+   SpvId bo = ctx->ssbos[const_block_index->u32][idx];
 
    unsigned bit_size = nir_src_bit_size(intr->src[0]);
    SpvId uint_type = get_uvec_type(ctx, 32, 1);
@@ -1991,11 +2018,11 @@ emit_store_ssbo(struct ntv_context *ctx, nir_intrinsic_instr *intr)
    bool is_64bit = bit_size == 64;
 
    /* an id of an array member in bytes */
-   SpvId uint_size = emit_uint_const(ctx, 32, sizeof(uint32_t));
+   SpvId uint_size = emit_uint_const(ctx, 32, MIN2(bit_size, 32) / 8);
    /* we grab a single array member at a time, so it's a pointer to a uint */
    SpvId pointer_type = spirv_builder_type_pointer(&ctx->builder,
                                                    SpvStorageClassStorageBuffer,
-                                                   uint_type);
+                                                   get_uvec_type(ctx, MIN2(bit_size, 32), 1));
 
    /* our generated uniform has a memory layout like
     *
@@ -2027,7 +2054,7 @@ emit_store_ssbo(struct ntv_context *ctx, nir_intrinsic_instr *intr)
     * (composite|vector)_extract both take literals
     */
    unsigned write_count = 0;
-   SpvId src_base_type = get_uvec_type(ctx, nir_src_bit_size(intr->src[0]), 1);
+   SpvId src_base_type = get_uvec_type(ctx, bit_size, 1);
    for (unsigned i = 0; write_count < num_components; i++) {
       if (wrmask & (1 << i)) {
          SpvId component = nir_src_num_components(intr->src[0]) > 1 ?
@@ -2411,7 +2438,12 @@ emit_ssbo_atomic_intrinsic(struct ntv_context *ctx, nir_intrinsic_instr *intr)
 
    nir_const_value *const_block_index = nir_src_as_const_value(intr->src[0]);
    assert(const_block_index); // no dynamic indexing for now
-   ssbo = ctx->ssbos[const_block_index->u32];
+   unsigned bit_size = MIN2(nir_src_bit_size(intr->src[0]), 32);
+   unsigned idx = bit_size >> 4;
+   assert(idx < ARRAY_SIZE(ctx->ssbos[0]));
+   if (!ctx->ssbos[const_block_index->u32][idx])
+      emit_bo(ctx, ctx->ssbo_vars[const_block_index->u32], nir_dest_bit_size(intr->dest));
+   ssbo = ctx->ssbos[const_block_index->u32][idx];
    param = get_src(ctx, &intr->src[2]);
 
    SpvId pointer_type = spirv_builder_type_pointer(&ctx->builder,
@@ -2419,7 +2451,7 @@ emit_ssbo_atomic_intrinsic(struct ntv_context *ctx, nir_intrinsic_instr *intr)
                                                    dest_type);
    SpvId uint_type = get_uvec_type(ctx, 32, 1);
    /* an id of the array stride in bytes */
-   SpvId uint_size = emit_uint_const(ctx, 32, sizeof(uint32_t));
+   SpvId uint_size = emit_uint_const(ctx, 32, bit_size / 8);
    SpvId member = emit_uint_const(ctx, 32, 0);
    SpvId offset = get_src(ctx, &intr->src[1]);
    SpvId vec_offset = emit_binop(ctx, SpvOpUDiv, uint_type, offset, uint_size);
@@ -2465,7 +2497,7 @@ emit_get_ssbo_size(struct ntv_context *ctx, nir_intrinsic_instr *intr)
    assert(const_block_index); // no dynamic indexing for now
    nir_variable *var = ctx->ssbo_vars[const_block_index->u32];
    SpvId result = spirv_builder_emit_binop(&ctx->builder, SpvOpArrayLength, uint_type,
-                                             ctx->ssbos[const_block_index->u32], 1);
+                                             ctx->ssbos[const_block_index->u32][2], 1);
    /* this is going to be converted by nir to:
 
       length = (buffer_size - offset) / stride
@@ -2577,10 +2609,12 @@ static void
 emit_image_intrinsic(struct ntv_context *ctx, nir_intrinsic_instr *intr)
 {
    SpvId img_var = get_src(ctx, &intr->src[0]);
-   SpvId sample = get_src(ctx, &intr->src[2]);
    SpvId param = get_src(ctx, &intr->src[3]);
    nir_variable *var = get_var_from_image(ctx, img_var);
    const struct glsl_type *type = glsl_without_array(var->type);
+   bool is_ms;
+   type_to_dim(glsl_get_sampler_dim(type), &is_ms);
+   SpvId sample = is_ms ? get_src(ctx, &intr->src[2]) : emit_uint_const(ctx, 32, 0);
    SpvId coord = get_image_coords(ctx, type, &intr->src[1]);
    SpvId base_type = get_glsl_basetype(ctx, glsl_get_sampler_result_type(type));
    SpvId texel = spirv_builder_emit_image_texel_pointer(&ctx->builder, base_type, img_var, coord, sample);
@@ -3767,6 +3801,8 @@ nir_to_spirv(struct nir_shader *s, const struct zink_so_info *so_info, uint32_t 
       spirv_builder_emit_cap(&ctx.builder, SpvCapabilityImageQuery);
    }
 
+   if (s->info.bit_sizes_int & 8)
+      spirv_builder_emit_cap(&ctx.builder, SpvCapabilityInt8);
    if (s->info.bit_sizes_int & 16)
       spirv_builder_emit_cap(&ctx.builder, SpvCapabilityInt16);
    if (s->info.bit_sizes_int & 64)

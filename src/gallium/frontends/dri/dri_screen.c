@@ -435,7 +435,9 @@ dri_get_egl_image(struct st_manager *smapi,
    __DRIimage *img = NULL;
    const struct dri2_format_mapping *map;
 
-   if (screen->lookup_egl_image) {
+   if (screen->lookup_egl_image_validated) {
+      img = screen->lookup_egl_image_validated(screen, egl_image);
+   } else if (screen->lookup_egl_image) {
       img = screen->lookup_egl_image(screen, egl_image);
    }
 
@@ -458,6 +460,15 @@ dri_get_egl_image(struct st_manager *smapi,
    }
 
    return TRUE;
+}
+
+static bool
+dri_validate_egl_image(struct st_manager *smapi,
+                       void *egl_image)
+{
+   struct dri_screen *screen = (struct dri_screen *)smapi;
+
+   return screen->validate_egl_image(screen, egl_image);
 }
 
 static int
@@ -545,6 +556,9 @@ dri_init_screen_helper(struct dri_screen *screen,
    screen->base.get_egl_image = dri_get_egl_image;
    screen->base.get_param = dri_get_param;
    screen->base.set_background_context = dri_set_background_context;
+
+   if (screen->validate_egl_image)
+      screen->base.validate_egl_image = dri_validate_egl_image;
 
    screen->st_api = st_gl_api_create();
    if (!screen->st_api)

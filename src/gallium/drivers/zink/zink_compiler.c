@@ -375,6 +375,8 @@ zink_screen_init_compiler(struct zink_screen *screen)
       .lower_uadd_carry = true,
       .lower_pack_64_2x32_split = true,
       .lower_unpack_64_2x32_split = true,
+      .lower_pack_32_2x16_split = true,
+      .lower_unpack_32_2x16_split = true,
       .lower_vector_cmp = true,
       .lower_int64_options = 0,
       .lower_doubles_options = ~nir_lower_fp64_full_software,
@@ -801,7 +803,7 @@ zink_shader_compile(struct zink_screen *screen, struct zink_shader *zs, nir_shad
    smci.codeSize = spirv->num_words * sizeof(uint32_t);
    smci.pCode = spirv->words;
 
-   if (vkCreateShaderModule(screen->dev, &smci, NULL, &mod) != VK_SUCCESS)
+   if (VKSCR(CreateShaderModule)(screen->dev, &smci, NULL, &mod) != VK_SUCCESS)
       mod = VK_NULL_HANDLE;
 
 done:
@@ -1103,7 +1105,7 @@ zink_shader_create(struct zink_screen *screen, struct nir_shader *nir,
    return ret;
 }
 
-void
+char *
 zink_shader_finalize(struct pipe_screen *pscreen, void *nirptr)
 {
    struct zink_screen *screen = zink_screen(pscreen);
@@ -1123,6 +1125,8 @@ zink_shader_finalize(struct pipe_screen *pscreen, void *nirptr)
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
    if (screen->driconf.inline_uniforms)
       nir_find_inlinable_uniforms(nir);
+
+   return NULL;
 }
 
 void

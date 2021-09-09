@@ -3057,7 +3057,10 @@ emit_if(struct ir3_context *ctx, nir_if *nif)
    struct ir3_block *last_else = get_block(ctx, nir_if_last_else_block(nif));
    struct ir3_block *after_if =
       get_block(ctx, nir_cf_node_as_block(nir_cf_node_next(&nif->cf_node)));
-   last_else->physical_successors[0] = after_if;
+   assert(last_else->physical_successors[0] &&
+          !last_else->physical_successors[1]);
+   if (after_if != last_else->physical_successors[0])
+      last_else->physical_successors[1] = after_if;
 }
 
 static void
@@ -3188,7 +3191,12 @@ emit_stream_out(struct ir3_context *ctx)
    orig_end_block->successors[0] = stream_out_block;
    orig_end_block->successors[1] = new_end_block;
 
+   orig_end_block->physical_successors[0] = stream_out_block;
+   orig_end_block->physical_successors[1] = new_end_block;
+
    stream_out_block->successors[0] = new_end_block;
+
+   stream_out_block->physical_successors[0] = new_end_block;
 
    /* setup 'if (vtxcnt < maxvtxcnt)' condition: */
    cond = ir3_CMPS_S(ctx->block, vtxcnt, 0, maxvtxcnt, 0);
