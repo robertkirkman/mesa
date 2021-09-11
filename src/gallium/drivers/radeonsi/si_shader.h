@@ -272,7 +272,7 @@ enum
    SI_VS_BLIT_SGPRS_POS_TEXCOORD = 9,
 };
 
-#define SI_NGG_CULL_VIEW_SMALLPRIMS          (1 << 0)   /* view.xy + small prims */
+#define SI_NGG_CULL_ENABLED                  (1 << 0)   /* this implies W, view.xy, and small prim culling */
 #define SI_NGG_CULL_BACK_FACE                (1 << 1)   /* back faces */
 #define SI_NGG_CULL_FRONT_FACE               (1 << 2)   /* front faces */
 #define SI_NGG_CULL_GS_FAST_LAUNCH_TRI_LIST  (1 << 3)   /* GS fast launch: triangles */
@@ -446,7 +446,6 @@ struct si_shader_selector {
    ubyte const_and_shader_buf_descriptors_index;
    ubyte sampler_and_images_descriptors_index;
    bool vs_needs_prolog;
-   bool prim_discard_cs_allowed;
    ubyte cs_shaderbufs_sgpr_index;
    ubyte cs_num_shaderbufs_in_user_sgprs;
    ubyte cs_images_sgpr_index;
@@ -577,7 +576,6 @@ union si_shader_part_key {
       unsigned as_ls : 1;
       unsigned as_es : 1;
       unsigned as_ngg : 1;
-      unsigned as_prim_discard_cs : 1;
       unsigned gs_fast_launch_tri_list : 1;  /* for NGG culling */
       unsigned gs_fast_launch_tri_strip : 1; /* for NGG culling */
       unsigned gs_fast_launch_index_size_packed : 2;
@@ -683,14 +681,6 @@ struct si_shader_key {
        * possible, because it's in the "opt" group.
        */
       unsigned prefer_mono : 1;
-
-      /* Primitive discard compute shader. */
-      unsigned vs_as_prim_discard_cs : 1;
-      unsigned cs_prim_type : 4;
-      unsigned cs_indexed : 1;
-      unsigned cs_provoking_vertex_first : 1;
-      unsigned cs_cull_front : 1;
-      unsigned cs_cull_back : 1;
 
       /* VS and TCS have the same number of patch vertices. */
       unsigned same_patch_vertices:1;
@@ -892,6 +882,7 @@ char *si_finalize_nir(struct pipe_screen *screen, void *nirptr);
 /* si_state_shaders.c */
 void gfx9_get_gs_info(struct si_shader_selector *es, struct si_shader_selector *gs,
                       struct gfx9_gs_info *out);
+bool gfx10_is_ngg_passthrough(struct si_shader *shader);
 
 /* Inline helpers. */
 
@@ -908,15 +899,6 @@ static inline struct si_shader **si_get_main_shader_part(struct si_shader_select
    if (key->as_ngg)
       return &sel->main_shader_part_ngg;
    return &sel->main_shader_part;
-}
-
-static inline bool gfx10_is_ngg_passthrough(struct si_shader *shader)
-{
-   struct si_shader_selector *sel = shader->selector;
-
-   return sel->info.stage != MESA_SHADER_GEOMETRY && !sel->so.num_outputs && !sel->info.writes_edgeflag &&
-          !shader->key.opt.ngg_culling &&
-          (sel->info.stage != MESA_SHADER_VERTEX || !shader->key.mono.u.vs_export_prim_id);
 }
 
 static inline bool si_shader_uses_bindless_samplers(struct si_shader_selector *selector)

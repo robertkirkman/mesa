@@ -4826,6 +4826,7 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
    case nir_intrinsic_global_atomic_comp_swap:
       nir_emit_global_atomic(bld, brw_aop_for_nir_intrinsic(instr), instr);
       break;
+   case nir_intrinsic_global_atomic_fadd:
    case nir_intrinsic_global_atomic_fmin:
    case nir_intrinsic_global_atomic_fmax:
    case nir_intrinsic_global_atomic_fcomp_swap:
@@ -4993,6 +4994,7 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
    case nir_intrinsic_ssbo_atomic_comp_swap:
       nir_emit_ssbo_atomic(bld, brw_aop_for_nir_intrinsic(instr), instr);
       break;
+   case nir_intrinsic_ssbo_atomic_fadd:
    case nir_intrinsic_ssbo_atomic_fmin:
    case nir_intrinsic_ssbo_atomic_fmax:
    case nir_intrinsic_ssbo_atomic_fcomp_swap:
@@ -5748,7 +5750,8 @@ fs_visitor::nir_emit_ssbo_atomic(const fs_builder &bld,
     * appear to exist.  However, if you look at Vol 2a, there are no message
     * descriptors provided for Qword atomic ops except for A64 messages.
     */
-   assert(nir_dest_bit_size(instr->dest) == 32);
+   assert(nir_dest_bit_size(instr->dest) == 32 ||
+          (nir_dest_bit_size(instr->dest) == 64 && devinfo->has_lsc));
 
    fs_reg dest;
    if (nir_intrinsic_infos[instr->intrinsic].has_dest)
@@ -5980,6 +5983,10 @@ fs_visitor::nir_emit_global_atomic_float(const fs_builder &bld,
    }
    case 32:
       bld.emit(SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT32_LOGICAL,
+               dest, addr, data, brw_imm_ud(op));
+      break;
+   case 64:
+      bld.emit(SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT64_LOGICAL,
                dest, addr, data, brw_imm_ud(op));
       break;
    default:

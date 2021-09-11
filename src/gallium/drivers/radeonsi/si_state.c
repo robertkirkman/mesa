@@ -902,14 +902,6 @@ static void *si_create_rs_state(struct pipe_context *ctx, const struct pipe_rast
       return NULL;
    }
 
-   if (!state->front_ccw) {
-      rs->cull_front = !!(state->cull_face & PIPE_FACE_FRONT);
-      rs->cull_back = !!(state->cull_face & PIPE_FACE_BACK);
-   } else {
-      rs->cull_back = !!(state->cull_face & PIPE_FACE_FRONT);
-      rs->cull_front = !!(state->cull_face & PIPE_FACE_BACK);
-   }
-   rs->provoking_vertex_first = state->flatshade_first;
    rs->scissor_enable = state->scissor;
    rs->clip_halfz = state->clip_halfz;
    rs->two_side = state->light_twoside;
@@ -929,9 +921,6 @@ static void *si_create_rs_state(struct pipe_context *ctx, const struct pipe_rast
    rs->flatshade_first = state->flatshade_first;
    rs->sprite_coord_enable = state->sprite_coord_enable;
    rs->rasterizer_discard = state->rasterizer_discard;
-   rs->polygon_mode_enabled =
-      (state->fill_front != PIPE_POLYGON_MODE_FILL && !(state->cull_face & PIPE_FACE_FRONT)) ||
-      (state->fill_back != PIPE_POLYGON_MODE_FILL && !(state->cull_face & PIPE_FACE_BACK));
    rs->polygon_mode_is_lines =
       (state->fill_front == PIPE_POLYGON_MODE_LINE && !(state->cull_face & PIPE_FACE_FRONT)) ||
       (state->fill_back == PIPE_POLYGON_MODE_LINE && !(state->cull_face & PIPE_FACE_BACK));
@@ -949,24 +938,30 @@ static void *si_create_rs_state(struct pipe_context *ctx, const struct pipe_rast
                          S_028810_DX_LINEAR_ATTR_CLIP_ENA(1);
 
    if (rs->rasterizer_discard) {
-      rs->ngg_cull_flags = SI_NGG_CULL_FRONT_FACE | SI_NGG_CULL_BACK_FACE;
+      rs->ngg_cull_flags = SI_NGG_CULL_ENABLED |
+                           SI_NGG_CULL_FRONT_FACE |
+                           SI_NGG_CULL_BACK_FACE;
       rs->ngg_cull_flags_y_inverted = rs->ngg_cull_flags;
    } else {
-      /* Polygon mode can't use view and small primitive culling,
-       * because it draws points or lines where the culling depends
-       * on the point or line width.
-       */
-      if (!rs->polygon_mode_enabled) {
-         rs->ngg_cull_flags |= SI_NGG_CULL_VIEW_SMALLPRIMS;
-         rs->ngg_cull_flags_y_inverted |= SI_NGG_CULL_VIEW_SMALLPRIMS;
+      rs->ngg_cull_flags = SI_NGG_CULL_ENABLED;
+      rs->ngg_cull_flags_y_inverted = rs->ngg_cull_flags;
+
+      bool cull_front, cull_back;
+
+      if (!state->front_ccw) {
+         cull_front = !!(state->cull_face & PIPE_FACE_FRONT);
+         cull_back = !!(state->cull_face & PIPE_FACE_BACK);
+      } else {
+         cull_back = !!(state->cull_face & PIPE_FACE_FRONT);
+         cull_front = !!(state->cull_face & PIPE_FACE_BACK);
       }
 
-      if (rs->cull_front) {
+      if (cull_front) {
          rs->ngg_cull_flags |= SI_NGG_CULL_FRONT_FACE;
          rs->ngg_cull_flags_y_inverted |= SI_NGG_CULL_BACK_FACE;
       }
 
-      if (rs->cull_back) {
+      if (cull_back) {
          rs->ngg_cull_flags |= SI_NGG_CULL_BACK_FACE;
          rs->ngg_cull_flags_y_inverted |= SI_NGG_CULL_FRONT_FACE;
       }
@@ -1009,7 +1004,10 @@ static void *si_create_rs_state(struct pipe_context *ctx, const struct pipe_rast
          S_028A48_VPORT_SCISSOR_ENABLE(1) |
          S_028A48_ALTERNATE_RBS_PER_TILE(sscreen->info.chip_class >= GFX9));
 
-   si_pm4_set_reg(pm4, R_028B7C_PA_SU_POLY_OFFSET_CLAMP, fui(state->offset_clamp));
+   bool polygon_mode_enabled =
+      (state->fill_front != PIPE_POLYGON_MODE_FILL && !(state->cull_face & PIPE_FACE_FRONT)) ||
+      (state->fill_back != PIPE_POLYGON_MODE_FILL && !(state->cull_face & PIPE_FACE_BACK));
+
    si_pm4_set_reg(pm4, R_028814_PA_SU_SC_MODE_CNTL,
                   S_028814_PROVOKING_VTX_LAST(!state->flatshade_first) |
                      S_028814_CULL_FRONT((state->cull_face & PIPE_FACE_FRONT) ? 1 : 0) |
@@ -1018,11 +1016,11 @@ static void *si_create_rs_state(struct pipe_context *ctx, const struct pipe_rast
                      S_028814_POLY_OFFSET_FRONT_ENABLE(util_get_offset(state, state->fill_front)) |
                      S_028814_POLY_OFFSET_BACK_ENABLE(util_get_offset(state, state->fill_back)) |
                      S_028814_POLY_OFFSET_PARA_ENABLE(state->offset_point || state->offset_line) |
-                     S_028814_POLY_MODE(rs->polygon_mode_enabled) |
+                     S_028814_POLY_MODE(polygon_mode_enabled) |
                      S_028814_POLYMODE_FRONT_PTYPE(si_translate_fill(state->fill_front)) |
                      S_028814_POLYMODE_BACK_PTYPE(si_translate_fill(state->fill_back)) |
                      /* this must be set if POLY_MODE or PERPENDICULAR_ENDCAP_ENA is set */
-                     S_028814_KEEP_TOGETHER_ENABLE(sscreen->info.chip_class >= GFX10 ? rs->polygon_mode_enabled : 0));
+                     S_028814_KEEP_TOGETHER_ENABLE(sscreen->info.chip_class >= GFX10 ? polygon_mode_enabled : 0));
 
    if (!rs->uses_poly_offset)
       return rs;
@@ -1058,11 +1056,12 @@ static void *si_create_rs_state(struct pipe_context *ctx, const struct pipe_rast
          }
       }
 
+      si_pm4_set_reg(pm4, R_028B78_PA_SU_POLY_OFFSET_DB_FMT_CNTL, pa_su_poly_offset_db_fmt_cntl);
+      si_pm4_set_reg(pm4, R_028B7C_PA_SU_POLY_OFFSET_CLAMP, fui(state->offset_clamp));
       si_pm4_set_reg(pm4, R_028B80_PA_SU_POLY_OFFSET_FRONT_SCALE, fui(offset_scale));
       si_pm4_set_reg(pm4, R_028B84_PA_SU_POLY_OFFSET_FRONT_OFFSET, fui(offset_units));
       si_pm4_set_reg(pm4, R_028B88_PA_SU_POLY_OFFSET_BACK_SCALE, fui(offset_scale));
       si_pm4_set_reg(pm4, R_028B8C_PA_SU_POLY_OFFSET_BACK_OFFSET, fui(offset_units));
-      si_pm4_set_reg(pm4, R_028B78_PA_SU_POLY_OFFSET_DB_FMT_CNTL, pa_su_poly_offset_db_fmt_cntl);
    }
 
    return rs;
@@ -4668,8 +4667,6 @@ static void *si_create_vertex_elements(struct pipe_context *ctx, unsigned count,
 
       unsigned instance_divisor = elements[i].instance_divisor;
       if (instance_divisor) {
-         v->uses_instance_divisors = true;
-
          if (instance_divisor == 1) {
             v->instance_divisor_is_one |= 1u << i;
          } else {
@@ -4865,21 +4862,20 @@ static void si_bind_vertex_elements(struct pipe_context *ctx, void *state)
       sctx->vertex_buffer_user_sgprs_dirty = false;
    }
 
-   if (old->count != v->count ||
-       old->uses_instance_divisors != v->uses_instance_divisors ||
-       /* we don't check which divisors changed */
-       v->uses_instance_divisors ||
+   if (old->instance_divisor_is_one != v->instance_divisor_is_one ||
+       old->instance_divisor_is_fetched != v->instance_divisor_is_fetched ||
        (old->vb_alignment_check_mask ^ v->vb_alignment_check_mask) &
        sctx->vertex_buffer_unaligned ||
        ((v->vb_alignment_check_mask & sctx->vertex_buffer_unaligned) &&
         memcmp(old->vertex_buffer_index, v->vertex_buffer_index,
-               sizeof(v->vertex_buffer_index[0]) * v->count)) ||
+               sizeof(v->vertex_buffer_index[0]) * MAX2(old->count, v->count))) ||
        /* fix_fetch_{always,opencode,unaligned} and hw_load_is_dword are
         * functions of fix_fetch and the src_offset alignment.
         * If they change and fix_fetch doesn't, it must be due to different
         * src_offset alignment, which is reflected in fix_fetch_opencode. */
        old->fix_fetch_opencode != v->fix_fetch_opencode ||
-       memcmp(old->fix_fetch, v->fix_fetch, sizeof(v->fix_fetch[0]) * v->count))
+       memcmp(old->fix_fetch, v->fix_fetch, sizeof(v->fix_fetch[0]) *
+              MAX2(old->count, v->count)))
       sctx->do_update_shaders = true;
 
    if (v->instance_divisor_is_fetched) {
@@ -5316,6 +5312,21 @@ void si_init_cs_preamble_state(struct si_context *sctx, bool uses_reg_shadowing)
       si_pm4_set_reg(pm4, R_028400_VGT_MAX_VTX_INDX, ~0);
       si_pm4_set_reg(pm4, R_028404_VGT_MIN_VTX_INDX, 0);
       si_pm4_set_reg(pm4, R_028408_VGT_INDX_OFFSET, 0);
+   }
+
+   if (sscreen->info.chip_class >= GFX10) {
+      si_pm4_set_reg(pm4, R_00B524_SPI_SHADER_PGM_HI_LS,
+                     S_00B524_MEM_BASE(sscreen->info.address32_hi >> 8));
+      si_pm4_set_reg(pm4, R_00B324_SPI_SHADER_PGM_HI_ES,
+                     S_00B324_MEM_BASE(sscreen->info.address32_hi >> 8));
+   } else if (sscreen->info.chip_class == GFX9) {
+      si_pm4_set_reg(pm4, R_00B414_SPI_SHADER_PGM_HI_LS,
+                     S_00B414_MEM_BASE(sscreen->info.address32_hi >> 8));
+      si_pm4_set_reg(pm4, R_00B214_SPI_SHADER_PGM_HI_ES,
+                     S_00B214_MEM_BASE(sscreen->info.address32_hi >> 8));
+   } else {
+      si_pm4_set_reg(pm4, R_00B524_SPI_SHADER_PGM_HI_LS,
+                     S_00B524_MEM_BASE(sscreen->info.address32_hi >> 8));
    }
 
    if (sctx->chip_class >= GFX7 && sctx->chip_class <= GFX8) {

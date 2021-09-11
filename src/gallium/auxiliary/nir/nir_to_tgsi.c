@@ -54,7 +54,7 @@ struct ntt_compile {
 
    /* TGSI temps for our NIR SSA and register values. */
    struct ureg_dst *reg_temp;
-   struct ureg_dst *ssa_temp;
+   struct ureg_src *ssa_temp;
 
    nir_instr_liveness *liveness;
 
@@ -384,19 +384,34 @@ ntt_setup_inputs(struct ntt_compile *c)
 }
 
 static enum tgsi_texture_type
-tgsi_target_from_sampler_dim(enum glsl_sampler_dim dim, bool is_array)
+tgsi_texture_type_from_sampler_dim(enum glsl_sampler_dim dim, bool is_array, bool is_shadow)
 {
    switch (dim) {
    case GLSL_SAMPLER_DIM_1D:
-      return is_array ? TGSI_TEXTURE_1D_ARRAY : TGSI_TEXTURE_1D;
+      if (is_shadow)
+         return is_array ? TGSI_TEXTURE_SHADOW1D_ARRAY : TGSI_TEXTURE_SHADOW1D;
+      else
+         return is_array ? TGSI_TEXTURE_1D_ARRAY : TGSI_TEXTURE_1D;
    case GLSL_SAMPLER_DIM_2D:
-      return is_array ? TGSI_TEXTURE_2D_ARRAY : TGSI_TEXTURE_2D;
+   case GLSL_SAMPLER_DIM_EXTERNAL:
+      if (is_shadow)
+         return is_array ? TGSI_TEXTURE_SHADOW2D_ARRAY : TGSI_TEXTURE_SHADOW2D;
+      else
+         return is_array ? TGSI_TEXTURE_2D_ARRAY : TGSI_TEXTURE_2D;
    case GLSL_SAMPLER_DIM_3D:
       return TGSI_TEXTURE_3D;
    case GLSL_SAMPLER_DIM_CUBE:
-      return is_array ? TGSI_TEXTURE_CUBE_ARRAY : TGSI_TEXTURE_CUBE;
+      if (is_shadow)
+         return is_array ? TGSI_TEXTURE_SHADOWCUBE_ARRAY : TGSI_TEXTURE_SHADOWCUBE;
+      else
+         return is_array ? TGSI_TEXTURE_CUBE_ARRAY : TGSI_TEXTURE_CUBE;
    case GLSL_SAMPLER_DIM_RECT:
-      return TGSI_TEXTURE_RECT;
+      if (is_shadow)
+         return TGSI_TEXTURE_SHADOWRECT;
+      else
+         return TGSI_TEXTURE_RECT;
+   case GLSL_SAMPLER_DIM_MS:
+      return is_array ? TGSI_TEXTURE_2D_ARRAY_MSAA : TGSI_TEXTURE_2D_MSAA;
    case GLSL_SAMPLER_DIM_BUF:
       return TGSI_TEXTURE_BUFFER;
    default:
@@ -404,14 +419,46 @@ tgsi_target_from_sampler_dim(enum glsl_sampler_dim dim, bool is_array)
    }
 }
 
+static enum tgsi_return_type
+tgsi_return_type_from_base_type(enum glsl_base_type type)
+{
+   switch (type) {
+   case GLSL_TYPE_INT:
+      return TGSI_RETURN_TYPE_SINT;
+   case GLSL_TYPE_UINT:
+      return TGSI_RETURN_TYPE_UINT;
+   case GLSL_TYPE_FLOAT:
+     return TGSI_RETURN_TYPE_FLOAT;
+   default:
+      unreachable("unexpected texture type");
+   }
+}
+
 static void
 ntt_setup_uniforms(struct ntt_compile *c)
 {
    nir_foreach_uniform_variable(var, c->s) {
-      if (glsl_type_is_image(var->type)) {
+      if (glsl_type_is_sampler(glsl_without_array(var->type))) {
+         /* Don't use this size for the check for samplers -- arrays of structs
+          * containing samplers should be ignored, and just the separate lowered
+          * sampler uniform decl used.
+          */
+         int size = glsl_type_get_sampler_count(var->type);
+
+         const struct glsl_type *stype = glsl_without_array(var->type);
+         enum tgsi_texture_type target = tgsi_texture_type_from_sampler_dim(glsl_get_sampler_dim(stype),
+                                                                            glsl_sampler_type_is_array(stype),
+                                                                            glsl_sampler_type_is_shadow(stype));
+         enum tgsi_return_type ret_type = tgsi_return_type_from_base_type(glsl_get_sampler_result_type(stype));
+         for (int i = 0; i < size; i++) {
+            ureg_DECL_sampler_view(c->ureg, var->data.binding + i,
+               target, ret_type, ret_type, ret_type, ret_type);
+            ureg_DECL_sampler(c->ureg, var->data.binding + i);
+         }
+      } else if (glsl_type_is_image(var->type)) {
          enum tgsi_texture_type tex_type =
-             tgsi_target_from_sampler_dim(glsl_get_sampler_dim(var->type),
-                                          glsl_sampler_type_is_array(var->type));
+               tgsi_texture_type_from_sampler_dim(glsl_get_sampler_dim(var->type),
+                                                  glsl_sampler_type_is_array(var->type), false);
 
          c->images[var->data.binding] = ureg_DECL_image(c->ureg,
                                                         var->data.binding,
@@ -463,11 +510,6 @@ ntt_setup_uniforms(struct ntt_compile *c)
        */
       bool atomic = false;
       ureg_DECL_buffer(c->ureg, i, atomic);
-   }
-
-   for (int i = 0; i < PIPE_MAX_SAMPLERS; i++) {
-      if (BITSET_TEST(c->s->info.textures_used, i))
-         ureg_DECL_sampler(c->ureg, i);
    }
 }
 
@@ -582,7 +624,7 @@ ntt_get_src(struct ntt_compile *c, nir_src src)
       if (src.ssa->parent_instr->type == nir_instr_type_load_const)
          return ntt_get_load_const_src(c, nir_instr_as_load_const(src.ssa->parent_instr));
 
-      return ureg_src(c->ssa_temp[src.ssa->index]);
+      return c->ssa_temp[src.ssa->index];
    } else {
       nir_register *reg = src.reg.reg;
       struct ureg_dst reg_temp = c->reg_temp[reg->index];
@@ -648,7 +690,7 @@ ntt_swizzle_for_write_mask(struct ureg_src src, uint32_t write_mask)
                        (write_mask & TGSI_WRITEMASK_W) ? TGSI_SWIZZLE_W : first_chan);
 }
 
-static struct ureg_dst *
+static struct ureg_dst
 ntt_get_ssa_def_decl(struct ntt_compile *c, nir_ssa_def *ssa)
 {
    uint32_t writemask = BITSET_MASK(ssa->num_components);
@@ -659,24 +701,24 @@ ntt_get_ssa_def_decl(struct ntt_compile *c, nir_ssa_def *ssa)
    if (!ntt_try_store_in_tgsi_output(c, &dst, &ssa->uses, &ssa->if_uses))
       dst = ureg_DECL_temporary(c->ureg);
 
-   c->ssa_temp[ssa->index] = ureg_writemask(dst, writemask);
+   c->ssa_temp[ssa->index] = ntt_swizzle_for_write_mask(ureg_src(dst), writemask);
 
-   return &c->ssa_temp[ssa->index];
+   return ureg_writemask(dst, writemask);
 }
 
-static struct ureg_dst *
+static struct ureg_dst
 ntt_get_dest_decl(struct ntt_compile *c, nir_dest *dest)
 {
    if (dest->is_ssa)
       return ntt_get_ssa_def_decl(c, &dest->ssa);
    else
-      return &c->reg_temp[dest->reg.reg->index];
+      return c->reg_temp[dest->reg.reg->index];
 }
 
 static struct ureg_dst
 ntt_get_dest(struct ntt_compile *c, nir_dest *dest)
 {
-   struct ureg_dst dst = *ntt_get_dest_decl(c, dest);
+   struct ureg_dst dst = ntt_get_dest_decl(c, dest);
 
    if (!dest->is_ssa) {
       dst.Index += dest->reg.base_offset;
@@ -696,22 +738,18 @@ ntt_get_dest(struct ntt_compile *c, nir_dest *dest)
 static void
 ntt_store_def(struct ntt_compile *c, nir_ssa_def *def, struct ureg_src src)
 {
-   if (!src.Negate && !src.Absolute && !src.Indirect && !src.DimIndirect &&
-       src.SwizzleX == TGSI_SWIZZLE_X &&
-       (src.SwizzleY == TGSI_SWIZZLE_Y || def->num_components < 2) &&
-       (src.SwizzleZ == TGSI_SWIZZLE_Z || def->num_components < 3) &&
-       (src.SwizzleW == TGSI_SWIZZLE_W || def->num_components < 4)) {
+   if (!src.Indirect && !src.DimIndirect) {
       switch (src.File) {
       case TGSI_FILE_IMMEDIATE:
       case TGSI_FILE_INPUT:
       case TGSI_FILE_CONSTANT:
       case TGSI_FILE_SYSTEM_VALUE:
-         c->ssa_temp[def->index] = ureg_dst(src);
+         c->ssa_temp[def->index] = src;
          return;
       }
    }
 
-   ureg_MOV(c->ureg, *ntt_get_ssa_def_decl(c, def), src);
+   ureg_MOV(c->ureg, ntt_get_ssa_def_decl(c, def), src);
 }
 
 static void
@@ -1307,6 +1345,7 @@ ntt_emit_mem(struct ntt_compile *c, nir_intrinsic_instr *instr,
    struct ureg_src src[4];
    int num_src = 0;
    int nir_src;
+   struct ureg_dst addr_temp = ureg_dst_undef();
 
    struct ureg_src memory;
    switch (mode) {
@@ -1320,9 +1359,16 @@ ntt_emit_mem(struct ntt_compile *c, nir_intrinsic_instr *instr,
       nir_src = 0;
       break;
    case nir_var_uniform: { /* HW atomic buffers */
-      uint32_t offset = nir_src_as_uint(instr->src[0]);
-      memory = ureg_src_dimension(ureg_src_register(TGSI_FILE_HW_ATOMIC, offset / 4),
-                                  nir_intrinsic_base(instr));
+      memory = ureg_src_register(TGSI_FILE_HW_ATOMIC, 0);
+      /* ntt_ureg_src_indirect, except dividing by 4 */
+      if (nir_src_is_const(instr->src[0])) {
+         memory.Index += nir_src_as_uint(instr->src[0]) / 4;
+      } else {
+         addr_temp = ureg_DECL_temporary(c->ureg);
+         ureg_USHR(c->ureg, addr_temp, ntt_get_src(c, instr->src[0]), ureg_imm1i(c->ureg, 2));
+         memory = ureg_src_indirect(memory, ntt_reladdr(c, ureg_src(addr_temp)));
+      }
+      memory = ureg_src_dimension(memory, nir_intrinsic_base(instr));
       nir_src = 0;
       break;
    }
@@ -1450,6 +1496,8 @@ ntt_emit_mem(struct ntt_compile *c, nir_intrinsic_instr *instr,
                     qualifier,
                     TGSI_TEXTURE_BUFFER,
                     0 /* format: unused */);
+
+   ureg_release_temporary(c->ureg, addr_temp);
 }
 
 static void
@@ -1463,7 +1511,7 @@ ntt_emit_image_load_store(struct ntt_compile *c, nir_intrinsic_instr *instr)
 
    struct ureg_dst temp = ureg_dst_undef();
 
-   enum tgsi_texture_type target = tgsi_target_from_sampler_dim(dim, is_array);
+   enum tgsi_texture_type target = tgsi_texture_type_from_sampler_dim(dim, is_array, false);
 
    struct ureg_src resource =
       ntt_ureg_src_indirect(c, ureg_src_register(TGSI_FILE_IMAGE, 0),
@@ -1860,6 +1908,7 @@ ntt_emit_intrinsic(struct ntt_compile *c, nir_intrinsic_instr *instr)
       break;
 
    case nir_intrinsic_control_barrier:
+   case nir_intrinsic_memory_barrier_tcs_patch:
       ureg_BARRIER(c->ureg);
       break;
 
@@ -1947,7 +1996,7 @@ static void
 ntt_emit_texture(struct ntt_compile *c, nir_tex_instr *instr)
 {
    struct ureg_dst dst = ntt_get_dest(c, &instr->dest);
-   unsigned target;
+   enum tgsi_texture_type target = tgsi_texture_type_from_sampler_dim(instr->sampler_dim, instr->is_array, instr->is_shadow);
    unsigned tex_opcode;
 
    struct ureg_src sampler = ureg_DECL_sampler(c->ureg, instr->sampler_index);
@@ -2012,79 +2061,6 @@ ntt_emit_texture(struct ntt_compile *c, nir_tex_instr *instr)
 
    /* non-coord arg for TXQ */
    ntt_push_tex_arg(c, instr, nir_tex_src_lod, &s);
-
-   switch (instr->sampler_dim) {
-   case GLSL_SAMPLER_DIM_1D:
-      if (instr->is_array) {
-         if (instr->is_shadow) {
-            target = TGSI_TEXTURE_SHADOW1D_ARRAY;
-         } else {
-            target = TGSI_TEXTURE_1D_ARRAY;
-         }
-      } else {
-         if (instr->is_shadow) {
-            target = TGSI_TEXTURE_SHADOW1D;
-         } else {
-            target = TGSI_TEXTURE_1D;
-         }
-      }
-      break;
-   case GLSL_SAMPLER_DIM_2D:
-   case GLSL_SAMPLER_DIM_EXTERNAL:
-      if (instr->is_array) {
-         if (instr->is_shadow) {
-            target = TGSI_TEXTURE_SHADOW2D_ARRAY;
-         } else {
-            target = TGSI_TEXTURE_2D_ARRAY;
-         }
-      } else {
-         if (instr->is_shadow) {
-            target = TGSI_TEXTURE_SHADOW2D;
-         } else {
-            target = TGSI_TEXTURE_2D;
-         }
-      }
-      break;
-   case GLSL_SAMPLER_DIM_MS:
-      if (instr->is_array) {
-         target = TGSI_TEXTURE_2D_ARRAY_MSAA;
-      } else {
-         target = TGSI_TEXTURE_2D_ARRAY;
-      }
-      break;
-   case GLSL_SAMPLER_DIM_3D:
-      assert(!instr->is_shadow);
-      target = TGSI_TEXTURE_3D;
-      break;
-   case GLSL_SAMPLER_DIM_RECT:
-      if (instr->is_shadow) {
-         target = TGSI_TEXTURE_SHADOWRECT;
-      } else {
-         target = TGSI_TEXTURE_RECT;
-      }
-      break;
-   case GLSL_SAMPLER_DIM_CUBE:
-      if (instr->is_array) {
-         if (instr->is_shadow) {
-            target = TGSI_TEXTURE_SHADOWCUBE_ARRAY;
-         } else {
-            target = TGSI_TEXTURE_CUBE_ARRAY;
-         }
-      } else {
-         if (instr->is_shadow) {
-            target = TGSI_TEXTURE_SHADOWCUBE;
-         } else {
-            target = TGSI_TEXTURE_CUBE;
-         }
-      }
-      break;
-   case GLSL_SAMPLER_DIM_BUF:
-      target = TGSI_TEXTURE_BUFFER;
-      break;
-   default:
-      fprintf(stderr, "Unknown sampler dimensions: %d\n", instr->sampler_dim);
-      abort();
-   }
 
    if (s.i > 1) {
       if (tex_opcode == TGSI_OPCODE_TEX)
@@ -2277,7 +2253,7 @@ ntt_free_ssa_temp_by_index(struct ntt_compile *c, int index)
    if (c->ssa_temp[index].File != TGSI_FILE_TEMPORARY)
       return;
 
-   ureg_release_temporary(c->ureg, c->ssa_temp[index]);
+   ureg_release_temporary(c->ureg, ureg_dst(c->ssa_temp[index]));
    memset(&c->ssa_temp[index], 0, sizeof(c->ssa_temp[index]));
 }
 
@@ -2362,7 +2338,7 @@ ntt_emit_impl(struct ntt_compile *c, nir_function_impl *impl)
    c->impl = impl;
    c->liveness = nir_live_ssa_defs_per_instr(impl);
 
-   c->ssa_temp = rzalloc_array(c, struct ureg_dst, impl->ssa_alloc);
+   c->ssa_temp = rzalloc_array(c, struct ureg_src, impl->ssa_alloc);
    c->reg_temp = rzalloc_array(c, struct ureg_dst, impl->reg_alloc);
 
    ntt_setup_registers(c, &impl->registers);

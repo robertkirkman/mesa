@@ -347,6 +347,10 @@ tu_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
 
    *pInstance = tu_instance_to_handle(instance);
 
+#ifdef HAVE_PERFETTO
+   tu_perfetto_init();
+#endif
+
    return VK_SUCCESS;
 }
 
@@ -1240,6 +1244,167 @@ tu_queue_finish(struct tu_queue *queue)
    tu_drm_submitqueue_close(queue->device, queue->msm_queue_id);
 }
 
+uint64_t
+tu_device_ticks_to_ns(struct tu_device *dev, uint64_t ts)
+{
+   /* This is based on the 19.2MHz always-on rbbm timer.
+    *
+    * TODO we should probably query this value from kernel..
+    */
+   return ts * (1000000000 / 19200000);
+}
+
+static void*
+tu_trace_create_ts_buffer(struct u_trace_context *utctx, uint32_t size)
+{
+   struct tu_device *device =
+      container_of(utctx, struct tu_device, trace_context);
+
+   struct tu_bo *bo = ralloc(NULL, struct tu_bo);
+   tu_bo_init_new(device, bo, size, false);
+
+   return bo;
+}
+
+static void
+tu_trace_destroy_ts_buffer(struct u_trace_context *utctx, void *timestamps)
+{
+   struct tu_device *device =
+      container_of(utctx, struct tu_device, trace_context);
+   struct tu_bo *bo = timestamps;
+
+   tu_bo_finish(device, bo);
+   ralloc_free(bo);
+}
+
+static void
+tu_trace_record_ts(struct u_trace *ut, void *cs, void *timestamps,
+                   unsigned idx)
+{
+   struct tu_bo *bo = timestamps;
+   struct tu_cs *ts_cs = cs;
+
+   unsigned ts_offset = idx * sizeof(uint64_t);
+   tu_cs_emit_pkt7(ts_cs, CP_EVENT_WRITE, 4);
+   tu_cs_emit(ts_cs, CP_EVENT_WRITE_0_EVENT(RB_DONE_TS) | CP_EVENT_WRITE_0_TIMESTAMP);
+   tu_cs_emit_qw(ts_cs, bo->iova + ts_offset);
+   tu_cs_emit(ts_cs, 0x00000000);
+}
+
+static uint64_t
+tu_trace_read_ts(struct u_trace_context *utctx,
+                 void *timestamps, unsigned idx, void *flush_data)
+{
+   struct tu_device *device =
+      container_of(utctx, struct tu_device, trace_context);
+   struct tu_bo *bo = timestamps;
+   struct tu_u_trace_flush_data *trace_flush_data = flush_data;
+
+   /* Only need to stall on results for the first entry: */
+   if (idx == 0) {
+      tu_device_wait_u_trace(device, trace_flush_data->syncobj);
+   }
+
+   if (tu_bo_map(device, bo) != VK_SUCCESS) {
+      return U_TRACE_NO_TIMESTAMP;
+   }
+
+   uint64_t *ts = bo->map;
+
+   /* Don't translate the no-timestamp marker: */
+   if (ts[idx] == U_TRACE_NO_TIMESTAMP)
+      return U_TRACE_NO_TIMESTAMP;
+
+   return tu_device_ticks_to_ns(device, ts[idx]);
+}
+
+static void
+tu_trace_delete_flush_data(struct u_trace_context *utctx, void *flush_data)
+{
+   struct tu_device *device =
+      container_of(utctx, struct tu_device, trace_context);
+   struct tu_u_trace_flush_data *trace_flush_data = flush_data;
+
+   tu_u_trace_cmd_data_finish(device, trace_flush_data->cmd_trace_data,
+                              trace_flush_data->trace_count);
+   vk_free(&device->vk.alloc, trace_flush_data->syncobj);
+   vk_free(&device->vk.alloc, trace_flush_data);
+}
+
+void
+tu_copy_timestamp_buffer(struct u_trace_context *utctx, void *cmdstream,
+                         void *ts_from, uint32_t from_offset,
+                         void *ts_to, uint32_t to_offset,
+                         uint32_t count)
+{
+   struct tu_cs *cs = cmdstream;
+   struct tu_bo *bo_from = ts_from;
+   struct tu_bo *bo_to = ts_to;
+
+   tu_cs_emit_pkt7(cs, CP_MEMCPY, 5);
+   tu_cs_emit(cs, count * sizeof(uint64_t) / sizeof(uint32_t));
+   tu_cs_emit_qw(cs, bo_from->iova + from_offset * sizeof(uint64_t));
+   tu_cs_emit_qw(cs, bo_to->iova + to_offset * sizeof(uint64_t));
+}
+
+VkResult
+tu_create_copy_timestamp_cs(struct tu_cmd_buffer *cmdbuf, struct tu_cs** cs,
+                            struct u_trace **trace_copy)
+{
+   *cs = vk_zalloc(&cmdbuf->device->vk.alloc, sizeof(struct tu_cs), 8,
+                   VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+
+   if (*cs == NULL) {
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+   }
+
+   tu_cs_init(*cs, cmdbuf->device, TU_CS_MODE_GROW,
+              list_length(&cmdbuf->trace.trace_chunks) * 6 + 3);
+
+   tu_cs_begin(*cs);
+
+   tu_cs_emit_wfi(*cs);
+   tu_cs_emit_pkt7(*cs, CP_WAIT_FOR_ME, 0);
+
+   *trace_copy = vk_zalloc(&cmdbuf->device->vk.alloc, sizeof(struct u_trace), 8,
+                           VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+
+   if (*trace_copy == NULL) {
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+   }
+
+   u_trace_init(*trace_copy, cmdbuf->trace.utctx);
+   u_trace_clone_append(u_trace_begin_iterator(&cmdbuf->trace),
+                        u_trace_end_iterator(&cmdbuf->trace),
+                        *trace_copy, *cs,
+                        tu_copy_timestamp_buffer);
+
+   tu_cs_emit_wfi(*cs);
+
+   tu_cs_end(*cs);
+
+   return VK_SUCCESS;
+}
+
+void
+tu_u_trace_cmd_data_finish(struct tu_device *device,
+                           struct tu_u_trace_cmd_data *trace_data,
+                           uint32_t entry_count)
+{
+   for (uint32_t i = 0; i < entry_count; ++i) {
+      /* Only if we had to create a copy of trace we should free it */
+      if (trace_data[i].timestamp_copy_cs != NULL) {
+         tu_cs_finish(trace_data[i].timestamp_copy_cs);
+         vk_free(&device->vk.alloc, trace_data[i].timestamp_copy_cs);
+
+         u_trace_fini(trace_data[i].trace);
+         vk_free(&device->vk.alloc, trace_data[i].trace);
+      }
+   }
+
+   vk_free(&device->vk.alloc, trace_data);
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 tu_CreateDevice(VkPhysicalDevice physicalDevice,
                 const VkDeviceCreateInfo *pCreateInfo,
@@ -1480,6 +1645,14 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
 
    mtx_init(&device->mutex, mtx_plain);
 
+   device->submit_count = 0;
+   u_trace_context_init(&device->trace_context, device,
+                     tu_trace_create_ts_buffer,
+                     tu_trace_destroy_ts_buffer,
+                     tu_trace_record_ts,
+                     tu_trace_read_ts,
+                     tu_trace_delete_flush_data);
+
    *pDevice = tu_device_to_handle(device);
    return VK_SUCCESS;
 
@@ -1520,6 +1693,8 @@ tu_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
 
    if (!device)
       return;
+
+   u_trace_context_fini(&device->trace_context);
 
    for (unsigned i = 0; i < TU_MAX_QUEUE_FAMILIES; i++) {
       for (unsigned q = 0; q < device->queue_count[i]; q++)

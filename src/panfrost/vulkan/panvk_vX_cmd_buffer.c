@@ -465,7 +465,7 @@ panvk_draw_prepare_fs_rsd(struct panvk_cmd_buffer *cmdbuf,
 
             STATIC_ASSERT(sizeof(pipeline->blend.bd_template[0]) >= sizeof(*bd_templ));
             panvk_per_arch(emit_blend_constant)(cmdbuf->device, pipeline, i,
-                                                cmdbuf->state.blend.constants[i],
+                                                cmdbuf->state.blend.constants,
                                                 &bd_dyn);
             pan_merge(bd_dyn, (*bd_templ), BLEND);
             memcpy(bd, &bd_dyn, sizeof(bd_dyn));
@@ -921,15 +921,14 @@ panvk_per_arch(CmdWaitEvents)(VkCommandBuffer commandBuffer,
 static VkResult
 panvk_reset_cmdbuf(struct panvk_cmd_buffer *cmdbuf)
 {
-   struct panfrost_device *pdev = &cmdbuf->device->physical_device->pdev;
-
    cmdbuf->record_result = VK_SUCCESS;
 
    list_for_each_entry_safe(struct panvk_batch, batch, &cmdbuf->batches, node) {
       list_del(&batch->node);
       util_dynarray_fini(&batch->jobs);
-      if (!pan_is_bifrost(pdev))
-         panfrost_bo_unreference(batch->tiler.ctx.midgard.polygon_list);
+#if PAN_ARCH <= 5
+      panfrost_bo_unreference(batch->tiler.ctx.midgard.polygon_list);
+#endif
 
       util_dynarray_fini(&batch->event_ops);
 
@@ -950,7 +949,6 @@ panvk_reset_cmdbuf(struct panvk_cmd_buffer *cmdbuf)
 static void
 panvk_destroy_cmdbuf(struct panvk_cmd_buffer *cmdbuf)
 {
-   struct panfrost_device *pdev = &cmdbuf->device->physical_device->pdev;
    struct panvk_device *device = cmdbuf->device;
 
    list_del(&cmdbuf->pool_link);
@@ -958,8 +956,9 @@ panvk_destroy_cmdbuf(struct panvk_cmd_buffer *cmdbuf)
    list_for_each_entry_safe(struct panvk_batch, batch, &cmdbuf->batches, node) {
       list_del(&batch->node);
       util_dynarray_fini(&batch->jobs);
-      if (!pan_is_bifrost(pdev))
-         panfrost_bo_unreference(batch->tiler.ctx.midgard.polygon_list);
+#if PAN_ARCH <= 5
+      panfrost_bo_unreference(batch->tiler.ctx.midgard.polygon_list);
+#endif
 
       util_dynarray_fini(&batch->event_ops);
 

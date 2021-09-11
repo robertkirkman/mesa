@@ -30,9 +30,6 @@
 
 #include "util/u_queue.h"
 
-#include "pipe/p_context.h"
-#include "pipe/p_state.h"
-
 #ifdef  __cplusplus
 extern "C" {
 #endif
@@ -73,8 +70,6 @@ struct u_trace_context;
 struct u_trace;
 struct u_trace_chunk;
 
-struct pipe_resource;
-
 /**
  * Special reserved value to indicate that no timestamp was captured,
  * and that the timestamp of the previous trace should be reused.
@@ -82,21 +77,37 @@ struct pipe_resource;
 #define U_TRACE_NO_TIMESTAMP ((uint64_t)0)
 
 /**
- * Driver provided callback to emit commands to capture a 64b timestamp
- * into the specified timestamps buffer, at the specified index.
+ * Driver provided callback to create a timestamp buffer which will be
+ * read by u_trace_read_ts function.
+ */
+typedef void* (*u_trace_create_ts_buffer)(struct u_trace_context *utctx,
+      uint32_t timestamps_count);
+
+/**
+ * Driver provided callback to delete a timestamp buffer.
+ */
+typedef void (*u_trace_delete_ts_buffer)(struct u_trace_context *utctx,
+      void *timestamps);
+
+/**
+ * Driver provided callback to emit commands into the soecified command
+ * stream to capture a 64b timestamp into the specified timestamps buffer,
+ * at the specified index.
  *
  * The hw counter that the driver records should be something that runs at
  * a fixed rate, even as the GPU freq changes.  The same source used for
  * GL_TIMESTAMP queries should be appropriate.
  */
-typedef void (*u_trace_record_ts)(struct u_trace *ut,
-      struct pipe_resource *timestamps, unsigned idx);
+typedef void (*u_trace_record_ts)(struct u_trace *ut, void *cs,
+      void *timestamps, unsigned idx);
 
 /**
  * Driver provided callback to read back a previously recorded timestamp.
  * If necessary, this should block until the GPU has finished writing back
  * the timestamps.  (The timestamps will be read back in order, so it is
  * safe to only synchronize on idx==0.)
+ *
+ * flush_data is data provided by the driver via u_trace_flush.
  *
  * The returned timestamp should be in units of nanoseconds.  The same
  * timebase as GL_TIMESTAMP queries should be used.
@@ -109,16 +120,26 @@ typedef void (*u_trace_record_ts)(struct u_trace *ut,
  * capturing the same timestamp multiple times in a row.
  */
 typedef uint64_t (*u_trace_read_ts)(struct u_trace_context *utctx,
-      struct pipe_resource *timestamps, unsigned idx);
+      void *timestamps, unsigned idx, void *flush_data);
+
+/**
+ * Driver provided callback to delete flush data.
+ */
+typedef void (*u_trace_delete_flush_data)(struct u_trace_context *utctx,
+      void *flush_data);
 
 /**
  * The trace context provides tracking for "in-flight" traces, once the
  * cmdstream that records timestamps has been flushed.
  */
 struct u_trace_context {
-   struct pipe_context      *pctx;
+   void *pctx;
+
+   u_trace_create_ts_buffer  create_timestamp_buffer;
+   u_trace_delete_ts_buffer  delete_timestamp_buffer;
    u_trace_record_ts         record_timestamp;
    u_trace_read_ts           read_timestamp;
+   u_trace_delete_flush_data delete_flush_data;
 
    FILE *out;
 
@@ -165,9 +186,12 @@ struct u_trace {
 };
 
 void u_trace_context_init(struct u_trace_context *utctx,
-      struct pipe_context *pctx,
-      u_trace_record_ts record_timestamp,
-      u_trace_read_ts   read_timestamp);
+      void *pctx,
+      u_trace_create_ts_buffer   create_timestamp_buffer,
+      u_trace_delete_ts_buffer   delete_timestamp_buffer,
+      u_trace_record_ts          record_timestamp,
+      u_trace_read_ts            read_timestamp,
+      u_trace_delete_flush_data  delete_flush_data);
 void u_trace_context_fini(struct u_trace_context *utctx);
 
 /**
@@ -181,15 +205,69 @@ void u_trace_context_process(struct u_trace_context *utctx, bool eof);
 void u_trace_init(struct u_trace *ut, struct u_trace_context *utctx);
 void u_trace_fini(struct u_trace *ut);
 
+bool u_trace_has_points(struct u_trace *ut);
+
+struct u_trace_iterator
+{
+   struct u_trace *ut;
+   struct u_trace_chunk *chunk;
+   uint32_t event_idx;
+};
+
+struct u_trace_iterator
+u_trace_begin_iterator(struct u_trace *ut);
+
+struct u_trace_iterator
+u_trace_end_iterator(struct u_trace *ut);
+
+bool
+u_trace_iterator_equal(struct u_trace_iterator a,
+                       struct u_trace_iterator b);
+
+typedef void (*u_trace_copy_ts_buffer)(struct u_trace_context *utctx,
+      void *cmdstream,
+      void *ts_from, uint32_t from_offset,
+      void *ts_to, uint32_t to_offset,
+      uint32_t count);
+
+/**
+ * Clones tracepoints range into target u_trace.
+ * Provides callback for driver to copy timestamps on GPU from
+ * one buffer to another.
+ *
+ * The payload is shared and remains owned by the original u_trace
+ * if tracepoints are being copied between different u_trace!
+ *
+ * It allows:
+ * - Tracing re-usable command buffer in Vulkan, by copying tracepoints
+ *   each time it is submitted.
+ * - Per-tile tracing for tiling GPUs, by copying a range of tracepoints
+ *   corresponding to a tile.
+ */
+void u_trace_clone_append(struct u_trace_iterator begin_it,
+                          struct u_trace_iterator end_it,
+                          struct u_trace *into,
+                          void *cmdstream,
+                          u_trace_copy_ts_buffer copy_ts_buffer);
+
+void u_trace_disable_event_range(struct u_trace_iterator begin_it,
+                                 struct u_trace_iterator end_it);
+
 /**
  * Flush traces to the parent trace-context.  At this point, the expectation
  * is that all the tracepoints are "executed" by the GPU following any previously
  * flushed u_trace batch.
  *
+ * flush_data is a way for driver to pass additional data, which becomes available
+ * only at the point of flush, to the u_trace_read_ts callback and perfetto.
+ * The typical example of such data would be a fence to wait on in u_trace_read_ts,
+ * and a submission_id to pass into perfetto.
+ * The destruction of the data is done via u_trace_delete_flush_data.
+ *
  * This should typically be called when the corresponding cmdstream (containing
  * the timestamp reads) is flushed to the kernel.
  */
-void u_trace_flush(struct u_trace *ut);
+void u_trace_flush(struct u_trace *ut, void *flush_data, bool free_data);
 
 #ifdef HAVE_PERFETTO
 extern int ut_perfetto_enabled;
@@ -200,30 +278,10 @@ void u_trace_perfetto_stop(void);
 #  define ut_perfetto_enabled 0
 #endif
 
-/*
- * TODO in some cases it is useful to have composite tracepoints like this,
- * to log more complex data structures.. but this is probably not where they
- * should live:
- */
-
-void __trace_surface(struct u_trace *ut, const struct pipe_surface *psurf);
-void __trace_framebuffer(struct u_trace *ut, const struct pipe_framebuffer_state *pfb);
-
-static inline void
-trace_framebuffer_state(struct u_trace *ut, const struct pipe_framebuffer_state *pfb)
+static inline bool
+u_trace_context_tracing(struct u_trace_context *utctx)
 {
-   if (likely(!ut->enabled))
-      return;
-
-   __trace_framebuffer(ut, pfb);
-   for (unsigned i = 0; i < pfb->nr_cbufs; i++) {
-      if (pfb->cbufs[i]) {
-         __trace_surface(ut, pfb->cbufs[i]);
-      }
-   }
-   if (pfb->zsbuf) {
-      __trace_surface(ut, pfb->zsbuf);
-   }
+   return !!utctx->out || (ut_perfetto_enabled > 0);
 }
 
 #ifdef  __cplusplus

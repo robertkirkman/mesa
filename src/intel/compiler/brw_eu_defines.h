@@ -442,6 +442,7 @@ enum opcode {
    SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT64_LOGICAL,
    SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT16_LOGICAL,
    SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT32_LOGICAL,
+   SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT64_LOGICAL,
 
    SHADER_OPCODE_TYPED_ATOMIC_LOGICAL,
    SHADER_OPCODE_TYPED_SURFACE_READ_LOGICAL,
@@ -1568,6 +1569,7 @@ enum brw_message_target {
 #define BRW_AOP_FMAX                  1
 #define BRW_AOP_FMIN                  2
 #define BRW_AOP_FCMPWR                3
+#define BRW_AOP_FADD                  4
 
 #define BRW_MATH_FUNCTION_INV                              1
 #define BRW_MATH_FUNCTION_LOG                              2

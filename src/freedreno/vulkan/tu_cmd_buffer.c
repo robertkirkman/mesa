@@ -35,6 +35,8 @@
 
 #include "tu_cs.h"
 
+#include "tu_tracepoints.h"
+
 void
 tu6_emit_event_write(struct tu_cmd_buffer *cmd,
                      struct tu_cs *cs,
@@ -987,8 +989,12 @@ tu6_emit_binning_pass(struct tu_cmd_buffer *cmd, struct tu_cs *cs)
    tu_cs_emit_regs(cs,
                    A6XX_SP_TP_WINDOW_OFFSET(.x = 0, .y = 0));
 
+   trace_start_binning_ib(&cmd->trace, cs);
+
    /* emit IB to binning drawcmds: */
    tu_cs_emit_call(cs, &cmd->draw_cs);
+
+   trace_end_binning_ib(&cmd->trace, cs);
 
    /* switching from binning pass to GMEM pass will cause a switch from
     * PROGRAM_BINNING to PROGRAM, which invalidates const state (XS_CONST states)
@@ -1300,6 +1306,15 @@ tu6_render_tile(struct tu_cmd_buffer *cmd, struct tu_cs *cs)
 
    tu_cs_emit_call(cs, &cmd->tile_store_cs);
 
+   if (!u_trace_iterator_equal(cmd->trace_renderpass_start, cmd->trace_renderpass_end)) {
+      tu_cs_emit_wfi(cs);
+      tu_cs_emit_pkt7(&cmd->cs, CP_WAIT_FOR_ME, 0);
+      u_trace_clone_append(cmd->trace_renderpass_start,
+                           cmd->trace_renderpass_end,
+                           &cmd->trace,
+                           cs, tu_copy_timestamp_buffer);
+   }
+
    tu_cs_sanity_check(cs);
 }
 
@@ -1336,13 +1351,22 @@ tu_cmd_render_tiles(struct tu_cmd_buffer *cmd)
          for (uint32_t ty = ty1; ty < ty2; ty++) {
             for (uint32_t tx = tx1; tx < tx2; tx++, slot++) {
                tu6_emit_tile_select(cmd, &cmd->cs, tx, ty, pipe, slot);
+
+               trace_start_draw_ib_gmem(&cmd->trace, &cmd->cs);
                tu6_render_tile(cmd, &cmd->cs);
+               trace_end_draw_ib_gmem(&cmd->trace, &cmd->cs);
             }
          }
       }
    }
 
    tu6_tile_render_end(cmd, &cmd->cs);
+
+   trace_end_render_pass(&cmd->trace, &cmd->cs, fb);
+
+   if (!u_trace_iterator_equal(cmd->trace_renderpass_start, cmd->trace_renderpass_end))
+      u_trace_disable_event_range(cmd->trace_renderpass_start,
+                                  cmd->trace_renderpass_end);
 }
 
 static void
@@ -1350,9 +1374,15 @@ tu_cmd_render_sysmem(struct tu_cmd_buffer *cmd)
 {
    tu6_sysmem_render_begin(cmd, &cmd->cs);
 
+   trace_start_draw_ib_sysmem(&cmd->trace, &cmd->cs);
+
    tu_cs_emit_call(&cmd->cs, &cmd->draw_cs);
 
+   trace_end_draw_ib_sysmem(&cmd->trace, &cmd->cs);
+
    tu6_sysmem_render_end(cmd, &cmd->cs);
+
+   trace_end_render_pass(&cmd->trace, &cmd->cs, cmd->state.framebuffer);
 }
 
 static VkResult
@@ -1384,6 +1414,8 @@ tu_create_cmd_buffer(struct tu_device *device,
       cmd_buffer->queue_family_index = TU_QUEUE_GENERAL;
    }
 
+   u_trace_init(&cmd_buffer->trace, &device->trace_context);
+
    tu_cs_init(&cmd_buffer->cs, device, TU_CS_MODE_GROW, 4096);
    tu_cs_init(&cmd_buffer->draw_cs, device, TU_CS_MODE_GROW, 4096);
    tu_cs_init(&cmd_buffer->tile_store_cs, device, TU_CS_MODE_GROW, 2048);
@@ -1406,6 +1438,8 @@ tu_cmd_buffer_destroy(struct tu_cmd_buffer *cmd_buffer)
    tu_cs_finish(&cmd_buffer->draw_epilogue_cs);
    tu_cs_finish(&cmd_buffer->sub_cs);
 
+   u_trace_fini(&cmd_buffer->trace);
+
    vk_object_free(&cmd_buffer->device->vk, &cmd_buffer->pool->alloc, cmd_buffer);
 }
 
@@ -1424,6 +1458,9 @@ tu_reset_cmd_buffer(struct tu_cmd_buffer *cmd_buffer)
       memset(&cmd_buffer->descriptors[i].sets, 0, sizeof(cmd_buffer->descriptors[i].sets));
       memset(&cmd_buffer->descriptors[i].push_set, 0, sizeof(cmd_buffer->descriptors[i].push_set));
    }
+
+   u_trace_fini(&cmd_buffer->trace);
+   u_trace_init(&cmd_buffer->trace, &cmd_buffer->device->trace_context);
 
    cmd_buffer->status = TU_CMD_BUFFER_STATUS_INITIAL;
 
@@ -3069,6 +3106,8 @@ tu_CmdBeginRenderPass2(VkCommandBuffer commandBuffer,
    cmd->state.framebuffer = fb;
    cmd->state.render_area = pRenderPassBegin->renderArea;
 
+   trace_start_render_pass(&cmd->trace, &cmd->cs);
+
    /* Note: because this is external, any flushes will happen before draw_cs
     * gets called. However deferred flushes could have to happen later as part
     * of the subpass.
@@ -3106,6 +3145,8 @@ tu_CmdBeginRenderPass2(VkCommandBuffer commandBuffer,
       }
       cmd->state.dirty |= TU_CMD_DIRTY_LRZ;
    }
+
+   cmd->trace_renderpass_start = u_trace_end_iterator(&cmd->trace);
 
    tu_emit_renderpass_begin(cmd, pRenderPassBegin);
 
@@ -4468,6 +4509,8 @@ tu_dispatch(struct tu_cmd_buffer *cmd,
                    A6XX_HLSQ_CS_KERNEL_GROUP_Y(1),
                    A6XX_HLSQ_CS_KERNEL_GROUP_Z(1));
 
+   trace_start_compute(&cmd->trace, cs);
+
    if (info->indirect) {
       uint64_t iova = tu_buffer_iova(info->indirect) + info->indirect_offset;
 
@@ -4485,6 +4528,11 @@ tu_dispatch(struct tu_cmd_buffer *cmd,
       tu_cs_emit(cs, CP_EXEC_CS_2_NGROUPS_Y(info->blocks[1]));
       tu_cs_emit(cs, CP_EXEC_CS_3_NGROUPS_Z(info->blocks[2]));
    }
+
+   trace_end_compute(&cmd->trace, cs,
+                     info->indirect != NULL,
+                     local_size[0], local_size[1], local_size[2],
+                     info->blocks[0], info->blocks[1], info->blocks[2]);
 
    tu_cs_emit_wfi(cs);
 }
@@ -4546,6 +4594,8 @@ tu_CmdEndRenderPass2(VkCommandBuffer commandBuffer,
    tu_cs_end(&cmd_buffer->draw_cs);
    tu_cs_end(&cmd_buffer->tile_store_cs);
    tu_cs_end(&cmd_buffer->draw_epilogue_cs);
+
+   cmd_buffer->trace_renderpass_end = u_trace_end_iterator(&cmd_buffer->trace);
 
    if (use_sysmem_rendering(cmd_buffer))
       tu_cmd_render_sysmem(cmd_buffer);
