@@ -29,7 +29,6 @@ struct sw_displaytarget;
 struct zink_batch;
 struct zink_context;
 struct zink_bo;
-#define ZINK_RESOURCE_USAGE_STREAMOUT (1 << 10) //much greater than ZINK_DESCRIPTOR_TYPES
 
 #include "util/simple_mtx.h"
 #include "util/u_transfer.h"
@@ -103,6 +102,7 @@ struct zink_resource {
          uint32_t vbo_bind_mask : PIPE_MAX_ATTRIBS;
          uint8_t ubo_bind_count[2];
          uint8_t so_bind_count;
+         bool so_valid;
          uint32_t ubo_bind_mask[PIPE_SHADER_TYPES];
          uint32_t ssbo_bind_mask[PIPE_SHADER_TYPES];
       };
@@ -117,13 +117,13 @@ struct zink_resource {
    uint32_t sampler_binds[PIPE_SHADER_TYPES];
    uint16_t image_bind_count[2]; //gfx, compute
    uint16_t write_bind_count[2]; //gfx, compute
-   uint16_t bind_count[2]; //gfx, compute
+   union {
+      uint16_t bind_count[2]; //gfx, compute
+      uint32_t all_binds;
+   };
 
    struct sw_displaytarget *dt;
    unsigned dt_stride;
-
-   uint32_t bind_history; // enum zink_descriptor_type bitmask
-   uint32_t bind_stages;
 
    uint8_t modifiers_count;
    uint64_t *modifiers;
@@ -181,6 +181,12 @@ zink_resource_tmp_buffer(struct zink_screen *screen, struct zink_resource *res, 
 
 bool
 zink_resource_object_init_storage(struct zink_context *ctx, struct zink_resource *res);
+
+static inline bool
+zink_resource_has_binds(const struct zink_resource *res)
+{
+   return res->all_binds > 0;
+}
 
 #ifndef __cplusplus
 #include "zink_bo.h"

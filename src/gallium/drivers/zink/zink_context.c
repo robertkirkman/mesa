@@ -73,7 +73,7 @@ debug_describe_zink_buffer_view(char *buf, const struct zink_buffer_view *ptr)
 ALWAYS_INLINE static void
 check_resource_for_batch_ref(struct zink_context *ctx, struct zink_resource *res)
 {
-   if (!res->bind_count[0] && !res->bind_count[1])
+   if (!zink_resource_has_binds(res))
       zink_batch_reference_resource(&ctx->batch, res);
 }
 
@@ -932,10 +932,9 @@ zink_set_vertex_buffers(struct pipe_context *pctx,
             ctx_vb->stride = vb->stride;
             ctx_vb->buffer_offset = vb->buffer_offset;
             /* always barrier before possible rebind */
-            zink_resource_buffer_barrier(ctx, NULL, res, VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT,
+            zink_resource_buffer_barrier(ctx, res, VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT,
                                          VK_PIPELINE_STAGE_VERTEX_INPUT_BIT);
             set_vertex_buffer_clamped(ctx, start_slot + i);
-            zink_batch_resource_usage_set(&ctx->batch, res, false);
          }
       }
    } else {
@@ -1035,8 +1034,6 @@ zink_set_constant_buffer(struct pipe_context *pctx,
       if (new_res) {
          if (new_res != res) {
             unbind_ubo(ctx, res, shader, index);
-            new_res->bind_history |= BITFIELD_BIT(ZINK_DESCRIPTOR_TYPE_UBO);
-            new_res->bind_stages |= 1 << shader;
             new_res->ubo_bind_count[shader == PIPE_SHADER_COMPUTE]++;
             new_res->ubo_bind_mask[shader] |= BITFIELD_BIT(index);
             update_res_bind_count(ctx, new_res, shader == PIPE_SHADER_COMPUTE, false);
@@ -1123,8 +1120,6 @@ zink_set_shader_buffers(struct pipe_context *pctx,
          struct zink_resource *new_res = zink_resource(buffers[i].buffer);
          if (new_res != res) {
             unbind_ssbo(ctx, res, p_stage, i, was_writable);
-            new_res->bind_history |= BITFIELD_BIT(ZINK_DESCRIPTOR_TYPE_SSBO);
-            new_res->bind_stages |= 1 << p_stage;
             new_res->ssbo_bind_mask[p_stage] |= BITFIELD_BIT(i);
             update_res_bind_count(ctx, new_res, p_stage == PIPE_SHADER_COMPUTE, false);
          }
@@ -1265,8 +1260,6 @@ zink_set_shader_images(struct pipe_context *pctx,
                if (!old_res->obj->is_buffer && !old_res->image_bind_count[p_stage == PIPE_SHADER_COMPUTE])
                   check_for_layout_update(ctx, old_res, p_stage == PIPE_SHADER_COMPUTE);
             }
-            res->bind_history |= BITFIELD_BIT(ZINK_DESCRIPTOR_TYPE_IMAGE);
-            res->bind_stages |= 1 << p_stage;
             update_res_bind_count(ctx, res, p_stage == PIPE_SHADER_COMPUTE, false);
          }
          util_copy_image_view(&image_view->base, images + i);
@@ -1371,27 +1364,22 @@ zink_set_sampler_views(struct pipe_context *pctx,
             if (a)
                unbind_samplerview(ctx, shader_type, start_slot + i);
             update_res_bind_count(ctx, res, shader_type == PIPE_SHADER_COMPUTE, false);
-            res->bind_history |= BITFIELD64_BIT(ZINK_DESCRIPTOR_TYPE_SAMPLER_VIEW);
-            res->bind_stages |= 1 << shader_type;
          } else if (a != b) {
             check_samplerview_for_batch_ref(ctx, a);
          }
          if (res->base.b.target == PIPE_BUFFER) {
-            if (res->bind_history & BITFIELD64_BIT(ZINK_DESCRIPTOR_TYPE_SAMPLER_VIEW)) {
+            if (b->buffer_view->bvci.buffer != res->obj->buffer) {
                /* if this resource has been rebound while it wasn't set here,
                 * its backing resource will have changed and thus we need to update
                 * the bufferview
                 */
                struct zink_buffer_view *buffer_view = get_buffer_view(ctx, res, b->base.format, b->base.u.buf.offset, b->base.u.buf.size);
-               if (buffer_view == b->buffer_view)
-                  p_atomic_dec(&buffer_view->reference.count);
-               else {
-                  if (zink_batch_usage_exists(b->buffer_view->batch_uses))
-                     zink_batch_reference_bufferview(&ctx->batch, b->buffer_view);
-                  zink_buffer_view_reference(zink_screen(ctx->base.screen), &b->buffer_view, NULL);
-                  b->buffer_view = buffer_view;
-                  update = true;
-               }
+               assert(buffer_view != b->buffer_view);
+               if (zink_batch_usage_exists(b->buffer_view->batch_uses))
+                  zink_batch_reference_bufferview(&ctx->batch, b->buffer_view);
+               zink_buffer_view_reference(zink_screen(ctx->base.screen), &b->buffer_view, NULL);
+               b->buffer_view = buffer_view;
+               update = true;
             }
             zink_batch_usage_set(&b->buffer_view->batch_uses, ctx->batch.state);
             zink_fake_buffer_barrier(res, VK_ACCESS_SHADER_READ_BIT,
@@ -1692,7 +1680,7 @@ prep_fb_attachment(struct zink_context *ctx, struct pipe_surface *psurf, unsigne
    VkPipelineStageFlags pipeline;
    VkImageLayout layout = zink_render_pass_attachment_get_barrier_info(ctx->gfx_pipeline_state.render_pass,
                                                                        i, &pipeline, &access);
-   zink_resource_image_barrier(ctx, NULL, res, layout, access, pipeline);
+   zink_resource_image_barrier(ctx, res, layout, access, pipeline);
    return surf->image_view;
 }
 
@@ -1800,7 +1788,7 @@ zink_evaluate_depth_buffer(struct pipe_context *pctx)
 }
 
 void
-zink_begin_render_pass(struct zink_context *ctx, struct zink_batch *batch)
+zink_begin_render_pass(struct zink_context *ctx)
 {
    setup_framebuffer(ctx);
    assert(ctx->gfx_pipeline_state.render_pass);
@@ -1812,14 +1800,14 @@ zink_begin_render_pass(struct zink_context *ctx, struct zink_batch *batch)
 }
 
 void
-zink_end_render_pass(struct zink_context *ctx, struct zink_batch *batch)
+zink_end_render_pass(struct zink_context *ctx)
 {
-   if (batch->in_rp) {
+   if (ctx->batch.in_rp) {
       if (ctx->render_condition.query)
          zink_stop_conditional_render(ctx);
-      VKCTX(CmdEndRenderPass)(batch->state->cmdbuf);
+      VKCTX(CmdEndRenderPass)(ctx->batch.state->cmdbuf);
    }
-   batch->in_rp = false;
+   ctx->batch.in_rp = false;
 }
 
 static void
@@ -1937,8 +1925,8 @@ flush_batch(struct zink_context *ctx, bool sync)
    struct zink_batch *batch = &ctx->batch;
    if (ctx->clears_enabled)
       /* start rp to do all the clears */
-      zink_begin_render_pass(ctx, batch);
-   zink_end_render_pass(ctx, batch);
+      zink_begin_render_pass(ctx);
+   zink_end_render_pass(ctx);
    zink_end_batch(ctx, batch);
    ctx->deferred_fence = NULL;
 
@@ -2027,7 +2015,7 @@ zink_set_framebuffer_state(struct pipe_context *pctx,
       if (changed && unlikely(res->obj->needs_zs_evaluate))
          /* have to flush zs eval while the sample location data still exists,
           * so just throw some random barrier */
-         zink_resource_image_barrier(ctx, NULL, res, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+         zink_resource_image_barrier(ctx, res, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                      VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
    }
    /* renderpass changes if the number or types of attachments change */
@@ -2329,10 +2317,9 @@ static inline VkCommandBuffer
 get_cmdbuf(struct zink_context *ctx, struct zink_resource *res)
 {
    if ((res->access && !res->unordered_barrier) || !ctx->batch.in_rp) {
-      struct zink_batch *batch = zink_batch_no_rp(ctx);
-      assert(!batch->in_rp);
+      zink_batch_no_rp(ctx);
       res->unordered_barrier = false;
-      return batch->state->cmdbuf;
+      return ctx->batch.state->cmdbuf;
    }
    res->unordered_barrier = true;
    ctx->batch.state->has_barriers = true;
@@ -2366,7 +2353,7 @@ resource_check_defer_image_barrier(struct zink_context *ctx, struct zink_resourc
 }
 
 void
-zink_resource_image_barrier(struct zink_context *ctx, struct zink_batch *batch, struct zink_resource *res,
+zink_resource_image_barrier(struct zink_context *ctx, struct zink_resource *res,
                       VkImageLayout new_layout, VkAccessFlags flags, VkPipelineStageFlags pipeline)
 {
    VkImageMemoryBarrier imb;
@@ -2464,7 +2451,7 @@ zink_fake_buffer_barrier(struct zink_resource *res, VkAccessFlags flags, VkPipel
 }
 
 void
-zink_resource_buffer_barrier(struct zink_context *ctx, struct zink_batch *batch, struct zink_resource *res, VkAccessFlags flags, VkPipelineStageFlags pipeline)
+zink_resource_buffer_barrier(struct zink_context *ctx, struct zink_resource *res, VkAccessFlags flags, VkPipelineStageFlags pipeline)
 {
    VkMemoryBarrier bmb;
    if (!pipeline)
@@ -2507,15 +2494,6 @@ zink_resource_needs_barrier(struct zink_resource *res, VkImageLayout layout, VkA
    return zink_resource_image_needs_barrier(res, layout, flags, pipeline);
 }
 
-void
-zink_resource_barrier(struct zink_context *ctx, struct zink_batch *batch, struct zink_resource *res, VkImageLayout layout, VkAccessFlags flags, VkPipelineStageFlags pipeline)
-{
-   if (res->base.b.target == PIPE_BUFFER)
-      zink_resource_buffer_barrier(ctx, batch, res, flags, pipeline);
-   else
-      zink_resource_image_barrier(ctx, batch, res, layout, flags, pipeline);
-}
-
 VkShaderStageFlagBits
 zink_shader_stage(enum pipe_shader_type type)
 {
@@ -2546,7 +2524,7 @@ zink_flush(struct pipe_context *pctx,
    /* triggering clears will force has_work */
    if (!deferred && ctx->clears_enabled)
       /* start rp to do all the clears */
-      zink_begin_render_pass(ctx, batch);
+      zink_begin_render_pass(ctx);
 
    if (!batch->has_work) {
        if (pfence) {
@@ -2767,7 +2745,7 @@ mem_barrier(struct zink_context *ctx, VkPipelineStageFlags src_stage, VkPipeline
    mb.pNext = NULL;
    mb.srcAccessMask = src;
    mb.dstAccessMask = dst;
-   zink_end_render_pass(ctx, batch);
+   zink_end_render_pass(ctx);
    VKCTX(CmdPipelineBarrier)(batch->state->cmdbuf, src_stage, dst_stage, 0, 1, &mb, 0, NULL, 0, NULL);
 }
 
@@ -2848,7 +2826,7 @@ zink_flush_resource(struct pipe_context *pctx,
 }
 
 void
-zink_copy_buffer(struct zink_context *ctx, struct zink_batch *batch, struct zink_resource *dst, struct zink_resource *src,
+zink_copy_buffer(struct zink_context *ctx, struct zink_resource *dst, struct zink_resource *src,
                  unsigned dst_offset, unsigned src_offset, unsigned size)
 {
    VkBufferCopy region;
@@ -2856,36 +2834,34 @@ zink_copy_buffer(struct zink_context *ctx, struct zink_batch *batch, struct zink
    region.dstOffset = dst_offset;
    region.size = size;
 
-   if (!batch)
-      batch = zink_batch_no_rp(ctx);
-   assert(!batch->in_rp);
+   struct zink_batch *batch = &ctx->batch;
+   zink_batch_no_rp(ctx);
    zink_batch_reference_resource_rw(batch, src, false);
    zink_batch_reference_resource_rw(batch, dst, true);
    util_range_add(&dst->base.b, &dst->valid_buffer_range, dst_offset, dst_offset + size);
-   zink_resource_buffer_barrier(ctx, batch, src, VK_ACCESS_TRANSFER_READ_BIT, 0);
-   zink_resource_buffer_barrier(ctx, batch, dst, VK_ACCESS_TRANSFER_WRITE_BIT, 0);
+   zink_resource_buffer_barrier(ctx, src, VK_ACCESS_TRANSFER_READ_BIT, 0);
+   zink_resource_buffer_barrier(ctx, dst, VK_ACCESS_TRANSFER_WRITE_BIT, 0);
    VKCTX(CmdCopyBuffer)(batch->state->cmdbuf, src->obj->buffer, dst->obj->buffer, 1, &region);
 }
 
 void
-zink_copy_image_buffer(struct zink_context *ctx, struct zink_batch *batch, struct zink_resource *dst, struct zink_resource *src,
+zink_copy_image_buffer(struct zink_context *ctx, struct zink_resource *dst, struct zink_resource *src,
                        unsigned dst_level, unsigned dstx, unsigned dsty, unsigned dstz,
                        unsigned src_level, const struct pipe_box *src_box, enum pipe_map_flags map_flags)
 {
    struct zink_resource *img = dst->base.b.target == PIPE_BUFFER ? src : dst;
    struct zink_resource *buf = dst->base.b.target == PIPE_BUFFER ? dst : src;
-
-   if (!batch)
-      batch = zink_batch_no_rp(ctx);
+   struct zink_batch *batch = &ctx->batch;
+   zink_batch_no_rp(ctx);
 
    bool buf2img = buf == src;
 
    if (buf2img) {
-      zink_resource_image_barrier(ctx, batch, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, 0);
-      zink_resource_buffer_barrier(ctx, batch, buf, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+      zink_resource_image_barrier(ctx, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, 0);
+      zink_resource_buffer_barrier(ctx, buf, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
    } else {
-      zink_resource_image_barrier(ctx, batch, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0, 0);
-      zink_resource_buffer_barrier(ctx, batch, buf, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+      zink_resource_image_barrier(ctx, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0, 0);
+      zink_resource_buffer_barrier(ctx, buf, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
       util_range_add(&dst->base.b, &dst->valid_buffer_range, dstx, dstx + src_box->width);
    }
 
@@ -3049,7 +3025,8 @@ zink_resource_copy_region(struct pipe_context *pctx,
       region.extent.width = src_box->width;
       region.extent.height = src_box->height;
 
-      struct zink_batch *batch = zink_batch_no_rp(ctx);
+      struct zink_batch *batch = &ctx->batch;
+      zink_batch_no_rp(ctx);
       zink_batch_reference_resource_rw(batch, src, false);
       zink_batch_reference_resource_rw(batch, dst, true);
 
@@ -3059,9 +3036,9 @@ zink_resource_copy_region(struct pipe_context *pctx,
                      1, &region);
    } else if (dst->base.b.target == PIPE_BUFFER &&
               src->base.b.target == PIPE_BUFFER) {
-      zink_copy_buffer(ctx, NULL, dst, src, dstx, src_box->x, src_box->width);
+      zink_copy_buffer(ctx, dst, src, dstx, src_box->x, src_box->width);
    } else
-      zink_copy_image_buffer(ctx, NULL, dst, src, dst_level, dstx, dsty, dstz, src_level, src_box, 0);
+      zink_copy_image_buffer(ctx, dst, src, dst_level, dstx, dsty, dstz, src_level, src_box, 0);
 }
 
 static struct pipe_stream_output_target *
@@ -3091,7 +3068,7 @@ zink_create_stream_output_target(struct pipe_context *pctx,
    t->base.buffer_offset = buffer_offset;
    t->base.buffer_size = buffer_size;
 
-   zink_resource(t->base.buffer)->bind_history |= ZINK_RESOURCE_USAGE_STREAMOUT;
+   zink_resource(t->base.buffer)->so_valid = true;
 
    return &t->base;
 }
@@ -3332,7 +3309,7 @@ rebind_buffer(struct zink_context *ctx, struct zink_resource *res, const uint32_
    unsigned num_image_rebinds_remaining = rebind_mask ? expected_num_rebinds - num_rebinds : res->image_bind_count[0] + res->image_bind_count[1];
    u_foreach_bit(shader, image_mask >> TC_BINDING_IMAGE_VS) {
       for (unsigned slot = 0; num_image_rebinds_remaining && slot < ctx->di.num_images[shader]; slot++) {
-         struct zink_resource *cres = zink_get_resource_for_descriptor(ctx, ZINK_DESCRIPTOR_TYPE_IMAGE, shader, slot);
+         struct zink_resource *cres = ctx->di.descriptor_res[ZINK_DESCRIPTOR_TYPE_IMAGE][shader][slot];
          if (res != cres)
             continue;
 
@@ -3370,7 +3347,7 @@ static void
 rebind_image(struct zink_context *ctx, struct zink_resource *res)
 {
     zink_rebind_framebuffer(ctx, res);
-    if (!res->bind_count[0] && !res->bind_count[1])
+    if (!zink_resource_has_binds(res))
        return;
     for (unsigned i = 0; i < PIPE_SHADER_TYPES; i++) {
        if (res->sampler_binds[i]) {
@@ -3401,8 +3378,8 @@ bool
 zink_resource_rebind(struct zink_context *ctx, struct zink_resource *res)
 {
    /* force counter buffer reset */
-   res->bind_history &= ~ZINK_RESOURCE_USAGE_STREAMOUT;
-   if (!res->bind_count[0] && !res->bind_count[1])
+   res->so_valid = false;
+   if (!zink_resource_has_binds(res))
       return true;
    if (res->base.b.target == PIPE_BUFFER)
       return rebind_buffer(ctx, res, 0, 0) == res->bind_count[0] + res->bind_count[1];
@@ -3419,7 +3396,7 @@ zink_rebind_all_buffers(struct zink_context *ctx)
    ctx->vertex_buffers_dirty = ctx->gfx_pipeline_state.vertex_buffers_enabled_mask > 0;
    ctx->dirty_so_targets = ctx->num_so_targets > 0;
    if (ctx->num_so_targets)
-      zink_resource_buffer_barrier(ctx, NULL, zink_resource(ctx->dummy_xfb_buffer),
+      zink_resource_buffer_barrier(ctx, zink_resource(ctx->dummy_xfb_buffer),
                                    VK_ACCESS_TRANSFORM_FEEDBACK_WRITE_BIT_EXT, VK_PIPELINE_STAGE_TRANSFORM_FEEDBACK_BIT_EXT);
    for (unsigned shader = PIPE_SHADER_VERTEX; shader < PIPE_SHADER_TYPES; shader++) {
       for (unsigned slot = 0; slot < ctx->di.num_ubos[shader]; slot++) {
@@ -3453,19 +3430,26 @@ zink_context_replace_buffer_storage(struct pipe_context *pctx, struct pipe_resou
    struct zink_resource *d = zink_resource(dst);
    struct zink_resource *s = zink_resource(src);
    struct zink_context *ctx = zink_context(pctx);
+   struct zink_screen *screen = zink_screen(pctx->screen);
 
    assert(d->internal_format == s->internal_format);
-   util_idalloc_mt_free(&zink_screen(pctx->screen)->buffer_ids, delete_buffer_id);
-   if (zink_resource_has_unflushed_usage(d))
-      zink_batch_reference_resource(&ctx->batch, d);
-   zink_resource_object_reference(zink_screen(pctx->screen), &d->obj, s->obj);
+   assert(d->obj);
+   assert(s->obj);
+   util_idalloc_mt_free(&screen->buffer_ids, delete_buffer_id);
+   zink_resource_object_reference(screen, NULL, s->obj);
+   if (zink_resource_has_unflushed_usage(d) ||
+       (zink_resource_has_usage(d) && zink_resource_has_binds(d)))
+      zink_batch_reference_resource_move(&ctx->batch, d);
+   else
+      zink_resource_object_reference(screen, &d->obj, NULL);
+   d->obj = s->obj;
    d->access = s->access;
    d->access_stage = s->access_stage;
    d->unordered_barrier = s->unordered_barrier;
    /* force counter buffer reset */
-   d->bind_history &= ~ZINK_RESOURCE_USAGE_STREAMOUT;
+   d->so_valid = false;
    if (num_rebinds && rebind_buffer(ctx, d, rebind_mask, num_rebinds) != num_rebinds)
-      ctx->buffer_rebind_counter = p_atomic_inc_return(&zink_screen(ctx->base.screen)->buffer_rebind_counter);
+      ctx->buffer_rebind_counter = p_atomic_inc_return(&screen->buffer_rebind_counter);
 }
 
 static bool

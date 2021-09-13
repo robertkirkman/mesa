@@ -948,10 +948,10 @@ invalidate_buffer(struct zink_context *ctx, struct zink_resource *res)
    if (res->valid_buffer_range.start > res->valid_buffer_range.end)
       return false;
 
-   if (res->bind_history & ZINK_RESOURCE_USAGE_STREAMOUT)
+   if (res->so_valid)
       ctx->dirty_so_targets = true;
    /* force counter buffer reset */
-   res->bind_history &= ~ZINK_RESOURCE_USAGE_STREAMOUT;
+   res->so_valid = false;
 
    util_range_set_empty(&res->valid_buffer_range);
    if (!zink_resource_has_usage(res))
@@ -999,7 +999,7 @@ zink_transfer_copy_bufimage(struct zink_context *ctx,
       box.x = trans->offset;
 
    if (dst->obj->transfer_dst)
-      zink_copy_image_buffer(ctx, NULL, dst, src, trans->base.b.level, buf2img ? x : 0,
+      zink_copy_image_buffer(ctx, dst, src, trans->base.b.level, buf2img ? x : 0,
                               box.y, box.z, trans->base.b.level, &box, trans->base.b.usage);
    else
       util_blitter_copy_texture(ctx->blitter, &dst->base.b, trans->base.b.level,
@@ -1192,7 +1192,7 @@ zink_buffer_map(struct pipe_context *pctx,
          if (!trans->staging_res)
             goto fail;
          struct zink_resource *staging_res = zink_resource(trans->staging_res);
-         zink_copy_buffer(ctx, NULL, staging_res, res, trans->offset, box->x, box->width);
+         zink_copy_buffer(ctx, staging_res, res, trans->offset, box->x, box->width);
          res = staging_res;
          usage &= ~PIPE_MAP_UNSYNCHRONIZED;
          ptr = map_resource(screen, res);
@@ -1211,10 +1211,10 @@ zink_buffer_map(struct pipe_context *pctx,
 
    if (!ptr) {
       /* if writing to a streamout buffer, ensure synchronization next time it's used */
-      if (usage & PIPE_MAP_WRITE && res->bind_history & ZINK_RESOURCE_USAGE_STREAMOUT) {
+      if (usage & PIPE_MAP_WRITE && res->so_valid) {
          ctx->dirty_so_targets = true;
          /* force counter buffer reset */
-         res->bind_history &= ~ZINK_RESOURCE_USAGE_STREAMOUT;
+         res->so_valid = false;
       }
       ptr = map_resource(screen, res);
       if (!ptr)
@@ -1403,7 +1403,7 @@ zink_transfer_flush_region(struct pipe_context *pctx,
          struct zink_resource *staging_res = zink_resource(trans->staging_res);
 
          if (ptrans->resource->target == PIPE_BUFFER)
-            zink_copy_buffer(ctx, NULL, res, staging_res, box->x, offset, box->width);
+            zink_copy_buffer(ctx, res, staging_res, box->x, offset, box->width);
          else
             zink_transfer_copy_bufimage(ctx, res, staging_res, trans);
       }
@@ -1536,7 +1536,7 @@ zink_resource_object_init_storage(struct zink_context *ctx, struct zink_resource
       res->base.b.bind |= PIPE_BIND_SHADER_IMAGE;
    } else {
       zink_fb_clears_apply_region(ctx, &res->base.b, (struct u_rect){0, res->base.b.width0, 0, res->base.b.height0});
-      zink_resource_image_barrier(ctx, NULL, res, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0, 0);
+      zink_resource_image_barrier(ctx, res, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0, 0);
       res->base.b.bind |= PIPE_BIND_SHADER_IMAGE;
       struct zink_resource_object *old_obj = res->obj;
       struct zink_resource_object *new_obj = resource_object_create(screen, &res->base.b, NULL, &res->optimal_tiling, res->modifiers, res->modifiers_count);
@@ -1590,17 +1590,17 @@ zink_resource_setup_transfer_layouts(struct zink_context *ctx, struct zink_resou
        * VK_IMAGE_LAYOUT_GENERAL. And since this isn't a present-related
        * operation, VK_IMAGE_LAYOUT_GENERAL seems most appropriate.
        */
-      zink_resource_image_barrier(ctx, NULL, src,
+      zink_resource_image_barrier(ctx, src,
                                   VK_IMAGE_LAYOUT_GENERAL,
                                   VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
                                   VK_PIPELINE_STAGE_TRANSFER_BIT);
    } else {
-      zink_resource_image_barrier(ctx, NULL, src,
+      zink_resource_image_barrier(ctx, src,
                                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                   VK_ACCESS_TRANSFER_READ_BIT,
                                   VK_PIPELINE_STAGE_TRANSFER_BIT);
 
-      zink_resource_image_barrier(ctx, NULL, dst,
+      zink_resource_image_barrier(ctx, dst,
                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                   VK_ACCESS_TRANSFER_WRITE_BIT,
                                   VK_PIPELINE_STAGE_TRANSFER_BIT);

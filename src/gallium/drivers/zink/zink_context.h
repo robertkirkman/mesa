@@ -368,7 +368,7 @@ bool
 zink_resource_access_is_write(VkAccessFlags flags);
 
 void
-zink_resource_buffer_barrier(struct zink_context *ctx, struct zink_batch *batch, struct zink_resource *res, VkAccessFlags flags, VkPipelineStageFlags pipeline);
+zink_resource_buffer_barrier(struct zink_context *ctx, struct zink_resource *res, VkAccessFlags flags, VkPipelineStageFlags pipeline);
 void
 zink_fake_buffer_barrier(struct zink_resource *res, VkAccessFlags flags, VkPipelineStageFlags pipeline);
 bool
@@ -376,41 +376,33 @@ zink_resource_image_needs_barrier(struct zink_resource *res, VkImageLayout new_l
 bool
 zink_resource_image_barrier_init(VkImageMemoryBarrier *imb, struct zink_resource *res, VkImageLayout new_layout, VkAccessFlags flags, VkPipelineStageFlags pipeline);
 void
-zink_resource_image_barrier(struct zink_context *ctx, struct zink_batch *batch, struct zink_resource *res,
+zink_resource_image_barrier(struct zink_context *ctx, struct zink_resource *res,
                       VkImageLayout new_layout, VkAccessFlags flags, VkPipelineStageFlags pipeline);
 
 bool
 zink_resource_needs_barrier(struct zink_resource *res, VkImageLayout layout, VkAccessFlags flags, VkPipelineStageFlags pipeline);
-void
-zink_resource_barrier(struct zink_context *ctx, struct zink_batch *batch, struct zink_resource *res, VkImageLayout layout, VkAccessFlags flags, VkPipelineStageFlags pipeline);
 void
 zink_update_descriptor_refs(struct zink_context *ctx, bool compute);
 void
 zink_init_vk_sample_locations(struct zink_context *ctx, VkSampleLocationsInfoEXT *loc);
 
 void
-zink_begin_render_pass(struct zink_context *ctx,
-                       struct zink_batch *batch);
+zink_begin_render_pass(struct zink_context *ctx);
 void
-zink_end_render_pass(struct zink_context *ctx, struct zink_batch *batch);
+zink_end_render_pass(struct zink_context *ctx);
 
-static inline struct zink_batch *
+static inline void
 zink_batch_rp(struct zink_context *ctx)
 {
-   struct zink_batch *batch = &ctx->batch;
-   if (!batch->in_rp) {
-      zink_begin_render_pass(ctx, batch);
-   }
-   return batch;
+   if (!ctx->batch.in_rp)
+      zink_begin_render_pass(ctx);
 }
 
-static inline struct zink_batch *
+static inline void
 zink_batch_no_rp(struct zink_context *ctx)
 {
-   struct zink_batch *batch = &ctx->batch;
-   zink_end_render_pass(ctx, batch);
-   assert(!batch->in_rp);
-   return batch;
+   zink_end_render_pass(ctx);
+   assert(!ctx->batch.in_rp);
 }
 
 static inline VkPipelineStageFlags
@@ -506,11 +498,11 @@ void
 zink_rebind_framebuffer(struct zink_context *ctx, struct zink_resource *res);
 
 void
-zink_copy_buffer(struct zink_context *ctx, struct zink_batch *batch, struct zink_resource *dst, struct zink_resource *src,
+zink_copy_buffer(struct zink_context *ctx, struct zink_resource *dst, struct zink_resource *src,
                  unsigned dst_offset, unsigned src_offset, unsigned size);
 
 void
-zink_copy_image_buffer(struct zink_context *ctx, struct zink_batch *batch, struct zink_resource *dst, struct zink_resource *src,
+zink_copy_image_buffer(struct zink_context *ctx, struct zink_resource *dst, struct zink_resource *src,
                        unsigned dst_level, unsigned dstx, unsigned dsty, unsigned dstz,
                        unsigned src_level, const struct pipe_box *src_box, enum pipe_map_flags map_flags);
 
