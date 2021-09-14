@@ -30,6 +30,7 @@ struct zink_batch;
 struct zink_context;
 struct zink_bo;
 
+#include "util/hash_table.h"
 #include "util/simple_mtx.h"
 #include "util/u_transfer.h"
 #include "util/u_range.h"
@@ -53,6 +54,10 @@ struct mem_key {
 
 struct zink_resource_object {
    struct pipe_reference reference;
+
+   VkPipelineStageFlagBits access_stage;
+   VkAccessFlags access;
+   bool unordered_barrier;
 
    unsigned persistent_maps; //if nonzero, requires vkFlushMappedMemoryRanges during batch use
    struct zink_descriptor_refs desc_set_refs;
@@ -89,10 +94,6 @@ struct zink_resource {
 
    enum pipe_format internal_format:16;
 
-   VkPipelineStageFlagBits access_stage;
-   VkAccessFlags access;
-   bool unordered_barrier;
-
    struct zink_resource_object *obj;
    struct zink_resource_object *scanout_obj; //TODO: remove for wsi
    bool scanout_obj_init;
@@ -122,6 +123,18 @@ struct zink_resource {
       uint32_t all_binds;
    };
 
+   union {
+      struct {
+         struct hash_table bufferview_cache;
+         simple_mtx_t bufferview_mtx;
+      };
+      struct {
+         struct hash_table surface_cache;
+         simple_mtx_t surface_mtx;
+      };
+   };
+
+   bool dmabuf_acquire;
    struct sw_displaytarget *dt;
    unsigned dt_stride;
 
@@ -240,10 +253,10 @@ zink_resource_usage_set(struct zink_resource *res, struct zink_batch_state *bs, 
    zink_bo_usage_set(res->obj->bo, bs, write);
 }
 
-static inline void
+static inline bool
 zink_resource_object_usage_unset(struct zink_resource_object *obj, struct zink_batch_state *bs)
 {
-   zink_bo_usage_unset(obj->bo, bs);
+   return zink_bo_usage_unset(obj->bo, bs);
 }
 
 #endif

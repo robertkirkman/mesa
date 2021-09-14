@@ -260,13 +260,6 @@ struct fd_context {
     */
    bool active_queries dt;
 
-   /* table with PIPE_PRIM_MAX entries mapping PIPE_PRIM_x to
-    * DI_PT_x value to use for draw initiator.  There are some
-    * slight differences between generation:
-    */
-   const uint8_t *primtypes;
-   uint32_t primtype_mask;
-
    /* shaders used by clear, and gmem->mem blits: */
    struct fd_program_stateobj solid_prog; // TODO move to screen?
    struct fd_program_stateobj solid_layered_prog;
@@ -712,12 +705,6 @@ fd_context_get_scissor(struct fd_context *ctx) assert_dt
    return ctx->current_scissor;
 }
 
-static inline bool
-fd_supported_prim(struct fd_context *ctx, unsigned prim)
-{
-   return (1 << prim) & ctx->primtype_mask;
-}
-
 void fd_context_switch_from(struct fd_context *ctx) assert_dt;
 void fd_context_switch_to(struct fd_context *ctx,
                           struct fd_batch *batch) assert_dt;
@@ -731,8 +718,7 @@ void fd_emit_string5(struct fd_ringbuffer *ring, const char *string, int len);
 
 struct pipe_context *fd_context_init(struct fd_context *ctx,
                                      struct pipe_screen *pscreen,
-                                     const uint8_t *primtypes, void *priv,
-                                     unsigned flags);
+                                     void *priv, unsigned flags);
 struct pipe_context *fd_context_init_tc(struct pipe_context *pctx,
                                         unsigned flags);
 

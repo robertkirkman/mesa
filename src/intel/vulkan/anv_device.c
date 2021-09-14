@@ -63,6 +63,7 @@ static const driOptionDescription anv_dri_options[] = {
    DRI_CONF_SECTION_PERFORMANCE
       DRI_CONF_VK_X11_OVERRIDE_MIN_IMAGE_COUNT(0)
       DRI_CONF_VK_X11_STRICT_IMAGE_COUNT(false)
+      DRI_CONF_VK_XWAYLAND_WAIT_READY(true)
    DRI_CONF_SECTION_END
 
    DRI_CONF_SECTION_DEBUG
@@ -938,9 +939,6 @@ anv_physical_device_try_create(struct anv_instance *instance,
 
    device->has_userptr_probe =
       anv_gem_get_param(fd, I915_PARAM_HAS_USERPTR_PROBE);
-
-   /* GENs prior to 8 do not support EU/Subslice info */
-   device->subslice_total = intel_device_info_subslice_total(&device->info);
 
    device->compiler = brw_compiler_create(NULL, &device->info);
    if (device->compiler == NULL) {

@@ -36,7 +36,11 @@ zink_reset_batch_state(struct zink_context *ctx, struct zink_batch_state *bs)
    /* unref all used resources */
    set_foreach_remove(bs->resources, entry) {
       struct zink_resource_object *obj = (struct zink_resource_object *)entry->key;
-      zink_resource_object_usage_unset(obj, bs);
+      if (!zink_resource_object_usage_unset(obj, bs)) {
+         obj->unordered_barrier = false;
+         obj->access = 0;
+         obj->access_stage = 0;
+      }
       util_dynarray_append(&bs->unref_resources, struct zink_resource_object*, obj);
    }
 
@@ -489,7 +493,7 @@ copy_scanout(struct zink_batch_state *bs, struct zink_resource *res)
    zink_resource_image_barrier_init(&imb1, res, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
    VKCTX(CmdPipelineBarrier)(
       bs->cmdbuf,
-      res->access_stage ? res->access_stage : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+      res->obj->access_stage ? res->obj->access_stage : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
       VK_PIPELINE_STAGE_TRANSFER_BIT,
       0,
       0, NULL,

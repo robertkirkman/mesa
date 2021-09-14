@@ -105,11 +105,11 @@ keybox_equals(const void *void_a, const void *void_b)
 }
 
 static void
-shader_key_vs_gen(struct zink_context *ctx, struct zink_shader *zs,
-                  struct zink_shader *shaders[ZINK_SHADER_COUNT], struct zink_shader_key *key)
+shader_key_vs_base_gen(struct zink_context *ctx, struct zink_shader *zs,
+                       struct zink_shader *shaders[ZINK_SHADER_COUNT], struct zink_shader_key *key)
 {
-   struct zink_vs_key *vs_key = &key->key.vs;
-   key->size = sizeof(struct zink_vs_key);
+   struct zink_vs_key_base *vs_key = &key->key.vs_base;
+   key->size = sizeof(struct zink_vs_key_base);
 
    vs_key->clip_halfz = ctx->rast_state && ctx->rast_state->base.clip_halfz;
    switch (zs->nir->info.stage) {
@@ -126,6 +126,32 @@ shader_key_vs_gen(struct zink_context *ctx, struct zink_shader *zs,
    default:
       unreachable("impossible case");
    }
+}
+
+static void
+shader_key_vs_gen(struct zink_context *ctx, struct zink_shader *zs,
+                       struct zink_shader *shaders[ZINK_SHADER_COUNT], struct zink_shader_key *key)
+{
+   struct zink_vs_key *vs_key = &key->key.vs;
+   shader_key_vs_base_gen(ctx, zs, shaders, key);
+   unsigned size = MAX2(ctx->element_state->decomposed_attrs_size, ctx->element_state->decomposed_attrs_without_w_size);
+   switch (size) {
+   case 1:
+      vs_key->u8.decomposed_attrs = ctx->element_state->decomposed_attrs;
+      vs_key->u8.decomposed_attrs_without_w = ctx->element_state->decomposed_attrs_without_w;
+      break;
+   case 2:
+      vs_key->u16.decomposed_attrs = ctx->element_state->decomposed_attrs;
+      vs_key->u16.decomposed_attrs_without_w = ctx->element_state->decomposed_attrs_without_w;
+      break;
+   case 4:
+      vs_key->u32.decomposed_attrs = ctx->element_state->decomposed_attrs;
+      vs_key->u32.decomposed_attrs_without_w = ctx->element_state->decomposed_attrs_without_w;
+      break;
+   default: break;
+   }
+   vs_key->size = size;
+   key->size += 2 * size;
 }
 
 static void
@@ -167,8 +193,8 @@ static zink_shader_key_gen shader_key_vtbl[] =
    [MESA_SHADER_VERTEX] = shader_key_vs_gen,
    [MESA_SHADER_TESS_CTRL] = shader_key_tcs_gen,
    /* reusing vs key for now since we're only using clip_halfz */
-   [MESA_SHADER_TESS_EVAL] = shader_key_vs_gen,
-   [MESA_SHADER_GEOMETRY] = shader_key_vs_gen,
+   [MESA_SHADER_TESS_EVAL] = shader_key_vs_base_gen,
+   [MESA_SHADER_GEOMETRY] = shader_key_vs_base_gen,
    [MESA_SHADER_FRAGMENT] = shader_key_fs_gen,
 };
 
@@ -179,7 +205,7 @@ get_default_shader_module_ptr(struct zink_gfx_program *prog, struct zink_shader 
    if (zs->nir->info.stage == MESA_SHADER_VERTEX ||
        zs->nir->info.stage == MESA_SHADER_TESS_EVAL) {
       /* no streamout or halfz */
-      if (!zink_vs_key(key)->last_vertex_stage)
+      if (!zink_vs_key_base(key)->last_vertex_stage)
          return &prog->default_variants[zs->nir->info.stage][1];
    }
    return &prog->default_variants[zs->nir->info.stage][0];
