@@ -709,8 +709,12 @@ static void si_bind_blend_state(struct pipe_context *ctx, void *state)
        old_blend->alpha_to_one != blend->alpha_to_one ||
        old_blend->dual_src_blend != blend->dual_src_blend ||
        old_blend->blend_enable_4bit != blend->blend_enable_4bit ||
-       old_blend->need_src_alpha_4bit != blend->need_src_alpha_4bit)
+       old_blend->need_src_alpha_4bit != blend->need_src_alpha_4bit) {
+      si_ps_key_update_framebuffer_blend(sctx);
+      si_ps_key_update_blend_rasterizer(sctx);
+      si_update_ps_inputs_read_or_disabled(sctx);
       sctx->do_update_shaders = true;
+   }
 
    if (sctx->screen->dpbb_allowed &&
        (old_blend->alpha_to_coverage != blend->alpha_to_coverage ||
@@ -1110,6 +1114,10 @@ static void si_bind_rs_state(struct pipe_context *ctx, void *state)
        old_rs->pa_cl_clip_cntl != rs->pa_cl_clip_cntl)
       si_mark_atom_dirty(sctx, &sctx->atoms.s.clip_regs);
 
+   if (old_rs->sprite_coord_enable != rs->sprite_coord_enable ||
+       old_rs->flatshade != rs->flatshade)
+      si_mark_atom_dirty(sctx, &sctx->atoms.s.spi_map);
+
    if (old_rs->clip_plane_enable != rs->clip_plane_enable ||
        old_rs->rasterizer_discard != rs->rasterizer_discard ||
        old_rs->sprite_coord_enable != rs->sprite_coord_enable ||
@@ -1119,8 +1127,19 @@ static void si_bind_rs_state(struct pipe_context *ctx, void *state)
        old_rs->poly_smooth != rs->poly_smooth || old_rs->line_smooth != rs->line_smooth ||
        old_rs->clamp_fragment_color != rs->clamp_fragment_color ||
        old_rs->force_persample_interp != rs->force_persample_interp ||
-       old_rs->polygon_mode_is_points != rs->polygon_mode_is_points)
+       old_rs->polygon_mode_is_points != rs->polygon_mode_is_points) {
+      si_ps_key_update_blend_rasterizer(sctx);
+      si_ps_key_update_rasterizer(sctx);
+      si_ps_key_update_framebuffer_rasterizer_sample_shading(sctx);
+      si_update_ps_inputs_read_or_disabled(sctx);
       sctx->do_update_shaders = true;
+   }
+
+   if (old_rs->line_smooth != rs->line_smooth ||
+       old_rs->poly_smooth != rs->poly_smooth ||
+       old_rs->poly_stipple_enable != rs->poly_stipple_enable ||
+       old_rs->flatshade != rs->flatshade)
+      si_update_vrs_flat_shading(sctx);
 }
 
 static void si_delete_rs_state(struct pipe_context *ctx, void *state)
@@ -1336,8 +1355,12 @@ static void si_bind_dsa_state(struct pipe_context *ctx, void *state)
       si_mark_atom_dirty(sctx, &sctx->atoms.s.stencil_ref);
    }
 
-   if (old_dsa->alpha_func != dsa->alpha_func)
+   if (old_dsa->alpha_func != dsa->alpha_func) {
+      si_ps_key_update_dsa(sctx);
+      si_update_ps_inputs_read_or_disabled(sctx);
+      si_update_ps_kill_enable(sctx);
       sctx->do_update_shaders = true;
+   }
 
    if (sctx->screen->dpbb_allowed && ((old_dsa->depth_enabled != dsa->depth_enabled ||
                                        old_dsa->stencil_enabled != dsa->stencil_enabled ||
@@ -2983,6 +3006,10 @@ static void si_set_framebuffer_state(struct pipe_context *ctx,
       si_mark_atom_dirty(sctx, &sctx->atoms.s.msaa_sample_locs);
    }
 
+   si_ps_key_update_framebuffer(sctx);
+   si_ps_key_update_framebuffer_blend(sctx);
+   si_ps_key_update_framebuffer_rasterizer_sample_shading(sctx);
+   si_update_ps_inputs_read_or_disabled(sctx);
    sctx->do_update_shaders = true;
 
    if (!sctx->decompression_enabled) {
@@ -3635,6 +3662,9 @@ static void si_set_min_samples(struct pipe_context *ctx, unsigned min_samples)
       return;
 
    sctx->ps_iter_samples = min_samples;
+
+   si_ps_key_update_sample_shading(sctx);
+   si_ps_key_update_framebuffer_rasterizer_sample_shading(sctx);
    sctx->do_update_shaders = true;
 
    si_update_ps_iter_samples(sctx);
@@ -4650,8 +4680,9 @@ static void *si_create_vertex_elements(struct pipe_context *ctx, unsigned count,
 
    v->count = count;
 
+   unsigned num_vbos_in_user_sgprs = si_num_vbos_in_user_sgprs(sscreen);
    unsigned alloc_count =
-      count > sscreen->num_vbos_in_user_sgprs ? count - sscreen->num_vbos_in_user_sgprs : 0;
+      count > num_vbos_in_user_sgprs ? count - num_vbos_in_user_sgprs : 0;
    v->vb_desc_list_alloc_size = align(alloc_count * 16, SI_CPDMA_ALIGNMENT);
 
    for (i = 0; i < count; ++i) {
@@ -4875,8 +4906,10 @@ static void si_bind_vertex_elements(struct pipe_context *ctx, void *state)
         * src_offset alignment, which is reflected in fix_fetch_opencode. */
        old->fix_fetch_opencode != v->fix_fetch_opencode ||
        memcmp(old->fix_fetch, v->fix_fetch, sizeof(v->fix_fetch[0]) *
-              MAX2(old->count, v->count)))
+              MAX2(old->count, v->count))) {
+      si_vs_key_update_inputs(sctx);
       sctx->do_update_shaders = true;
+   }
 
    if (v->instance_divisor_is_fetched) {
       struct pipe_constant_buffer cb;
@@ -4972,8 +5005,10 @@ static void si_set_vertex_buffers(struct pipe_context *ctx, unsigned start_slot,
     * be the case in well-behaved applications anyway.
     */
    if ((sctx->vertex_elements->vb_alignment_check_mask &
-        (unaligned | orig_unaligned) & updated_mask))
+        (unaligned | orig_unaligned) & updated_mask)) {
+      si_vs_key_update_inputs(sctx);
       sctx->do_update_shaders = true;
+   }
 }
 
 /*

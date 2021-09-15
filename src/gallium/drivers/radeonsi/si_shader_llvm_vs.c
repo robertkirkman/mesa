@@ -26,6 +26,7 @@
 #include "si_shader_internal.h"
 #include "sid.h"
 #include "util/u_memory.h"
+#include "ac_exp_param.h"
 
 static LLVMValueRef unpack_sint16(struct si_shader_context *ctx, LLVMValueRef i32, unsigned index)
 {
@@ -107,7 +108,7 @@ static void load_input_vs(struct si_shader_context *ctx, unsigned input_index, L
     * ... which is what we must prevent at all cost.
     */
    const bool can_speculate = false;
-   unsigned bit_size = info->input_fp16_lo_hi_valid[input_index] & 0x1 ? 16 : 32;
+   unsigned bit_size = info->input[input_index].fp16_lo_hi_valid & 0x1 ? 16 : 32;
    LLVMTypeRef int_type = bit_size == 16 ? ctx->ac.i16 : ctx->ac.i32;
    LLVMTypeRef float_type = bit_size == 16 ? ctx->ac.f16 : ctx->ac.f32;
    unsigned num_vbos_in_user_sgprs = ctx->shader->selector->num_vbos_in_user_sgprs;
@@ -157,7 +158,7 @@ static void load_input_vs(struct si_shader_context *ctx, unsigned input_index, L
       return;
    }
 
-   unsigned required_channels = util_last_bit(info->input_usage_mask[input_index]);
+   unsigned required_channels = util_last_bit(info->input[input_index].usage_mask);
    if (required_channels == 0) {
       for (unsigned i = 0; i < 4; ++i)
          out[i] = LLVMGetUndef(ctx->ac.f32);
@@ -451,6 +452,9 @@ static void si_prepare_param_exports(struct si_shader_context *ctx,
 {
    struct si_shader *shader = ctx->shader;
    unsigned param_count = 0;
+
+   memset(shader->info.vs_output_param_offset, AC_EXP_PARAM_DEFAULT_VAL_0000,
+          sizeof(shader->info.vs_output_param_offset));
 
    for (unsigned i = 0; i < noutput; i++) {
       unsigned semantic = outputs[i].semantic;

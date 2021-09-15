@@ -22,6 +22,7 @@
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "ac_exp_param.h"
 #include "ac_nir_to_llvm.h"
 #include "ac_rtld.h"
 #include "si_pipe.h"
@@ -895,12 +896,8 @@ bool si_llvm_translate_nir(struct si_shader_context *ctx, struct si_shader *shad
       /* Unconditionally declare scratch space base for streamout and
        * vertex compaction. Whether space is actually allocated is
        * determined during linking / PM4 creation.
-       *
-       * Add an extra dword per vertex to ensure an odd stride, which
-       * avoids bank conflicts for SoA accesses.
        */
-      if (!gfx10_is_ngg_passthrough(shader))
-         si_llvm_declare_esgs_ring(ctx);
+      si_llvm_declare_esgs_ring(ctx);
 
       /* This is really only needed when streamout and / or vertex
        * compaction is enabled.

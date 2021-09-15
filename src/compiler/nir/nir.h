@@ -768,6 +768,7 @@ typedef enum PACKED {
 
 typedef struct nir_instr {
    struct exec_node node;
+   struct list_head gc_node;
    struct nir_block *block;
    nir_instr_type type;
 
@@ -1026,8 +1027,8 @@ nir_is_sequential_comp_swizzle(uint8_t *swiz, unsigned nr_comp)
    return true;
 }
 
-void nir_src_copy(nir_src *dest, const nir_src *src, void *instr_or_if);
-void nir_dest_copy(nir_dest *dest, const nir_dest *src, nir_instr *instr);
+void nir_src_copy(nir_src *dest, const nir_src *src);
+void nir_dest_copy(nir_dest *dest, const nir_dest *src);
 
 typedef struct {
    /** Base source */
@@ -1456,10 +1457,8 @@ typedef struct nir_alu_instr {
    nir_alu_src src[];
 } nir_alu_instr;
 
-void nir_alu_src_copy(nir_alu_src *dest, const nir_alu_src *src,
-                      nir_alu_instr *instr);
-void nir_alu_dest_copy(nir_alu_dest *dest, const nir_alu_dest *src,
-                       nir_alu_instr *instr);
+void nir_alu_src_copy(nir_alu_src *dest, const nir_alu_src *src);
+void nir_alu_dest_copy(nir_alu_dest *dest, const nir_alu_dest *src);
 
 bool nir_alu_instr_is_copy(nir_alu_instr *instr);
 
@@ -3812,6 +3811,8 @@ typedef struct nir_shader {
 
    struct exec_list functions; /** < list of nir_function */
 
+   struct list_head gc_list; /** < list of all nir_instrs allocated on the shader but not yet freed. */
+
    /**
     * The size of the variable space for load_input_*, load_uniform_*, etc.
     * intrinsics.  This is in back-end specific units which is likely one of
@@ -4225,6 +4226,8 @@ nir_instr_insert_after_cf_list(struct exec_list *list, nir_instr *after)
 }
 
 void nir_instr_remove_v(nir_instr *instr);
+void nir_instr_free(nir_instr *instr);
+void nir_instr_free_list(struct exec_list *list);
 
 static inline nir_cursor
 nir_instr_remove(nir_instr *instr)

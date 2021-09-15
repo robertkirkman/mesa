@@ -1225,6 +1225,19 @@ static void si_set_constant_buffer(struct si_context *sctx, struct si_buffer_res
    sctx->descriptors_dirty |= 1u << descriptors_idx;
 }
 
+void si_invalidate_inlinable_uniforms(struct si_context *sctx, enum pipe_shader_type shader)
+{
+   if (shader == PIPE_SHADER_COMPUTE)
+      return;
+
+   if (sctx->shaders[shader].key.opt.inline_uniforms) {
+      sctx->shaders[shader].key.opt.inline_uniforms = false;
+      memset(sctx->shaders[shader].key.opt.inlined_uniform_values, 0,
+             sizeof(sctx->shaders[shader].key.opt.inlined_uniform_values));
+      sctx->do_update_shaders = true;
+   }
+}
+
 static void si_pipe_set_constant_buffer(struct pipe_context *ctx, enum pipe_shader_type shader,
                                         uint slot, bool take_ownership,
                                         const struct pipe_constant_buffer *input)
@@ -1244,10 +1257,8 @@ static void si_pipe_set_constant_buffer(struct pipe_context *ctx, enum pipe_shad
          si_resource(input->buffer)->bind_history |= PIPE_BIND_CONSTANT_BUFFER;
       }
 
-      if (slot == 0) {
-         /* Invalidate current inlinable uniforms. */
-         sctx->inlinable_uniforms_valid_mask &= ~(1 << shader);
-      }
+      if (slot == 0)
+         si_invalidate_inlinable_uniforms(sctx, shader);
    }
 
    slot = si_get_constbuf_slot(slot);
@@ -1262,10 +1273,13 @@ static void si_set_inlinable_constants(struct pipe_context *ctx,
 {
    struct si_context *sctx = (struct si_context *)ctx;
 
-   if (!(sctx->inlinable_uniforms_valid_mask & BITFIELD_BIT(shader))) {
+   if (shader == PIPE_SHADER_COMPUTE)
+      return;
+
+   if (!sctx->shaders[shader].key.opt.inline_uniforms) {
       /* It's the first time we set the constants. Always update shaders. */
-      memcpy(sctx->inlinable_uniforms[shader], values, num_values * 4);
-      sctx->inlinable_uniforms_valid_mask |= BITFIELD_BIT(shader);
+      sctx->shaders[shader].key.opt.inline_uniforms = true;
+      memcpy(sctx->shaders[shader].key.opt.inlined_uniform_values, values, num_values * 4);
       sctx->do_update_shaders = true;
       return;
    }
@@ -1273,8 +1287,8 @@ static void si_set_inlinable_constants(struct pipe_context *ctx,
    /* We have already set inlinable constants for this shader. Update the shader only if
     * the constants are being changed so as not to update shaders needlessly.
     */
-   if (memcmp(sctx->inlinable_uniforms[shader], values, num_values * 4)) {
-      memcpy(sctx->inlinable_uniforms[shader], values, num_values * 4);
+   if (memcmp(sctx->shaders[shader].key.opt.inlined_uniform_values, values, num_values * 4)) {
+      memcpy(sctx->shaders[shader].key.opt.inlined_uniform_values, values, num_values * 4);
       sctx->do_update_shaders = true;
    }
 }
@@ -1940,11 +1954,13 @@ static void si_mark_shader_pointers_dirty(struct si_context *sctx, unsigned shad
       u_bit_consecutive(SI_DESCS_FIRST_SHADER + shader * SI_NUM_SHADER_DESCS, SI_NUM_SHADER_DESCS);
 
    if (shader == PIPE_SHADER_VERTEX) {
+      unsigned num_vbos_in_user_sgprs = si_num_vbos_in_user_sgprs(sctx->screen);
+
       sctx->vertex_buffer_pointer_dirty = sctx->vb_descriptors_buffer != NULL &&
                                           sctx->num_vertex_elements >
-                                          sctx->screen->num_vbos_in_user_sgprs;
+                                          num_vbos_in_user_sgprs;
       sctx->vertex_buffer_user_sgprs_dirty =
-         sctx->num_vertex_elements > 0 && sctx->screen->num_vbos_in_user_sgprs;
+         sctx->num_vertex_elements > 0 && num_vbos_in_user_sgprs;
    }
 
    si_mark_atom_dirty(sctx, &sctx->atoms.s.shader_pointers);
@@ -1952,12 +1968,14 @@ static void si_mark_shader_pointers_dirty(struct si_context *sctx, unsigned shad
 
 void si_shader_pointers_mark_dirty(struct si_context *sctx)
 {
+   unsigned num_vbos_in_user_sgprs = si_num_vbos_in_user_sgprs(sctx->screen);
+
    sctx->shader_pointers_dirty = u_bit_consecutive(0, SI_NUM_DESCS);
    sctx->vertex_buffer_pointer_dirty = sctx->vb_descriptors_buffer != NULL &&
                                        sctx->num_vertex_elements >
-                                       sctx->screen->num_vbos_in_user_sgprs;
+                                       num_vbos_in_user_sgprs;
    sctx->vertex_buffer_user_sgprs_dirty =
-      sctx->num_vertex_elements > 0 && sctx->screen->num_vbos_in_user_sgprs;
+      sctx->num_vertex_elements > 0 && num_vbos_in_user_sgprs;
    si_mark_atom_dirty(sctx, &sctx->atoms.s.shader_pointers);
    sctx->graphics_bindless_pointer_dirty = sctx->bindless_descriptors.buffer != NULL;
    sctx->compute_bindless_pointer_dirty = sctx->bindless_descriptors.buffer != NULL;

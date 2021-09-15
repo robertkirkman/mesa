@@ -73,7 +73,8 @@ sweep_block(nir_shader *nir, nir_block *block)
    block->live_out = NULL;
 
    nir_foreach_instr(instr, block) {
-      ralloc_steal(nir, instr);
+      list_del(&instr->gc_node);
+      list_add(&instr->gc_node, &nir->gc_list);
 
       nir_foreach_src(instr, sweep_src_indirect, nir);
       nir_foreach_dest(instr, sweep_dest_indirect, nir);
@@ -155,6 +156,12 @@ nir_sweep(nir_shader *nir)
 {
    void *rubbish = ralloc_context(NULL);
 
+   struct list_head instr_gc_list;
+   list_inithead(&instr_gc_list);
+
+   list_replace(&nir->gc_list, &instr_gc_list);
+   list_inithead(&nir->gc_list);
+
    /* First, move ownership of all the memory to a temporary context; assume dead. */
    ralloc_adopt(rubbish, nir);
 
@@ -169,6 +176,12 @@ nir_sweep(nir_shader *nir)
    foreach_list_typed(nir_function, func, node, &nir->functions) {
       sweep_function(nir, func);
    }
+
+   /* Sweep instrs not found while walking the shader. */
+   list_for_each_entry_safe(nir_instr, instr, &instr_gc_list, gc_node) {
+      nir_instr_free(instr);
+   }
+   assert(list_is_empty(&instr_gc_list));
 
    ralloc_steal(nir, nir->constant_data);
 

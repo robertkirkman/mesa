@@ -138,6 +138,7 @@
 #include "util/u_inlines.h"
 #include "util/u_live_shader_cache.h"
 #include "util/u_queue.h"
+#include "si_pm4.h"
 
 #include <stdio.h>
 
@@ -157,6 +158,12 @@ struct si_context;
 #define SI_MAX_VS_OUTPUTS 40
 
 #define SI_NGG_PRIM_EDGE_FLAG_BITS ((1 << 9) | (1 << 19) | (1 << 29))
+
+#define SI_PS_INPUT_CNTL_0000          (S_028644_OFFSET(0x20) | S_028644_DEFAULT_VAL(0))
+#define SI_PS_INPUT_CNTL_0001          (S_028644_OFFSET(0x20) | S_028644_DEFAULT_VAL(3))
+#define SI_PS_INPUT_CNTL_UNUSED        SI_PS_INPUT_CNTL_0000
+/* D3D9 behaviour for COLOR0 requires 0001. GL is undefined. */
+#define SI_PS_INPUT_CNTL_UNUSED_COLOR0 SI_PS_INPUT_CNTL_0001
 
 /* SGPR user data indices */
 enum
@@ -323,6 +330,16 @@ enum si_color_output_type {
    SI_TYPE_UINT16,
 };
 
+union si_input_info {
+   struct {
+      ubyte semantic;
+      ubyte interpolate;
+      ubyte fp16_lo_hi_valid;
+      ubyte usage_mask;
+   };
+   uint32_t _unused; /* this just forces 4-byte alignment */
+};
+
 struct si_shader_info {
    shader_info base;
 
@@ -330,12 +347,8 @@ struct si_shader_info {
 
    ubyte num_inputs;
    ubyte num_outputs;
-   ubyte input_semantic[PIPE_MAX_SHADER_INPUTS];
-   ubyte input_interpolate[PIPE_MAX_SHADER_INPUTS];
-   ubyte input_usage_mask[PIPE_MAX_SHADER_INPUTS];
-   ubyte input_fp16_lo_hi_valid[PIPE_MAX_SHADER_INPUTS];
+   union si_input_info input[PIPE_MAX_SHADER_INPUTS];
    ubyte output_semantic[PIPE_MAX_SHADER_OUTPUTS];
-   char output_semantic_to_slot[VARYING_SLOT_VAR15_16BIT + 1];
    ubyte output_usagemask[PIPE_MAX_SHADER_OUTPUTS];
    ubyte output_readmask[PIPE_MAX_SHADER_OUTPUTS];
    ubyte output_streams[PIPE_MAX_SHADER_OUTPUTS];
@@ -700,6 +713,7 @@ struct si_shader_key {
 /* GCN-specific shader info. */
 struct si_shader_binary_info {
    ubyte vs_output_param_offset[SI_MAX_VS_OUTPUTS];
+   uint32_t vs_output_ps_input_cntl[NUM_TOTAL_VARYING_SLOTS];
    ubyte num_input_sgprs;
    ubyte num_input_vgprs;
    signed char face_vgpr_index;
@@ -729,7 +743,37 @@ struct gfx9_gs_info {
    unsigned esgs_ring_size; /* in bytes */
 };
 
+#define SI_NUM_VGT_STAGES_KEY_BITS 6
+#define SI_NUM_VGT_STAGES_STATES   (1 << SI_NUM_VGT_STAGES_KEY_BITS)
+
+/* The VGT_SHADER_STAGES key used to index the table of precomputed values.
+ * Some fields are set by state-change calls, most are set by draw_vbo.
+ */
+union si_vgt_stages_key {
+   struct {
+#if UTIL_ARCH_LITTLE_ENDIAN
+      uint8_t tess : 1;
+      uint8_t gs : 1;
+      uint8_t ngg_gs_fast_launch : 1;
+      uint8_t ngg_passthrough : 1;
+      uint8_t ngg : 1;       /* gfx10+ */
+      uint8_t streamout : 1; /* only used with NGG */
+      uint8_t _pad : 8 - SI_NUM_VGT_STAGES_KEY_BITS;
+#else /* UTIL_ARCH_BIG_ENDIAN */
+      uint8_t _pad : 8 - SI_NUM_VGT_STAGES_KEY_BITS;
+      uint8_t streamout : 1;
+      uint8_t ngg : 1;
+      uint8_t ngg_passthrough : 1;
+      uint8_t ngg_gs_fast_launch : 1;
+      uint8_t gs : 1;
+      uint8_t tess : 1;
+#endif
+   } u;
+   uint8_t index;
+};
+
 struct si_shader {
+   struct si_pm4_state pm4; /* base class */
    struct si_compiler_ctx_state compiler_ctx_state;
 
    struct si_shader_selector *selector;
@@ -741,7 +785,6 @@ struct si_shader {
    struct si_shader_part *prolog2;
    struct si_shader_part *epilog;
 
-   struct si_pm4_state *pm4;
    struct si_resource *bo;
    struct si_resource *scratch_bo;
    struct si_shader_key key;
@@ -796,6 +839,8 @@ struct si_shader {
          unsigned vgt_gs_onchip_cntl;
          unsigned vgt_gs_max_prims_per_subgroup;
          unsigned vgt_esgs_ring_itemsize;
+         unsigned spi_shader_pgm_rsrc3_gs;
+         unsigned spi_shader_pgm_rsrc4_gs;
       } gs;
 
       struct {
@@ -812,6 +857,9 @@ struct si_shader {
          unsigned pa_cl_ngg_cntl;
          unsigned vgt_gs_max_vert_out; /* for API GS */
          unsigned ge_pc_alloc;         /* uconfig register */
+         unsigned spi_shader_pgm_rsrc3_gs;
+         unsigned spi_shader_pgm_rsrc4_gs;
+         union si_vgt_stages_key vgt_stages;
       } ngg;
 
       struct {
@@ -832,6 +880,7 @@ struct si_shader {
          unsigned spi_shader_z_format;
          unsigned spi_shader_col_format;
          unsigned cb_shader_mask;
+         unsigned num_interp;
       } ps;
    } ctx_reg;
 
@@ -888,7 +937,7 @@ bool gfx10_is_ngg_passthrough(struct si_shader *shader);
 
 /* Return the pointer to the main shader part's pointer. */
 static inline struct si_shader **si_get_main_shader_part(struct si_shader_selector *sel,
-                                                         struct si_shader_key *key)
+                                                         const struct si_shader_key *key)
 {
    if (key->as_ls)
       return &sel->main_shader_part_ls;

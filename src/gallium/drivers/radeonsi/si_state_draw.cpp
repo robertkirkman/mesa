@@ -22,6 +22,7 @@
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "ac_exp_param.h"
 #include "ac_sqtt.h"
 #include "si_build_pm4.h"
 #include "util/u_index_modify.h"
@@ -47,6 +48,317 @@
 /* special primitive types */
 #define SI_PRIM_RECTANGLE_LIST PIPE_PRIM_MAX
 
+template<int NUM_INTERP>
+static void si_emit_spi_map(struct si_context *sctx)
+{
+   struct si_shader *ps = sctx->shader.ps.current;
+   struct si_shader_info *psinfo = ps ? &ps->selector->info : NULL;
+   unsigned spi_ps_input_cntl[NUM_INTERP];
+
+   STATIC_ASSERT(NUM_INTERP >= 0 && NUM_INTERP <= 32);
+
+   if (!NUM_INTERP)
+      return;
+
+   struct si_shader *vs = si_get_vs(sctx)->current;
+   struct si_state_rasterizer *rs = sctx->queued.named.rasterizer;
+
+   for (unsigned i = 0; i < NUM_INTERP; i++) {
+      union si_input_info input = psinfo->input[i];
+      unsigned ps_input_cntl = vs->info.vs_output_ps_input_cntl[input.semantic];
+      bool non_default_val = G_028644_OFFSET(ps_input_cntl) != 0x20;
+
+      if (non_default_val) {
+         if (input.interpolate == INTERP_MODE_FLAT ||
+             (input.interpolate == INTERP_MODE_COLOR && rs->flatshade))
+            ps_input_cntl |= S_028644_FLAT_SHADE(1);
+
+         if (input.fp16_lo_hi_valid) {
+            ps_input_cntl |= S_028644_FP16_INTERP_MODE(1) |
+                             S_028644_ATTR0_VALID(1) | /* this must be set if FP16_INTERP_MODE is set */
+                             S_028644_ATTR1_VALID(!!(input.fp16_lo_hi_valid & 0x2));
+         }
+      }
+
+      if (input.semantic == VARYING_SLOT_PNTC ||
+          (input.semantic >= VARYING_SLOT_TEX0 && input.semantic <= VARYING_SLOT_TEX7 &&
+           rs->sprite_coord_enable & (1 << (input.semantic - VARYING_SLOT_TEX0)))) {
+         /* Overwrite the whole value for sprite coordinates. */
+         ps_input_cntl = S_028644_OFFSET(0) |
+                         S_028644_PT_SPRITE_TEX(1);
+         if (input.fp16_lo_hi_valid & 0x1) {
+            ps_input_cntl |= S_028644_FP16_INTERP_MODE(1) |
+                             S_028644_ATTR0_VALID(1);
+         }
+      }
+
+      spi_ps_input_cntl[i] = ps_input_cntl;
+   }
+
+   /* R_028644_SPI_PS_INPUT_CNTL_0 */
+   /* Dota 2: Only ~16% of SPI map updates set different values. */
+   /* Talos: Only ~9% of SPI map updates set different values. */
+   radeon_begin(&sctx->gfx_cs);
+   radeon_opt_set_context_regn(sctx, R_028644_SPI_PS_INPUT_CNTL_0, spi_ps_input_cntl,
+                               sctx->tracked_regs.spi_ps_input_cntl, NUM_INTERP);
+   radeon_end_update_context_roll(sctx);
+}
+
+template <chip_class GFX_VERSION, si_has_tess HAS_TESS, si_has_gs HAS_GS, si_has_ngg NGG>
+static bool si_update_shaders(struct si_context *sctx)
+{
+   struct pipe_context *ctx = (struct pipe_context *)sctx;
+   struct si_shader *old_vs = si_get_vs_inline(sctx, HAS_TESS, HAS_GS)->current;
+   unsigned old_kill_clip_distances = old_vs ? old_vs->key.opt.kill_clip_distances : 0;
+   struct si_shader *old_ps = sctx->shader.ps.current;
+   unsigned old_spi_shader_col_format =
+      old_ps ? old_ps->key.part.ps.epilog.spi_shader_col_format : 0;
+   int r;
+
+   /* Update TCS and TES. */
+   if (HAS_TESS) {
+      if (!sctx->tess_rings) {
+         si_init_tess_factor_ring(sctx);
+         if (!sctx->tess_rings)
+            return false;
+      }
+
+      if (sctx->shader.tcs.cso) {
+         r = si_shader_select(ctx, &sctx->shader.tcs);
+         if (r)
+            return false;
+         si_pm4_bind_state(sctx, hs, sctx->shader.tcs.current);
+      } else {
+         if (!sctx->fixed_func_tcs_shader.cso) {
+            sctx->fixed_func_tcs_shader.cso =
+               (struct si_shader_selector*)si_create_fixed_func_tcs(sctx);
+            if (!sctx->fixed_func_tcs_shader.cso)
+               return false;
+
+            sctx->fixed_func_tcs_shader.key.part.tcs.epilog.invoc0_tess_factors_are_def =
+               sctx->fixed_func_tcs_shader.cso->info.tessfactors_are_def_in_all_invocs;
+         }
+
+         r = si_shader_select(ctx, &sctx->fixed_func_tcs_shader);
+         if (r)
+            return false;
+         si_pm4_bind_state(sctx, hs, sctx->fixed_func_tcs_shader.current);
+      }
+
+      if (!HAS_GS || GFX_VERSION <= GFX8) {
+         r = si_shader_select(ctx, &sctx->shader.tes);
+         if (r)
+            return false;
+
+         if (HAS_GS) {
+            /* TES as ES */
+            assert(GFX_VERSION <= GFX8);
+            si_pm4_bind_state(sctx, es, sctx->shader.tes.current);
+         } else if (NGG) {
+            si_pm4_bind_state(sctx, gs, sctx->shader.tes.current);
+         } else {
+            si_pm4_bind_state(sctx, vs, sctx->shader.tes.current);
+         }
+      }
+   } else {
+      if (GFX_VERSION <= GFX8) {
+         si_pm4_bind_state(sctx, ls, NULL);
+         sctx->prefetch_L2_mask &= ~SI_PREFETCH_LS;
+      }
+      si_pm4_bind_state(sctx, hs, NULL);
+      sctx->prefetch_L2_mask &= ~SI_PREFETCH_HS;
+   }
+
+   /* Update GS. */
+   if (HAS_GS) {
+      r = si_shader_select(ctx, &sctx->shader.gs);
+      if (r)
+         return false;
+      si_pm4_bind_state(sctx, gs, sctx->shader.gs.current);
+      if (!NGG) {
+         si_pm4_bind_state(sctx, vs, sctx->shader.gs.cso->gs_copy_shader);
+
+         if (!si_update_gs_ring_buffers(sctx))
+            return false;
+      } else {
+         si_pm4_bind_state(sctx, vs, NULL);
+         sctx->prefetch_L2_mask &= ~SI_PREFETCH_VS;
+      }
+   } else {
+      if (!NGG) {
+         si_pm4_bind_state(sctx, gs, NULL);
+         sctx->prefetch_L2_mask &= ~SI_PREFETCH_GS;
+         if (GFX_VERSION <= GFX8) {
+            si_pm4_bind_state(sctx, es, NULL);
+            sctx->prefetch_L2_mask &= ~SI_PREFETCH_ES;
+         }
+      }
+   }
+
+   /* Update VS. */
+   if ((!HAS_TESS && !HAS_GS) || GFX_VERSION <= GFX8) {
+      r = si_shader_select(ctx, &sctx->shader.vs);
+      if (r)
+         return false;
+
+      if (!HAS_TESS && !HAS_GS) {
+         if (NGG) {
+            si_pm4_bind_state(sctx, gs, sctx->shader.vs.current);
+            si_pm4_bind_state(sctx, vs, NULL);
+            sctx->prefetch_L2_mask &= ~SI_PREFETCH_VS;
+         } else {
+            si_pm4_bind_state(sctx, vs, sctx->shader.vs.current);
+         }
+      } else if (HAS_TESS) {
+         si_pm4_bind_state(sctx, ls, sctx->shader.vs.current);
+      } else {
+         assert(HAS_GS);
+         si_pm4_bind_state(sctx, es, sctx->shader.vs.current);
+      }
+   }
+
+   sctx->vs_uses_base_instance =
+      sctx->shader.vs.current ? sctx->shader.vs.current->uses_base_instance :
+      sctx->queued.named.hs ? sctx->queued.named.hs->uses_base_instance :
+      sctx->shader.gs.current->uses_base_instance;
+
+   union si_vgt_stages_key key;
+   key.index = 0;
+
+   /* Update VGT_SHADER_STAGES_EN. */
+   if (HAS_TESS)
+      key.u.tess = 1;
+   if (HAS_GS)
+      key.u.gs = 1;
+   if (NGG)
+      key.index |= si_get_vs_inline(sctx, HAS_TESS, HAS_GS)->current->ctx_reg.ngg.vgt_stages.index;
+
+   struct si_pm4_state **pm4 = &sctx->vgt_shader_config[key.index];
+   if (unlikely(!*pm4))
+      *pm4 = si_build_vgt_shader_config(sctx->screen, key);
+   si_pm4_bind_state(sctx, vgt_shader_config, *pm4);
+
+   if (old_kill_clip_distances != si_get_vs_inline(sctx, HAS_TESS, HAS_GS)->current->key.opt.kill_clip_distances)
+      si_mark_atom_dirty(sctx, &sctx->atoms.s.clip_regs);
+
+   r = si_shader_select(ctx, &sctx->shader.ps);
+   if (r)
+      return false;
+   si_pm4_bind_state(sctx, ps, sctx->shader.ps.current);
+
+   if (si_pm4_state_changed(sctx, ps) ||
+       (!NGG && si_pm4_state_changed(sctx, vs)) ||
+       (NGG && si_pm4_state_changed(sctx, gs))) {
+      sctx->atoms.s.spi_map.emit = sctx->emit_spi_map[sctx->shader.ps.current->ctx_reg.ps.num_interp];
+      si_mark_atom_dirty(sctx, &sctx->atoms.s.spi_map);
+   }
+
+   if ((GFX_VERSION >= GFX10_3 || (GFX_VERSION >= GFX9 && sctx->screen->info.rbplus_allowed)) &&
+       si_pm4_state_changed(sctx, ps) &&
+       (!old_ps || old_spi_shader_col_format !=
+                      sctx->shader.ps.current->key.part.ps.epilog.spi_shader_col_format))
+      si_mark_atom_dirty(sctx, &sctx->atoms.s.cb_render_state);
+
+   if (sctx->smoothing_enabled !=
+       sctx->shader.ps.current->key.part.ps.epilog.poly_line_smoothing) {
+      sctx->smoothing_enabled = sctx->shader.ps.current->key.part.ps.epilog.poly_line_smoothing;
+      si_mark_atom_dirty(sctx, &sctx->atoms.s.msaa_config);
+
+      /* NGG cull state uses smoothing_enabled. */
+      if (GFX_VERSION >= GFX10 && sctx->screen->use_ngg_culling)
+         si_mark_atom_dirty(sctx, &sctx->atoms.s.ngg_cull_state);
+
+      if (GFX_VERSION == GFX6)
+         si_mark_atom_dirty(sctx, &sctx->atoms.s.db_render_state);
+
+      if (sctx->framebuffer.nr_samples <= 1)
+         si_mark_atom_dirty(sctx, &sctx->atoms.s.msaa_sample_locs);
+   }
+
+   if (unlikely(sctx->screen->debug_flags & DBG(SQTT) && sctx->thread_trace)) {
+      /* Pretend the bound shaders form a vk pipeline */
+      uint32_t pipeline_code_hash = 0;
+      uint64_t base_address = ~0;
+
+      for (int i = 0; i < SI_NUM_GRAPHICS_SHADERS; i++) {
+         struct si_shader *shader = sctx->shaders[i].current;
+         if (sctx->shaders[i].cso && shader) {
+            pipeline_code_hash = _mesa_hash_data_with_seed(
+               shader->binary.elf_buffer,
+               shader->binary.elf_size,
+               pipeline_code_hash);
+            base_address = MIN2(base_address,
+                                shader->bo->gpu_address);
+         }
+      }
+
+      struct ac_thread_trace_data *thread_trace_data = sctx->thread_trace;
+      if (!si_sqtt_pipeline_is_registered(thread_trace_data, pipeline_code_hash)) {
+         si_sqtt_register_pipeline(sctx, pipeline_code_hash, base_address, false);
+      }
+
+      si_sqtt_describe_pipeline_bind(sctx, pipeline_code_hash, 0);
+   }
+
+   if ((GFX_VERSION <= GFX8 &&
+        (si_pm4_state_enabled_and_changed(sctx, ls) || si_pm4_state_enabled_and_changed(sctx, es))) ||
+       si_pm4_state_enabled_and_changed(sctx, hs) || si_pm4_state_enabled_and_changed(sctx, gs) ||
+       si_pm4_state_enabled_and_changed(sctx, vs) || si_pm4_state_enabled_and_changed(sctx, ps)) {
+      unsigned scratch_size = 0;
+
+      if (HAS_TESS) {
+         if (GFX_VERSION <= GFX8) /* LS */
+            scratch_size = MAX2(scratch_size, sctx->shader.vs.current->config.scratch_bytes_per_wave);
+
+         scratch_size = MAX2(scratch_size, sctx->queued.named.hs->config.scratch_bytes_per_wave);
+
+         if (HAS_GS) {
+            if (GFX_VERSION <= GFX8) /* ES */
+               scratch_size = MAX2(scratch_size, sctx->shader.tes.current->config.scratch_bytes_per_wave);
+
+            scratch_size = MAX2(scratch_size, sctx->shader.gs.current->config.scratch_bytes_per_wave);
+         } else {
+            scratch_size = MAX2(scratch_size, sctx->shader.tes.current->config.scratch_bytes_per_wave);
+         }
+      } else if (HAS_GS) {
+         if (GFX_VERSION <= GFX8) /* ES */
+            scratch_size = MAX2(scratch_size, sctx->shader.vs.current->config.scratch_bytes_per_wave);
+
+         scratch_size = MAX2(scratch_size, sctx->shader.gs.current->config.scratch_bytes_per_wave);
+      } else {
+         scratch_size = MAX2(scratch_size, sctx->shader.vs.current->config.scratch_bytes_per_wave);
+      }
+
+      scratch_size = MAX2(scratch_size, sctx->shader.ps.current->config.scratch_bytes_per_wave);
+
+      if (scratch_size && !si_update_spi_tmpring_size(sctx, scratch_size))
+         return false;
+
+      if (GFX_VERSION >= GFX7) {
+         if (GFX_VERSION <= GFX8 && HAS_TESS && si_pm4_state_enabled_and_changed(sctx, ls))
+            sctx->prefetch_L2_mask |= SI_PREFETCH_LS;
+
+         if (HAS_TESS && si_pm4_state_enabled_and_changed(sctx, hs))
+            sctx->prefetch_L2_mask |= SI_PREFETCH_HS;
+
+         if (GFX_VERSION <= GFX8 && HAS_GS && si_pm4_state_enabled_and_changed(sctx, es))
+            sctx->prefetch_L2_mask |= SI_PREFETCH_ES;
+
+         if ((HAS_GS || NGG) && si_pm4_state_enabled_and_changed(sctx, gs))
+            sctx->prefetch_L2_mask |= SI_PREFETCH_GS;
+
+         if (!NGG && si_pm4_state_enabled_and_changed(sctx, vs))
+            sctx->prefetch_L2_mask |= SI_PREFETCH_VS;
+
+         if (si_pm4_state_enabled_and_changed(sctx, ps))
+            sctx->prefetch_L2_mask |= SI_PREFETCH_PS;
+      }
+   }
+
+   sctx->do_update_shaders = false;
+   return true;
+}
+
 ALWAYS_INLINE
 static unsigned si_conv_pipe_prim(unsigned mode)
 {
@@ -71,9 +383,9 @@ static unsigned si_conv_pipe_prim(unsigned mode)
    return prim_conv[mode];
 }
 
-static void si_prefetch_shader_async(struct si_context *sctx, struct si_pm4_state *state)
+static void si_prefetch_shader_async(struct si_context *sctx, struct si_shader *shader)
 {
-   struct pipe_resource *bo = &state->shader->bo->b.b;
+   struct pipe_resource *bo = &shader->bo->b.b;
 
    si_cp_dma_prefetch(sctx, bo, 0, bo->width0);
 }
@@ -1355,6 +1667,7 @@ template <chip_class GFX_VERSION, si_has_tess HAS_TESS, si_has_gs HAS_GS, si_has
 static bool si_upload_and_prefetch_VB_descriptors(struct si_context *sctx)
 {
    unsigned count = sctx->num_vertex_elements;
+   unsigned num_vbos_in_user_sgprs = si_num_vbos_in_user_sgprs_inline(GFX_VERSION);
    bool pointer_dirty, user_sgprs_dirty;
 
    assert(count <= SI_MAX_ATTRIBS);
@@ -1391,7 +1704,6 @@ static bool si_upload_and_prefetch_VB_descriptors(struct si_context *sctx)
       }
 
       unsigned first_vb_use_mask = velems->first_vb_use_mask;
-      unsigned num_vbos_in_user_sgprs = sctx->screen->num_vbos_in_user_sgprs;
 
       for (unsigned i = 0; i < count; i++) {
          struct pipe_vertex_buffer *vb;
@@ -1456,7 +1768,6 @@ static bool si_upload_and_prefetch_VB_descriptors(struct si_context *sctx)
 
    if (pointer_dirty || user_sgprs_dirty) {
       struct radeon_cmdbuf *cs = &sctx->gfx_cs;
-      unsigned num_vbos_in_user_sgprs = sctx->screen->num_vbos_in_user_sgprs;
       unsigned sh_base = si_get_user_data_base(GFX_VERSION, HAS_TESS, HAS_GS, NGG,
                                                PIPE_SHADER_VERTEX);
       assert(count);
@@ -1665,8 +1976,8 @@ static void si_draw_vbo(struct pipe_context *ctx,
          GFX_VERSION >= GFX9 &&
          tcs && sctx->patch_vertices == tcs->info.base.tess.tcs_vertices_out;
 
-      if (sctx->same_patch_vertices != same_patch_vertices) {
-         sctx->same_patch_vertices = same_patch_vertices;
+      if (sctx->shader.tcs.key.opt.same_patch_vertices != same_patch_vertices) {
+         sctx->shader.tcs.key.opt.same_patch_vertices = same_patch_vertices;
          sctx->do_update_shaders = true;
       }
 
@@ -1681,8 +1992,9 @@ static void si_draw_vbo(struct pipe_context *ctx,
          bool ls_vgpr_fix =
             tcs && sctx->patch_vertices > tcs->info.base.tess.tcs_vertices_out;
 
-         if (ls_vgpr_fix != sctx->ls_vgpr_fix) {
-            sctx->ls_vgpr_fix = ls_vgpr_fix;
+         if (ls_vgpr_fix != sctx->shader.tcs.key.part.tcs.ls_prolog.ls_vgpr_fix) {
+            sctx->shader.tcs.key.part.tcs.ls_prolog.ls_vgpr_fix = ls_vgpr_fix;
+            sctx->fixed_func_tcs_shader.key.part.tcs.ls_prolog.ls_vgpr_fix = ls_vgpr_fix;
             sctx->do_update_shaders = true;
          }
       }
@@ -1716,8 +2028,8 @@ static void si_draw_vbo(struct pipe_context *ctx,
       bool gs_tri_strip_adj_fix =
          !HAS_TESS && prim == PIPE_PRIM_TRIANGLE_STRIP_ADJACENCY;
 
-      if (gs_tri_strip_adj_fix != sctx->gs_tri_strip_adj_fix) {
-         sctx->gs_tri_strip_adj_fix = gs_tri_strip_adj_fix;
+      if (gs_tri_strip_adj_fix != sctx->shader.gs.key.part.gs.prolog.tri_strip_adj_fix) {
+         sctx->shader.gs.key.part.gs.prolog.tri_strip_adj_fix = gs_tri_strip_adj_fix;
          sctx->do_update_shaders = true;
       }
    }
@@ -1886,7 +2198,7 @@ static void si_draw_vbo(struct pipe_context *ctx,
    }
 
    if (unlikely(sctx->do_update_shaders)) {
-      if (unlikely(!si_update_shaders(sctx))) {
+      if (unlikely(!(si_update_shaders<GFX_VERSION, HAS_TESS, HAS_GS, NGG>(sctx)))) {
          DRAW_CLEANUP;
          return;
       }
@@ -2164,3 +2476,48 @@ void GFX(si_init_draw_functions_)(struct si_context *sctx)
 
    si_init_ia_multi_vgt_param_table(sctx);
 }
+
+#if GFX_VER == 6 /* declare this function only once because it supports all chips. */
+
+extern "C"
+void si_init_spi_map_functions(struct si_context *sctx)
+{
+   /* This unrolls the loops in si_emit_spi_map and inlines memcmp and memcpys.
+    * It improves performance for viewperf/snx.
+    */
+   sctx->emit_spi_map[0] = si_emit_spi_map<0>;
+   sctx->emit_spi_map[1] = si_emit_spi_map<1>;
+   sctx->emit_spi_map[2] = si_emit_spi_map<2>;
+   sctx->emit_spi_map[3] = si_emit_spi_map<3>;
+   sctx->emit_spi_map[4] = si_emit_spi_map<4>;
+   sctx->emit_spi_map[5] = si_emit_spi_map<5>;
+   sctx->emit_spi_map[6] = si_emit_spi_map<6>;
+   sctx->emit_spi_map[7] = si_emit_spi_map<7>;
+   sctx->emit_spi_map[8] = si_emit_spi_map<8>;
+   sctx->emit_spi_map[9] = si_emit_spi_map<9>;
+   sctx->emit_spi_map[10] = si_emit_spi_map<10>;
+   sctx->emit_spi_map[11] = si_emit_spi_map<11>;
+   sctx->emit_spi_map[12] = si_emit_spi_map<12>;
+   sctx->emit_spi_map[13] = si_emit_spi_map<13>;
+   sctx->emit_spi_map[14] = si_emit_spi_map<14>;
+   sctx->emit_spi_map[15] = si_emit_spi_map<15>;
+   sctx->emit_spi_map[16] = si_emit_spi_map<16>;
+   sctx->emit_spi_map[17] = si_emit_spi_map<17>;
+   sctx->emit_spi_map[18] = si_emit_spi_map<18>;
+   sctx->emit_spi_map[19] = si_emit_spi_map<19>;
+   sctx->emit_spi_map[20] = si_emit_spi_map<20>;
+   sctx->emit_spi_map[21] = si_emit_spi_map<21>;
+   sctx->emit_spi_map[22] = si_emit_spi_map<22>;
+   sctx->emit_spi_map[23] = si_emit_spi_map<23>;
+   sctx->emit_spi_map[24] = si_emit_spi_map<24>;
+   sctx->emit_spi_map[25] = si_emit_spi_map<25>;
+   sctx->emit_spi_map[26] = si_emit_spi_map<26>;
+   sctx->emit_spi_map[27] = si_emit_spi_map<27>;
+   sctx->emit_spi_map[28] = si_emit_spi_map<28>;
+   sctx->emit_spi_map[29] = si_emit_spi_map<29>;
+   sctx->emit_spi_map[30] = si_emit_spi_map<30>;
+   sctx->emit_spi_map[31] = si_emit_spi_map<31>;
+   sctx->emit_spi_map[32] = si_emit_spi_map<32>;
+}
+
+#endif

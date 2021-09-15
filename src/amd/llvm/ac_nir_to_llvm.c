@@ -1979,6 +1979,12 @@ static LLVMValueRef visit_atomic_ssbo(struct ac_nir_context *ctx, nir_intrinsic_
    case nir_intrinsic_ssbo_atomic_comp_swap:
       op = "cmpswap";
       break;
+   case nir_intrinsic_ssbo_atomic_fmin:
+      op = "fmin";
+      break;
+   case nir_intrinsic_ssbo_atomic_fmax:
+      op = "fmax";
+      break;
    default:
       abort();
    }
@@ -1989,10 +1995,17 @@ static LLVMValueRef visit_atomic_ssbo(struct ac_nir_context *ctx, nir_intrinsic_
       result = emit_ssbo_comp_swap_64(ctx, descriptor, get_src(ctx, instr->src[1]),
                                       get_src(ctx, instr->src[2]), get_src(ctx, instr->src[3]), false);
    } else {
+      LLVMValueRef data = ac_llvm_extract_elem(&ctx->ac, get_src(ctx, instr->src[2]), 0);
+
       if (instr->intrinsic == nir_intrinsic_ssbo_atomic_comp_swap) {
          params[arg_count++] = ac_llvm_extract_elem(&ctx->ac, get_src(ctx, instr->src[3]), 0);
       }
-      params[arg_count++] = ac_llvm_extract_elem(&ctx->ac, get_src(ctx, instr->src[2]), 0);
+      if (instr->intrinsic == nir_intrinsic_ssbo_atomic_fmin ||
+          instr->intrinsic == nir_intrinsic_ssbo_atomic_fmax) {
+         data = ac_to_float(&ctx->ac, data);
+         return_type = LLVMTypeOf(data);
+      }
+      params[arg_count++] = data;
       params[arg_count++] = descriptor;
       params[arg_count++] = get_src(ctx, instr->src[1]); /* voffset */
       params[arg_count++] = ctx->ac.i32_0;               /* soffset */
@@ -2002,6 +2015,11 @@ static LLVMValueRef visit_atomic_ssbo(struct ac_nir_context *ctx, nir_intrinsic_
       snprintf(name, sizeof(name), "llvm.amdgcn.raw.buffer.atomic.%s.%s", op, type);
 
       result = ac_build_intrinsic(&ctx->ac, name, return_type, params, arg_count, 0);
+
+      if (instr->intrinsic == nir_intrinsic_ssbo_atomic_fmin ||
+          instr->intrinsic == nir_intrinsic_ssbo_atomic_fmax) {
+         result = ac_to_integer(&ctx->ac, result);
+      }
    }
 
    result = exit_waterfall(ctx, &wctx, result);
@@ -2144,7 +2162,13 @@ static LLVMValueRef visit_global_atomic(struct ac_nir_context *ctx,
    /* use "singlethread" sync scope to implement relaxed ordering */
    const char *sync_scope = "singlethread-one-as";
 
-   LLVMTypeRef ptr_type = LLVMPointerType(LLVMTypeOf(data), AC_ADDR_SPACE_GLOBAL);
+   if (instr->intrinsic == nir_intrinsic_global_atomic_fmin ||
+       instr->intrinsic == nir_intrinsic_global_atomic_fmax) {
+      data = ac_to_float(&ctx->ac, data);
+   }
+
+   LLVMTypeRef data_type = LLVMTypeOf(data);
+   LLVMTypeRef ptr_type = LLVMPointerType(data_type, AC_ADDR_SPACE_GLOBAL);
 
    addr = LLVMBuildIntToPtr(ctx->ac.builder, addr, ptr_type, "");
 
@@ -2152,6 +2176,21 @@ static LLVMValueRef visit_global_atomic(struct ac_nir_context *ctx,
       LLVMValueRef data1 = get_src(ctx, instr->src[2]);
       result = ac_build_atomic_cmp_xchg(&ctx->ac, addr, data, data1, sync_scope);
       result = LLVMBuildExtractValue(ctx->ac.builder, result, 0, "");
+   } else if (instr->intrinsic == nir_intrinsic_global_atomic_fmin ||
+              instr->intrinsic == nir_intrinsic_global_atomic_fmax) {
+      const char *op = instr->intrinsic == nir_intrinsic_global_atomic_fmin ? "fmin" : "fmax";
+      char name[64], type[8];
+      LLVMValueRef params[2];
+      int arg_count = 0;
+
+      params[arg_count++] = addr;
+      params[arg_count++] = data;
+
+      ac_build_type_name_for_intr(data_type, type, sizeof(type));
+      snprintf(name, sizeof(name), "llvm.amdgcn.global.atomic.%s.%s.p1%s.%s", op, type, type, type);
+
+      result = ac_build_intrinsic(&ctx->ac, name, data_type, params, arg_count, 0);
+      result = ac_to_integer(&ctx->ac, result);
    } else {
       switch (instr->intrinsic) {
       case nir_intrinsic_global_atomic_add:
@@ -2726,6 +2765,14 @@ static LLVMValueRef visit_image_atomic(struct ac_nir_context *ctx, const nir_int
       atomic_name = "dec";
       atomic_subop = ac_atomic_dec_wrap;
       break;
+   case nir_intrinsic_image_deref_atomic_fmin:
+      atomic_name = "fmin";
+      atomic_subop = ac_atomic_fmin;
+      break;
+   case nir_intrinsic_image_deref_atomic_fmax:
+      atomic_name = "fmax";
+      atomic_subop = ac_atomic_fmax;
+      break;
    default:
       abort();
    }
@@ -2733,6 +2780,9 @@ static LLVMValueRef visit_image_atomic(struct ac_nir_context *ctx, const nir_int
    if (cmpswap)
       params[param_count++] = get_src(ctx, instr->src[4]);
    params[param_count++] = get_src(ctx, instr->src[3]);
+
+   if (atomic_subop == ac_atomic_fmin || atomic_subop == ac_atomic_fmax)
+      params[0] = ac_to_float(&ctx->ac, params[0]);
 
    LLVMValueRef result;
    if (dim == GLSL_SAMPLER_DIM_BUF) {
@@ -2743,12 +2793,16 @@ static LLVMValueRef visit_image_atomic(struct ac_nir_context *ctx, const nir_int
       if (cmpswap && instr->dest.ssa.bit_size == 64) {
          result = emit_ssbo_comp_swap_64(ctx, params[2], params[3], params[1], params[0], true);
       } else {
+         LLVMTypeRef data_type = LLVMTypeOf(params[0]);
+         char type[8];
+
          params[param_count++] = ctx->ac.i32_0; /* soffset */
          params[param_count++] = ctx->ac.i32_0; /* slc */
 
+         ac_build_type_name_for_intr(data_type, type, sizeof(type));
          length = snprintf(intrinsic_name, sizeof(intrinsic_name),
-                           "llvm.amdgcn.struct.buffer.atomic.%s.%s", atomic_name,
-                           instr->dest.ssa.bit_size == 64 ? "i64" : "i32");
+                           "llvm.amdgcn.struct.buffer.atomic.%s.%s",
+                           atomic_name, type);
 
          assert(length < sizeof(intrinsic_name));
          result = ac_build_intrinsic(&ctx->ac, intrinsic_name, LLVMTypeOf(params[0]), params, param_count, 0);
@@ -3047,6 +3101,32 @@ static LLVMValueRef visit_var_atomic(struct ac_nir_context *ctx, const nir_intri
       LLVMValueRef src1 = get_src(ctx, instr->src[src_idx + 1]);
       result = ac_build_atomic_cmp_xchg(&ctx->ac, ptr, src, src1, sync_scope);
       result = LLVMBuildExtractValue(ctx->ac.builder, result, 0, "");
+   } else if (instr->intrinsic == nir_intrinsic_shared_atomic_fmin ||
+              instr->intrinsic == nir_intrinsic_shared_atomic_fmax) {
+      const char *op = instr->intrinsic == nir_intrinsic_shared_atomic_fmin ? "fmin" : "fmax";
+      char name[64], type[8];
+      LLVMValueRef params[5];
+      LLVMTypeRef src_type;
+      int arg_count = 0;
+
+      src = ac_to_float(&ctx->ac, src);
+      src_type = LLVMTypeOf(src);
+
+      LLVMTypeRef ptr_type =
+         LLVMPointerType(src_type, LLVMGetPointerAddressSpace(LLVMTypeOf(ptr)));
+      ptr = LLVMBuildBitCast(ctx->ac.builder, ptr, ptr_type, "");
+
+      params[arg_count++] = ptr;
+      params[arg_count++] = src;
+      params[arg_count++] = ctx->ac.i32_0;
+      params[arg_count++] = ctx->ac.i32_0;
+      params[arg_count++] = ctx->ac.i1false;
+
+      ac_build_type_name_for_intr(src_type, type, sizeof(type));
+      snprintf(name, sizeof(name), "llvm.amdgcn.ds.%s.%s", op, type);
+
+      result = ac_build_intrinsic(&ctx->ac, name, src_type, params, arg_count, 0);
+      result = ac_to_integer(&ctx->ac, result);
    } else {
       LLVMAtomicRMWBinOp op;
       switch (instr->intrinsic) {
@@ -3639,6 +3719,8 @@ static void visit_intrinsic(struct ac_nir_context *ctx, nir_intrinsic_instr *ins
    case nir_intrinsic_global_atomic_xor:
    case nir_intrinsic_global_atomic_exchange:
    case nir_intrinsic_global_atomic_comp_swap:
+   case nir_intrinsic_global_atomic_fmin:
+   case nir_intrinsic_global_atomic_fmax:
       result = visit_global_atomic(ctx, instr);
       break;
    case nir_intrinsic_ssbo_atomic_add:
@@ -3651,6 +3733,8 @@ static void visit_intrinsic(struct ac_nir_context *ctx, nir_intrinsic_instr *ins
    case nir_intrinsic_ssbo_atomic_xor:
    case nir_intrinsic_ssbo_atomic_exchange:
    case nir_intrinsic_ssbo_atomic_comp_swap:
+   case nir_intrinsic_ssbo_atomic_fmin:
+   case nir_intrinsic_ssbo_atomic_fmax:
       result = visit_atomic_ssbo(ctx, instr);
       break;
    case nir_intrinsic_load_ubo:
@@ -3721,6 +3805,8 @@ static void visit_intrinsic(struct ac_nir_context *ctx, nir_intrinsic_instr *ins
    case nir_intrinsic_image_deref_atomic_comp_swap:
    case nir_intrinsic_image_deref_atomic_inc_wrap:
    case nir_intrinsic_image_deref_atomic_dec_wrap:
+   case nir_intrinsic_image_deref_atomic_fmin:
+   case nir_intrinsic_image_deref_atomic_fmax:
       result = visit_image_atomic(ctx, instr, false);
       break;
    case nir_intrinsic_bindless_image_size:
@@ -3783,7 +3869,9 @@ static void visit_intrinsic(struct ac_nir_context *ctx, nir_intrinsic_instr *ins
    case nir_intrinsic_shared_atomic_xor:
    case nir_intrinsic_shared_atomic_exchange:
    case nir_intrinsic_shared_atomic_comp_swap:
-   case nir_intrinsic_shared_atomic_fadd: {
+   case nir_intrinsic_shared_atomic_fadd:
+   case nir_intrinsic_shared_atomic_fmin:
+   case nir_intrinsic_shared_atomic_fmax: {
       LLVMValueRef ptr = get_memory_ptr(ctx, instr->src[0], instr->src[1].ssa->bit_size, 0);
       result = visit_var_atomic(ctx, instr, ptr, 1);
       break;

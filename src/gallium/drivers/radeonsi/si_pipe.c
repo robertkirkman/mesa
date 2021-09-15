@@ -571,6 +571,7 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen, unsign
       si_init_state_functions(sctx);
       si_init_streamout_functions(sctx);
       si_init_viewport_functions(sctx);
+      si_init_spi_map_functions(sctx);
 
       sctx->blitter = util_blitter_create(&sctx->b);
       if (sctx->blitter == NULL)
@@ -714,6 +715,23 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen, unsign
 
    if (sctx->has_graphics) {
       si_init_cp_reg_shadowing(sctx);
+   }
+
+   /* Set immutable fields of shader keys. */
+   if (sctx->chip_class >= GFX9) {
+      /* The LS output / HS input layout can be communicated
+       * directly instead of via user SGPRs for merged LS-HS.
+       * This also enables jumping over the VS prolog for HS-only waves.
+       *
+       * When the LS VGPR fix is needed, monolithic shaders can:
+       *  - avoid initializing EXEC in both the LS prolog
+       *    and the LS main part when !vs_needs_prolog
+       *  - remove the fixup for unused input VGPRs
+       */
+      sctx->shader.tcs.key.opt.prefer_mono = 1;
+
+      /* This enables jumping over the VS prolog for GS-only waves. */
+      sctx->shader.gs.key.opt.prefer_mono = 1;
    }
 
    si_begin_new_gfx_cs(sctx, true);
@@ -1154,11 +1172,6 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
       si_init_perfcounters(sscreen);
 
    sscreen->max_memory_usage_kb = sscreen->info.vram_size_kb + sscreen->info.gart_size_kb / 4 * 3;
-
-   /* This decreases CPU overhead if all descriptors are in user SGPRs because we don't
-    * have to allocate and count references for the upload buffer.
-    */
-   sscreen->num_vbos_in_user_sgprs = sscreen->info.chip_class >= GFX9 ? 5 : 1;
 
    /* Determine tessellation ring info. */
    bool double_offchip_buffers = sscreen->info.chip_class >= GFX7 &&
