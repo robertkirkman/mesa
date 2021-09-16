@@ -197,11 +197,20 @@ wglCreateContextAttribsARB(HDC hDC, HGLRC hShareContext, const int *attribList)
          share_dhglrc = (DHGLRC)(INT_PTR)hShareContext;
       }
 
-      c = stw_create_context_attribs(hDC, layerPlane, share_dhglrc,
-                                     majorVersion, minorVersion,
-                                     contextFlags, profileMask,
-                                     dhglrc);
+      struct stw_context *share_stw = stw_lookup_context(share_dhglrc);
+
+      struct stw_context *stw_ctx = stw_create_context_attribs(hDC, layerPlane, share_stw,
+                                                               majorVersion, minorVersion,
+                                                               contextFlags, profileMask, 0);
+
+      if (!stw_ctx) {
+         wglDeleteContext_func(context);
+         return 0;
+      }
+
+      c = stw_create_context_handle(stw_ctx, dhglrc);
       if (!c) {
+         stw_destroy_context(stw_ctx);
          wglDeleteContext_func(context);
          context = 0;
       }
@@ -222,7 +231,7 @@ wglMakeContextCurrentARB(HDC hDrawDC, HDC hReadDC, HGLRC hglrc)
       dhglrc = stw_dev->callbacks.pfnGetDhglrc(hglrc);
    }
 
-   return stw_make_current(hDrawDC, hReadDC, dhglrc);
+   return stw_make_current_by_handles(hDrawDC, hReadDC, dhglrc);
 }
 
 HDC APIENTRY

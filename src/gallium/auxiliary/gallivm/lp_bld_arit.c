@@ -2030,6 +2030,12 @@ lp_build_trunc(struct lp_build_context *bld,
    assert(type.floating);
    assert(lp_check_value(type, a));
 
+   if (type.width == 16) {
+      char intrinsic[64];
+      lp_format_intrinsic(intrinsic, 64, "llvm.trunc", bld->vec_type);
+      return lp_build_intrinsic_unary(builder, intrinsic, bld->vec_type, a);
+   }
+
    if (arch_rounding_available(type)) {
       return lp_build_round_arch(bld, a, LP_BUILD_ROUND_TRUNCATE);
    }
@@ -2082,6 +2088,12 @@ lp_build_round(struct lp_build_context *bld,
 
    assert(type.floating);
    assert(lp_check_value(type, a));
+
+   if (type.width == 16) {
+      char intrinsic[64];
+      lp_format_intrinsic(intrinsic, 64, "llvm.round", bld->vec_type);
+      return lp_build_intrinsic_unary(builder, intrinsic, bld->vec_type, a);
+   }
 
    if (arch_rounding_available(type)) {
       return lp_build_round_arch(bld, a, LP_BUILD_ROUND_NEAREST);
@@ -3012,6 +3024,17 @@ LLVMValueRef
 lp_build_sin(struct lp_build_context *bld,
              LLVMValueRef a)
 {
+   const struct lp_type type = bld->type;
+
+   if (type.width == 16) {
+      LLVMBuilderRef builder = bld->gallivm->builder;
+      LLVMTypeRef vec_type = lp_build_vec_type(bld->gallivm, type);
+      char intrinsic[32];
+      lp_format_intrinsic(intrinsic, sizeof intrinsic, "llvm.sin", vec_type);
+      LLVMValueRef args[] = { a };
+      return lp_build_intrinsic(builder, intrinsic, vec_type, args, 1, 0);
+   }
+
    return lp_build_sin_or_cos(bld, a, FALSE);
 }
 
@@ -3023,6 +3046,17 @@ LLVMValueRef
 lp_build_cos(struct lp_build_context *bld,
              LLVMValueRef a)
 {
+   const struct lp_type type = bld->type;
+
+   if (type.width == 16) {
+      LLVMBuilderRef builder = bld->gallivm->builder;
+      LLVMTypeRef vec_type = lp_build_vec_type(bld->gallivm, type);
+      char intrinsic[32];
+      lp_format_intrinsic(intrinsic, sizeof intrinsic, "llvm.cos", vec_type);
+      LLVMValueRef args[] = { a };
+      return lp_build_intrinsic(builder, intrinsic, vec_type, args, 1, 0);
+   }
+
    return lp_build_sin_or_cos(bld, a, TRUE);
 }
 
@@ -3205,6 +3239,13 @@ lp_build_exp2(struct lp_build_context *bld,
    LLVMValueRef expfpart = NULL;
    LLVMValueRef res = NULL;
 
+   if (type.floating && type.width == 16) {
+      char intrinsic[32];
+      lp_format_intrinsic(intrinsic, sizeof intrinsic, "llvm.exp2", vec_type);
+      LLVMValueRef args[] = { x };
+      return lp_build_intrinsic(builder, intrinsic, vec_type, args, 1, 0);
+   }
+
    assert(lp_check_value(bld->type, x));
 
    /* TODO: optimize the constant case */
@@ -3385,6 +3426,15 @@ lp_build_log2_approx(struct lp_build_context *bld,
    LLVMValueRef logexp = NULL;
    LLVMValueRef p_z = NULL;
    LLVMValueRef res = NULL;
+
+   if (bld->type.width == 16) {
+      char intrinsic[32];
+      lp_format_intrinsic(intrinsic, sizeof intrinsic, "llvm.log2", bld->vec_type);
+      LLVMValueRef args[] = { x };
+      if (p_log2)
+         *p_log2 = lp_build_intrinsic(builder, intrinsic, bld->vec_type, args, 1, 0);
+      return;
+   }
 
    assert(lp_check_value(bld->type, x));
 

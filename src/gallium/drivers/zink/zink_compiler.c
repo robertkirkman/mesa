@@ -782,7 +782,7 @@ zink_compiler_assign_io(nir_shader *producer, nir_shader *consumer)
 }
 
 VkShaderModule
-zink_shader_compile(struct zink_screen *screen, struct zink_shader *zs, nir_shader *base_nir, struct zink_shader_key *key)
+zink_shader_compile(struct zink_screen *screen, struct zink_shader *zs, nir_shader *base_nir, const struct zink_shader_key *key)
 {
    VkShaderModule mod = VK_NULL_HANDLE;
    void *streamout = NULL;
@@ -1279,15 +1279,14 @@ void main()
 
 */
 struct zink_shader *
-zink_shader_tcs_create(struct zink_context *ctx, struct zink_shader *vs)
+zink_shader_tcs_create(struct zink_screen *screen, struct zink_shader *vs, unsigned vertices_per_patch)
 {
-   unsigned vertices_per_patch = ctx->gfx_pipeline_state.vertices_per_patch + 1;
    struct zink_shader *ret = CALLOC_STRUCT(zink_shader);
    ret->hash = _mesa_hash_pointer(ret);
    ret->programs = _mesa_pointer_set_create(NULL);
    simple_mtx_init(&ret->lock, mtx_plain);
 
-   nir_shader *nir = nir_shader_create(NULL, MESA_SHADER_TESS_CTRL, &zink_screen(ctx->base.screen)->nir_options, NULL);
+   nir_shader *nir = nir_shader_create(NULL, MESA_SHADER_TESS_CTRL, &screen->nir_options, NULL);
    nir_function *fn = nir_function_create(nir, "main");
    fn->is_entrypoint = true;
    nir_function_impl *impl = nir_function_impl_create(fn);

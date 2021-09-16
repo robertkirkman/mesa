@@ -21,40 +21,37 @@
  * IN THE SOFTWARE.
  */
 
-#ifndef D3D12_WGL_PUBLIC_H
-#define D3D12_WGL_PUBLIC_H
+#pragma once
 
+#include <egldriver.h>
+#include <egldisplay.h>
+#include <eglconfig.h>
+
+#include <stw_pixelformat.h>
 #include <windows.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+struct wgl_egl_display
+{
+   int ref_count;
+   struct pipe_screen *screen;
+};
 
-struct pipe_resource;
-struct pipe_screen;
-struct pipe_context;
-struct stw_winsys;
+struct wgl_egl_config
+{
+   _EGLConfig                         base;
+   const struct stw_pixelformat_info *stw_config[2];
+};
 
-struct pipe_screen *
-d3d12_wgl_create_screen(struct sw_winsys *winsys,
-                        HDC hDC);
+struct wgl_egl_context
+{
+   _EGLContext base;
+   struct stw_context *ctx;
+};
 
-void
-d3d12_wgl_present(struct pipe_screen *screen,
-                  struct pipe_context *context,
-                  struct pipe_resource *res,
-                  HDC hDC);
+struct wgl_egl_surface
+{
+   _EGLSurface base;
+   struct stw_framebuffer *fb;
+};
 
-unsigned
-d3d12_wgl_get_pfd_flags(struct pipe_screen *screen);
-
-struct stw_winsys_framebuffer *
-d3d12_wgl_create_framebuffer(struct pipe_screen *screen,
-                             HWND hWnd,
-                             int iPixelFormat);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif
+_EGL_DRIVER_STANDARD_TYPECASTS(wgl_egl)

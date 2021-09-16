@@ -64,9 +64,13 @@ struct zink_cs_push_constant {
  * allowing us to skip going through shader keys
  */
 struct zink_shader_module {
+   struct list_head list;
    VkShaderModule shader;
    uint32_t hash;
    bool default_variant;
+   uint8_t num_uniforms;
+   uint8_t key_size;
+   uint8_t key[0]; /* | key | uniforms | */
 };
 
 struct zink_program {
@@ -84,11 +88,10 @@ struct zink_program {
    VkDescriptorSetLayout dsl[ZINK_DESCRIPTOR_TYPES + 1]; // one for each type + push
    unsigned num_dsl;
 
-   /* the shader cache stores a mapping of zink_shader_key::VkShaderModule */
-   struct hash_table shader_cache[ZINK_SHADER_COUNT];
-
    bool removed;
 };
+
+#define ZINK_MAX_INLINED_VARIANTS 5
 
 struct zink_gfx_program {
    struct zink_program base;
@@ -98,9 +101,10 @@ struct zink_gfx_program {
 
    struct zink_shader_module *modules[ZINK_SHADER_COUNT]; // compute stage doesn't belong here
 
-   struct zink_shader_module *default_variants[ZINK_SHADER_COUNT][2]; //[default, no streamout]
-   const void *default_variant_key[ZINK_SHADER_COUNT];
    struct zink_shader *last_vertex_stage;
+
+   struct list_head shader_cache[ZINK_SHADER_COUNT][2]; //normal, inline uniforms
+   unsigned inlined_variant_count[ZINK_SHADER_COUNT];
 
    struct zink_shader *shaders[ZINK_SHADER_COUNT];
    struct hash_table pipelines[11]; // number of draw modes we support
@@ -197,7 +201,8 @@ zink_update_gfx_program(struct zink_context *ctx, struct zink_gfx_program *prog)
 
 struct zink_gfx_program *
 zink_create_gfx_program(struct zink_context *ctx,
-                        struct zink_shader *stages[ZINK_SHADER_COUNT]);
+                        struct zink_shader *stages[ZINK_SHADER_COUNT],
+                        unsigned vertices_per_patch);
 
 void
 zink_destroy_gfx_program(struct zink_screen *screen,
@@ -277,6 +282,59 @@ zink_program_has_descriptors(const struct zink_program *pg)
 {
    return pg->num_dsl > 0;
 }
+
+static inline struct zink_fs_key *
+zink_set_fs_key(struct zink_context *ctx)
+{
+   ctx->dirty_shader_stages |= BITFIELD_BIT(PIPE_SHADER_FRAGMENT);
+   return (struct zink_fs_key *)&ctx->gfx_pipeline_state.shader_keys.key[PIPE_SHADER_FRAGMENT];
+}
+
+static inline const struct zink_fs_key *
+zink_get_fs_key(struct zink_context *ctx)
+{
+   return (const struct zink_fs_key *)&ctx->gfx_pipeline_state.shader_keys.key[PIPE_SHADER_FRAGMENT];
+}
+
+static inline struct zink_vs_key *
+zink_set_vs_key(struct zink_context *ctx)
+{
+   ctx->dirty_shader_stages |= BITFIELD_BIT(PIPE_SHADER_VERTEX);
+   return (struct zink_vs_key *)&ctx->gfx_pipeline_state.shader_keys.key[PIPE_SHADER_VERTEX];
+}
+
+static inline const struct zink_vs_key *
+zink_get_vs_key(struct zink_context *ctx)
+{
+   return (const struct zink_vs_key *)&ctx->gfx_pipeline_state.shader_keys.key[PIPE_SHADER_VERTEX];
+}
+
+static inline struct zink_vs_key_base *
+zink_set_last_vertex_key(struct zink_context *ctx)
+{
+   ctx->last_vertex_stage_dirty = true;
+   return (struct zink_vs_key_base *)&ctx->gfx_pipeline_state.shader_keys.last_vertex;
+}
+
+static inline const struct zink_vs_key_base *
+zink_get_last_vertex_key(struct zink_context *ctx)
+{
+   return (const struct zink_vs_key_base *)&ctx->gfx_pipeline_state.shader_keys.last_vertex;
+}
+
+static inline void
+zink_set_fs_point_coord_key(struct zink_context *ctx)
+{
+   const struct zink_fs_key *fs = zink_get_fs_key(ctx);
+   bool disable = !ctx->gfx_pipeline_state.has_points || !ctx->rast_state->base.sprite_coord_enable;
+   uint8_t coord_replace_bits = disable ? 0 : ctx->rast_state->base.sprite_coord_enable;
+   bool coord_replace_yinvert = disable ? false : !!ctx->rast_state->base.sprite_coord_mode;
+   if (fs->coord_replace_bits != coord_replace_bits || fs->coord_replace_yinvert != coord_replace_yinvert) {
+      zink_set_fs_key(ctx)->coord_replace_bits = coord_replace_bits;
+      zink_set_fs_key(ctx)->coord_replace_yinvert = coord_replace_yinvert;
+   }
+}
+
 #ifdef __cplusplus
 }
 #endif

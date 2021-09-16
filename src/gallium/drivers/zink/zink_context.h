@@ -193,7 +193,7 @@ struct zink_context {
 
    unsigned shader_has_inlinable_uniforms_mask;
    unsigned inlinable_uniforms_valid_mask;
-   uint32_t inlinable_uniforms[PIPE_SHADER_TYPES][MAX_INLINABLE_UNIFORMS];
+   uint32_t compute_inlinable_uniforms[MAX_INLINABLE_UNIFORMS];
 
    struct pipe_constant_buffer ubos[PIPE_SHADER_TYPES][PIPE_MAX_CONSTANT_BUFFERS];
    struct pipe_shader_buffer ssbos[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_BUFFERS];
@@ -217,7 +217,6 @@ struct zink_context {
    bool shader_reads_drawid;
    bool shader_reads_basevertex;
    struct zink_gfx_pipeline_state gfx_pipeline_state;
-   enum pipe_prim_type gfx_prim_mode;
    /* there are 5 gfx stages, but VS and FS are assumed to be always present,
     * thus only 3 stages need to be considered, giving 2^3 = 8 program caches.
     */
