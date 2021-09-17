@@ -2340,19 +2340,17 @@ fill_surface_state(struct isl_device *isl_dev,
       .y_offset_sa = tile_y_sa,
    };
 
-   assert(!iris_resource_unfinished_aux_import(res));
-
    if (aux_usage != ISL_AUX_USAGE_NONE) {
       f.aux_surf = &res->aux.surf;
       f.aux_usage = aux_usage;
-      f.aux_address = res->aux.bo->address + res->aux.offset;
+      f.clear_color = res->aux.clear_color;
 
-      struct iris_bo *clear_bo = NULL;
-      uint64_t clear_offset = 0;
-      f.clear_color =
-         iris_resource_get_clear_color(res, &clear_bo, &clear_offset);
-      if (clear_bo) {
-         f.clear_address = clear_bo->address + clear_offset;
+      if (res->aux.bo)
+         f.aux_address = res->aux.bo->address + res->aux.offset;
+
+      if (res->aux.clear_color_bo) {
+         f.clear_address = res->aux.clear_color_bo->address +
+                           res->aux.clear_color_offset;
          f.use_clear_address = isl_dev->info->ver > 9;
       }
    }
@@ -2435,9 +2433,6 @@ iris_create_sampler_view(struct pipe_context *ctx,
          isv->view.array_len =
             tmpl->u.tex.last_layer - tmpl->u.tex.first_layer + 1;
       }
-
-      if (iris_resource_unfinished_aux_import(isv->res))
-         iris_resource_finish_aux_import(&screen->base, isv->res);
 
       unsigned aux_modes = isv->res->aux.sampler_usages;
       while (aux_modes) {
@@ -2597,9 +2592,6 @@ iris_create_surface(struct pipe_context *ctx,
 #endif
 
    if (!isl_format_is_compressed(res->surf.format)) {
-      if (iris_resource_unfinished_aux_import(res))
-         iris_resource_finish_aux_import(&screen->base, res);
-
       void *map = surf->surface_state.cpu;
       UNUSED void *map_read = surf->surface_state_read.cpu;
 
@@ -4805,25 +4797,25 @@ use_surface(struct iris_context *ice,
                             &surf->surface_state);
    }
 
-   if (res->aux.bo) {
-      iris_use_pinned_bo(batch, res->aux.bo, writeable, access);
-      if (res->aux.clear_color_bo)
-         iris_use_pinned_bo(batch, res->aux.clear_color_bo, false, access);
-
-      if (memcmp(&res->aux.clear_color, &surf->clear_color,
-                 sizeof(surf->clear_color)) != 0) {
-         update_clear_value(ice, batch, res, &surf->surface_state,
-                            res->aux.possible_usages, &surf->view);
-         if (GFX_VER == 8) {
-            update_clear_value(ice, batch, res, &surf->surface_state_read,
-                               res->aux.possible_usages, &surf->read_view);
-         }
-         surf->clear_color = res->aux.clear_color;
+   if (memcmp(&res->aux.clear_color, &surf->clear_color,
+              sizeof(surf->clear_color)) != 0) {
+      update_clear_value(ice, batch, res, &surf->surface_state,
+                         res->aux.possible_usages, &surf->view);
+      if (GFX_VER == 8) {
+         update_clear_value(ice, batch, res, &surf->surface_state_read,
+                            res->aux.possible_usages, &surf->read_view);
       }
+      surf->clear_color = res->aux.clear_color;
    }
 
-   iris_use_pinned_bo(batch, iris_resource_bo(p_surf->texture),
-                      writeable, access);
+   if (res->aux.clear_color_bo)
+      iris_use_pinned_bo(batch, res->aux.clear_color_bo, false, access);
+
+   if (res->aux.bo)
+      iris_use_pinned_bo(batch, res->aux.bo, writeable, access);
+
+   iris_use_pinned_bo(batch, res->bo, writeable, access);
+
    if (GFX_VER == 8 && is_read_surface) {
       iris_use_pinned_bo(batch, iris_resource_bo(surf->surface_state_read.ref.res), false,
                          IRIS_DOMAIN_NONE);
@@ -4851,18 +4843,21 @@ use_sampler_view(struct iris_context *ice,
    if (!isv->surface_state.ref.res)
       upload_surface_states(ice->state.surface_uploader, &isv->surface_state);
 
+   if (memcmp(&isv->res->aux.clear_color, &isv->clear_color,
+              sizeof(isv->clear_color)) != 0) {
+      update_clear_value(ice, batch, isv->res, &isv->surface_state,
+                         isv->res->aux.sampler_usages, &isv->view);
+      isv->clear_color = isv->res->aux.clear_color;
+   }
+
+   if (isv->res->aux.clear_color_bo) {
+      iris_use_pinned_bo(batch, isv->res->aux.clear_color_bo,
+                         false, IRIS_DOMAIN_OTHER_READ);
+   }
+
    if (isv->res->aux.bo) {
       iris_use_pinned_bo(batch, isv->res->aux.bo,
                          false, IRIS_DOMAIN_OTHER_READ);
-      if (isv->res->aux.clear_color_bo)
-         iris_use_pinned_bo(batch, isv->res->aux.clear_color_bo,
-                            false, IRIS_DOMAIN_OTHER_READ);
-      if (memcmp(&isv->res->aux.clear_color, &isv->clear_color,
-                 sizeof(isv->clear_color)) != 0) {
-         update_clear_value(ice, batch, isv->res, &isv->surface_state,
-                            isv->res->aux.sampler_usages, &isv->view);
-         isv->clear_color = isv->res->aux.clear_color;
-      }
    }
 
    iris_use_pinned_bo(batch, isv->res->bo, false, IRIS_DOMAIN_OTHER_READ);
@@ -6291,16 +6286,13 @@ iris_upload_dirty_render_state(struct iris_context *ice,
       }
 
       if (zres && ice->state.hiz_usage != ISL_AUX_USAGE_NONE) {
-         union isl_color_value clear_value =
-            iris_resource_get_clear_color(zres, NULL, NULL);
-
          uint32_t *clear_params =
             cso_z->packets + ARRAY_SIZE(cso_z->packets) -
             GENX(3DSTATE_CLEAR_PARAMS_length);
 
          iris_pack_command(GENX(3DSTATE_CLEAR_PARAMS), clear_params, clear) {
             clear.DepthClearValueValid = true;
-            clear.DepthClearValue = clear_value.f32[0];
+            clear.DepthClearValue = zres->aux.clear_color.f32[0];
          }
       }
 

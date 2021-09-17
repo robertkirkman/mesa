@@ -323,6 +323,7 @@ create_ici(struct zink_screen *screen, VkImageCreateInfo *ici, const struct pipe
    ici->pNext = NULL;
    ici->flags = modifiers_count || dmabuf || bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DEPTH_STENCIL) ? 0 : VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
    ici->usage = 0;
+   ici->queueFamilyIndexCount = 0;
 
    switch (templ->target) {
    case PIPE_TEXTURE_1D:
@@ -525,8 +526,8 @@ resource_object_create(struct zink_screen *screen, const struct pipe_resource *t
          } else if (ici.tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) {
             idfmlci.sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT;
             idfmlci.pNext = ici.pNext;
-            idfmlci.drmFormatModifierCount = 1;
-            idfmlci.pDrmFormatModifiers = &mod;
+            idfmlci.drmFormatModifierCount = modifiers_count;
+            idfmlci.pDrmFormatModifiers = modifiers;
             ici.pNext = &idfmlci;
          } else if (ici.tiling == VK_IMAGE_TILING_OPTIMAL) {
             // TODO: remove for wsi
@@ -730,6 +731,17 @@ resource_create(struct pipe_screen *pscreen,
          FREE(res);
          return NULL;
       }
+      /* TODO: remove this when multi-plane modifiers are supported */
+      const struct zink_modifier_prop *prop = &screen->modifier_props[templ->format];
+      for (unsigned i = 0; i < modifiers_count; i++) {
+         for (unsigned j = 0; j < prop->drmFormatModifierCount; j++) {
+            if (prop->pDrmFormatModifierProperties[j].drmFormatModifier == modifiers[i]) {
+               if (prop->pDrmFormatModifierProperties[j].drmFormatModifierPlaneCount != 1)
+                  res->modifiers[i] = DRM_FORMAT_MOD_INVALID;
+               break;
+            }
+         }
+      }
    }
 
    res->base.b = *templ;
@@ -743,7 +755,7 @@ resource_create(struct pipe_screen *pscreen,
    unsigned scanout_flags = templ->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_SHARED);
    if (!(templ->bind & PIPE_BIND_LINEAR))
       templ2.bind &= ~scanout_flags;
-   res->obj = resource_object_create(screen, &templ2, whandle, &optimal_tiling, modifiers, 0);
+   res->obj = resource_object_create(screen, &templ2, whandle, &optimal_tiling, NULL, 0);
    if (!res->obj) {
       free(res->modifiers);
       FREE(res);
@@ -773,7 +785,7 @@ resource_create(struct pipe_screen *pscreen,
          // TODO: remove for wsi
          templ2 = res->base.b;
          templ2.bind = scanout_flags | PIPE_BIND_LINEAR;
-         res->scanout_obj = resource_object_create(screen, &templ2, whandle, &optimal_tiling, modifiers, modifiers_count);
+         res->scanout_obj = resource_object_create(screen, &templ2, whandle, &optimal_tiling, res->modifiers, res->modifiers_count);
          assert(!optimal_tiling);
       }
    }
@@ -916,7 +928,7 @@ zink_resource_get_handle(struct pipe_screen *pscreen,
                          struct winsys_handle *whandle,
                          unsigned usage)
 {
-   if (whandle->type == WINSYS_HANDLE_TYPE_FD) {
+   if (whandle->type == WINSYS_HANDLE_TYPE_FD || whandle->type == WINSYS_HANDLE_TYPE_KMS) {
 #ifdef ZINK_USE_DMABUF
       struct zink_resource *res = zink_resource(tex);
       struct zink_screen *screen = zink_screen(pscreen);
@@ -935,6 +947,14 @@ zink_resource_get_handle(struct pipe_screen *pscreen,
       VkResult result = VKSCR(GetMemoryFdKHR)(screen->dev, &fd_info, &fd);
       if (result != VK_SUCCESS)
          return false;
+      if (whandle->type == WINSYS_HANDLE_TYPE_KMS) {
+         uint32_t h;
+         if (drmPrimeFDToHandle(screen->drm_fd, fd, &h)) {
+            return false;
+         }
+         close(fd);
+         fd = h;
+      }
       whandle->handle = fd;
       uint64_t value;
       zink_resource_get_param(pscreen, context, tex, 0, 0, 0, PIPE_RESOURCE_PARAM_MODIFIER, 0, &value);
