@@ -219,10 +219,10 @@ fd_hw_get_query_result(struct fd_context *ctx, struct fd_query *q, bool wait,
        * So, regardless of whether we are supposed to wait or not, we do need to
        * flush now.
        */
-      if (rsc->track->write_batch) {
+      if (fd_get_query_result_in_driver_thread(q)) {
          tc_assert_driver_thread(ctx->tc);
          fd_context_access_begin(ctx);
-         fd_batch_flush(rsc->track->write_batch);
+         fd_bc_flush_writer(ctx, rsc);
          fd_context_access_end(ctx);
       }
 
@@ -340,7 +340,7 @@ fd_hw_query_prepare(struct fd_batch *batch, uint32_t num_tiles)
    uint32_t tile_stride = batch->next_sample_offset;
 
    if (tile_stride > 0)
-      fd_resource_resize(batch->query_buf, tile_stride * num_tiles);
+      fd_resource_resize(batch->ctx, batch->query_buf, tile_stride * num_tiles);
 
    batch->query_tile_stride = tile_stride;
 

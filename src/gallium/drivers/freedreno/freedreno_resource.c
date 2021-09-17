@@ -191,11 +191,12 @@ __fd_resource_wait(struct fd_context *ctx, struct fd_resource *rsc, unsigned op,
 }
 
 static void
-realloc_bo(struct fd_resource *rsc, uint32_t size)
+realloc_bo(struct fd_context *ctx, struct fd_resource *rsc, uint32_t size)
 {
    struct pipe_resource *prsc = &rsc->b.b;
    struct fd_screen *screen = fd_screen(rsc->b.b.screen);
    uint32_t flags =
+      COND(prsc->usage & PIPE_USAGE_STAGING, FD_BO_CACHED_COHERENT) |
       COND(prsc->bind & PIPE_BIND_SCANOUT, FD_BO_SCANOUT);
    /* TODO other flags? */
 
@@ -223,7 +224,8 @@ realloc_bo(struct fd_resource *rsc, uint32_t size)
    }
 
    util_range_set_empty(&rsc->valid_buffer_range);
-   fd_bc_invalidate_resource(rsc, true);
+   if (ctx)
+      fd_bc_invalidate_resource(ctx, rsc);
 }
 
 static void
@@ -267,20 +269,20 @@ fd_replace_buffer_storage(struct pipe_context *pctx, struct pipe_resource *pdst,
     */
    assert(pdst->target == PIPE_BUFFER);
    assert(psrc->target == PIPE_BUFFER);
-   assert(dst->track->bc_batch_mask == 0);
-   assert(src->track->bc_batch_mask == 0);
-   assert(src->track->batch_mask == 0);
-   assert(src->track->write_batch == NULL);
+#ifndef NDEBUG
+   foreach_batch (batch, &ctx->batch_cache) {
+      assert(!fd_batch_references(batch, src));
+   }
+#endif
    assert(memcmp(&dst->layout, &src->layout, sizeof(dst->layout)) == 0);
 
-   /* get rid of any references that batch-cache might have to us (which
-    * should empty/destroy rsc->batches hashset)
+   /* get rid of any references that batch-cache might have to us.
     *
     * Note that we aren't actually destroying dst, but we are replacing
     * it's storage so we want to go thru the same motions of decoupling
     * it's batch connections.
     */
-   fd_bc_invalidate_resource(dst, true);
+   fd_bc_invalidate_resource(ctx, dst);
    rebind_resource(dst);
 
    util_idalloc_mt_free(&ctx->screen->buffer_ids, delete_buffer_id);
@@ -290,7 +292,6 @@ fd_replace_buffer_storage(struct pipe_context *pctx, struct pipe_resource *pdst,
    fd_bo_del(dst->bo);
    dst->bo = fd_bo_ref(src->bo);
 
-   fd_resource_tracking_reference(&dst->track, src->track);
    src->is_replacement = true;
 
    dst->seqno = p_atomic_inc_return(&ctx->screen->rsc_seqno);
@@ -318,7 +319,11 @@ fd_resource_busy(struct pipe_screen *pscreen, struct pipe_resource *prsc,
 {
    struct fd_resource *rsc = fd_resource(prsc);
 
-   if (pending(rsc, !!(usage & PIPE_MAP_WRITE)))
+   /* Note that while TC *can* ask us about busy for MAP_READ to promote to an
+    * unsync map, it's not a case we have ever seen a need to optimize for, and
+    * being conservative in resource_busy() is safe.
+    */
+   if (p_atomic_read(&rsc->batch_references) != 0)
       return true;
 
    if (resource_busy(rsc, translate_usage(usage)))
@@ -357,8 +362,6 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
 {
    struct pipe_context *pctx = &ctx->base;
    struct pipe_resource *prsc = &rsc->b.b;
-   struct fd_screen *screen = fd_screen(pctx->screen);
-   struct fd_batch *batch;
    bool fallback = false;
 
    if (prsc->next)
@@ -379,9 +382,7 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
     * Note that being in the gmem key doesn't necessarily mean the
     * batch was considered a writer!
     */
-   foreach_batch (batch, &screen->batch_cache, rsc->track->bc_batch_mask) {
-      fd_batch_flush(batch);
-   }
+   fd_bc_flush_gmem_users(ctx, rsc);
 
    /* TODO: somehow munge dimensions and format to copy unsupported
     * render target format to something that is supported?
@@ -414,13 +415,10 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
    assert(!ctx->in_shadow);
    ctx->in_shadow = true;
 
-   /* get rid of any references that batch-cache might have to us (which
-    * should empty/destroy rsc->batches hashset)
+   /* Signal that any HW state pointing at this resource needs to be
+    * re-emitted.
     */
-   fd_bc_invalidate_resource(rsc, false);
    rebind_resource(rsc);
-
-   fd_screen_lock(ctx->screen);
 
    /* Swap the backing bo's, so shadow becomes the old buffer,
     * blit from shadow to new buffer.  From here on out, we
@@ -432,8 +430,30 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
     */
    struct fd_resource *shadow = fd_resource(pshadow);
 
-   DBG("shadow: %p (%d, %p) -> %p (%d, %p)", rsc, rsc->b.b.reference.count,
-       rsc->track, shadow, shadow->b.b.reference.count, shadow->track);
+   DBG("shadow: %p (%d) -> %p (%d)", rsc, rsc->b.b.reference.count,
+       shadow, shadow->b.b.reference.count);
+
+   /* At this point, the newly created shadow buffer is not referenced by any
+    * batches, but the existing rsc may be as a reader (we flushed writers
+    * above).  We want to remove the old reader references to rsc so that we
+    * don't cause unnecessary synchronization on the write we're about to emit,
+    * but we don't need to bother with transferring the references over to
+    * shadow because right after our blit (which is also doing a read so it only
+    * cares about the lack of a writer) shadow will be freed.
+    */
+   assert(!pending(ctx, shadow, true));
+   foreach_batch (batch, &ctx->batch_cache) {
+      struct set_entry *entry = _mesa_set_search_pre_hashed(batch->resources, rsc->hash, rsc);
+      if (entry) {
+         struct pipe_resource *table_ref = &rsc->b.b;
+         pipe_resource_reference(&table_ref, NULL);
+
+         ASSERTED int32_t count = p_atomic_dec_return(&rsc->batch_references);
+         assert(count >= 0);
+
+         _mesa_set_remove(batch->resources, entry);
+      }
+   }
 
    swap(rsc->bo, shadow->bo);
    swap(rsc->valid, shadow->valid);
@@ -445,20 +465,6 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
 
    swap(rsc->layout, shadow->layout);
    rsc->seqno = p_atomic_inc_return(&ctx->screen->rsc_seqno);
-
-   /* at this point, the newly created shadow buffer is not referenced
-    * by any batches, but the existing rsc (probably) is.  We need to
-    * transfer those references over:
-    */
-   debug_assert(shadow->track->batch_mask == 0);
-   foreach_batch (batch, &ctx->screen->batch_cache, rsc->track->batch_mask) {
-      struct set_entry *entry = _mesa_set_search(batch->resources, rsc);
-      _mesa_set_remove(batch->resources, entry);
-      _mesa_set_add(batch->resources, shadow);
-   }
-   swap(rsc->track, shadow->track);
-
-   fd_screen_unlock(ctx->screen);
 
    struct pipe_blit_info blit = {};
    blit.dst.resource = prsc;
@@ -725,14 +731,14 @@ fd_resource_transfer_unmap(struct pipe_context *pctx,
 }
 
 static void
-invalidate_resource(struct fd_resource *rsc, unsigned usage) assert_dt
+invalidate_resource(struct fd_context *ctx, struct fd_resource *rsc, unsigned usage) assert_dt
 {
-   bool needs_flush = pending(rsc, !!(usage & PIPE_MAP_WRITE));
+   bool needs_flush = pending(ctx, rsc, !!(usage & PIPE_MAP_WRITE));
    unsigned op = translate_usage(usage);
 
    if (needs_flush || resource_busy(rsc, op)) {
       rebind_resource(rsc);
-      realloc_bo(rsc, fd_bo_size(rsc->bo));
+      realloc_bo(ctx, rsc, fd_bo_size(rsc->bo));
    } else {
       util_range_set_empty(&rsc->valid_buffer_range);
    }
@@ -818,13 +824,16 @@ resource_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc,
 
          return buf;
       }
+   } else if ((usage & PIPE_MAP_READ) && !fd_bo_is_cached(rsc->bo)) {
+      perf_debug_ctx(ctx, "wc readback: prsc=%p, level=%u, usage=%x, box=%dx%d+%d,%d",
+                     prsc, level, usage, box->width, box->height, box->x, box->y);
    }
 
    if (usage & PIPE_MAP_DISCARD_WHOLE_RESOURCE) {
-      invalidate_resource(rsc, usage);
+      invalidate_resource(ctx, rsc, usage);
    } else {
       unsigned op = translate_usage(usage);
-      bool needs_flush = pending(rsc, !!(usage & PIPE_MAP_WRITE));
+      bool needs_flush = pending(ctx, rsc, !!(usage & PIPE_MAP_WRITE));
 
       /* If the GPU is writing to the resource, or if it is reading from the
        * resource and we're trying to write to it, flush the renders.
@@ -995,8 +1004,13 @@ fd_resource_destroy(struct pipe_screen *pscreen, struct pipe_resource *prsc)
    struct fd_screen *screen = fd_screen(prsc->screen);
    struct fd_resource *rsc = fd_resource(prsc);
 
-   if (!rsc->is_replacement)
-      fd_bc_invalidate_resource(rsc, true);
+   /* Note that a destroyed resource may be present in an outstanding
+    * batch->resources (not as a batch_cache->written_resource, since those
+    * have references to resources).  However, all that means is that we might
+    * miss an opportunity to reorder a batch by spuriously detecting a newly
+    * created resource as still in use and flush the old reader.
+    */
+
    if (rsc->bo)
       fd_bo_del(rsc->bo);
    if (rsc->lrz)
@@ -1011,7 +1025,6 @@ fd_resource_destroy(struct pipe_screen *pscreen, struct pipe_resource *prsc)
 
    util_range_destroy(&rsc->valid_buffer_range);
    simple_mtx_destroy(&rsc->lock);
-   fd_resource_tracking_reference(&rsc->track, NULL);
 
    FREE(rsc);
 }
@@ -1048,7 +1061,7 @@ fd_resource_get_handle(struct pipe_screen *pscreen, struct pipe_context *pctx,
 
 /* special case to resize query buf after allocated.. */
 void
-fd_resource_resize(struct pipe_resource *prsc, uint32_t sz)
+fd_resource_resize(struct fd_context *ctx, struct pipe_resource *prsc, uint32_t sz)
 {
    struct fd_resource *rsc = fd_resource(prsc);
 
@@ -1057,7 +1070,7 @@ fd_resource_resize(struct pipe_resource *prsc, uint32_t sz)
    debug_assert(prsc->bind == PIPE_BIND_QUERY_BUFFER);
 
    prsc->width0 = sz;
-   realloc_bo(rsc, fd_screen(prsc->screen)->setup_slices(rsc));
+   realloc_bo(ctx, rsc, fd_screen(prsc->screen)->setup_slices(rsc));
 }
 
 static void
@@ -1092,17 +1105,10 @@ alloc_resource_struct(struct pipe_screen *pscreen,
 
    pipe_reference_init(&prsc->reference, 1);
    prsc->screen = pscreen;
+   rsc->hash = _mesa_hash_pointer(rsc);
 
    util_range_init(&rsc->valid_buffer_range);
    simple_mtx_init(&rsc->lock, mtx_plain);
-
-   rsc->track = CALLOC_STRUCT(fd_resource_tracking);
-   if (!rsc->track) {
-      free(rsc);
-      return NULL;
-   }
-
-   pipe_reference_init(&rsc->track->reference, 1);
 
    threaded_resource_init(prsc);
 
@@ -1283,7 +1289,7 @@ fd_resource_create_with_modifiers(struct pipe_screen *pscreen,
       return NULL;
    rsc = fd_resource(prsc);
 
-   realloc_bo(rsc, size);
+   realloc_bo(NULL, rsc, size);
    if (!rsc->bo)
       goto fail;
 
@@ -1407,24 +1413,25 @@ fd_invalidate_resource(struct pipe_context *pctx,
    if (prsc->target == PIPE_BUFFER) {
       /* Handle the glInvalidateBufferData() case:
        */
-      invalidate_resource(rsc, PIPE_MAP_READ | PIPE_MAP_WRITE);
-   } else if (rsc->track->write_batch) {
-      /* Handle the glInvalidateFramebuffer() case, telling us that
-       * we can skip resolve.
-       */
+      invalidate_resource(ctx, rsc, PIPE_MAP_READ | PIPE_MAP_WRITE);
+   } else {
+      struct fd_batch *batch = fd_bc_writer(ctx, rsc);
+      if (batch) {
+         /* Handle the glInvalidateFramebuffer() case, telling us that
+          * we can skip resolve.
+          */
+         struct pipe_framebuffer_state *pfb = &batch->framebuffer;
 
-      struct fd_batch *batch = rsc->track->write_batch;
-      struct pipe_framebuffer_state *pfb = &batch->framebuffer;
+         if (pfb->zsbuf && pfb->zsbuf->texture == prsc) {
+            batch->resolve &= ~(FD_BUFFER_DEPTH | FD_BUFFER_STENCIL);
+            fd_context_dirty(ctx, FD_DIRTY_ZSA);
+         }
 
-      if (pfb->zsbuf && pfb->zsbuf->texture == prsc) {
-         batch->resolve &= ~(FD_BUFFER_DEPTH | FD_BUFFER_STENCIL);
-         fd_context_dirty(ctx, FD_DIRTY_ZSA);
-      }
-
-      for (unsigned i = 0; i < pfb->nr_cbufs; i++) {
-         if (pfb->cbufs[i] && pfb->cbufs[i]->texture == prsc) {
-            batch->resolve &= ~(PIPE_CLEAR_COLOR0 << i);
-            fd_context_dirty(ctx, FD_DIRTY_FRAMEBUFFER);
+         for (unsigned i = 0; i < pfb->nr_cbufs; i++) {
+            if (pfb->cbufs[i] && pfb->cbufs[i]->texture == prsc) {
+               batch->resolve &= ~(PIPE_CLEAR_COLOR0 << i);
+               fd_context_dirty(ctx, FD_DIRTY_FRAMEBUFFER);
+            }
          }
       }
    }

@@ -1,5 +1,6 @@
-#
-# Copyright (C) 2016 Intel Corporation
+#!/usr/bin/python3
+
+# Copyright © 2020 Christian Gmeiner
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the "Software"),
@@ -19,31 +20,22 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
+#
+# Tiny script to read bytes from telnet, and write the output to stdout, with a
+# buffer in between so we don't lose serial output from its buffer.
+#
 
-import argparse
 import sys
+import telnetlib
 
-trig_workarounds = [
-   (('fsin', 'x@32'), ('fsin', ('!ffma', 6.2831853, ('ffract', ('!ffma', 0.15915494, 'x', 0.5)), -3.14159265))),
-   (('fcos', 'x@32'), ('fcos', ('!ffma', 6.2831853, ('ffract', ('!ffma', 0.15915494, 'x', 0.5)), -3.14159265))),
-]
+host=sys.argv[1]
+port=sys.argv[2]
 
+tn = telnetlib.Telnet(host, port, 1000000)
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-p', '--import-path', required=True)
-    args = parser.parse_args()
-    sys.path.insert(0, args.import_path)
-    run()
+while True:
+    bytes = tn.read_some()
+    sys.stdout.buffer.write(bytes)
+    sys.stdout.flush()
 
-
-def run():
-    import nir_algebraic  # pylint: disable=import-error
-
-    print('#include "ir3_nir.h"')
-    print(nir_algebraic.AlgebraicPass("ir3_nir_apply_trig_workarounds",
-                                      trig_workarounds).render())
-
-
-if __name__ == '__main__':
-    main()
+tn.close()

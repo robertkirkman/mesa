@@ -169,7 +169,7 @@ void finish_opt_test()
    aco_print_program(program.get(), output);
 }
 
-void finish_ra_test(ra_test_policy policy)
+void finish_ra_test(ra_test_policy policy, bool lower)
 {
    finish_program(program.get());
    if (!aco::validate_ir(program.get())) {
@@ -186,8 +186,12 @@ void finish_ra_test(ra_test_policy policy)
       return;
    }
 
-   finish_program(program.get());
-   aco::optimize_postRA(program.get());
+   if (lower) {
+      aco::ssa_elimination(program.get());
+      aco::lower_to_hw_instr(program.get());
+   }
+
+   aco_print_program(program.get(), output);
 }
 
 void finish_optimizer_postRA_test()
