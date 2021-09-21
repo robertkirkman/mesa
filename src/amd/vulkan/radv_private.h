@@ -375,22 +375,21 @@ struct radv_pipeline_key {
 
 struct radv_shader_binary;
 struct radv_shader_variant;
+struct radv_pipeline_shader_stack_size;
 
 void radv_pipeline_cache_init(struct radv_pipeline_cache *cache, struct radv_device *device);
 void radv_pipeline_cache_finish(struct radv_pipeline_cache *cache);
 bool radv_pipeline_cache_load(struct radv_pipeline_cache *cache, const void *data, size_t size);
 
-bool radv_create_shader_variants_from_pipeline_cache(struct radv_device *device,
-                                                     struct radv_pipeline_cache *cache,
-                                                     const unsigned char *sha1,
-                                                     struct radv_shader_variant **variants,
-                                                     bool *found_in_application_cache);
+bool radv_create_shader_variants_from_pipeline_cache(
+   struct radv_device *device, struct radv_pipeline_cache *cache, const unsigned char *sha1,
+   struct radv_shader_variant **variants, struct radv_pipeline_shader_stack_size **stack_sizes,
+   uint32_t *num_stack_sizes, bool *found_in_application_cache);
 
-void radv_pipeline_cache_insert_shaders(struct radv_device *device,
-                                        struct radv_pipeline_cache *cache,
-                                        const unsigned char *sha1,
-                                        struct radv_shader_variant **variants,
-                                        struct radv_shader_binary *const *binaries);
+void radv_pipeline_cache_insert_shaders(
+   struct radv_device *device, struct radv_pipeline_cache *cache, const unsigned char *sha1,
+   struct radv_shader_variant **variants, struct radv_shader_binary *const *binaries,
+   const struct radv_pipeline_shader_stack_size *stack_sizes, uint32_t num_stack_sizes);
 
 enum radv_blit_ds_layout {
    RADV_BLIT_DS_LAYOUT_TILE_ENABLE,
@@ -618,6 +617,10 @@ struct radv_meta_state {
       VkPipeline resummarize_pipeline;
       VkRenderPass pass;
    } depth_decomp[MAX_SAMPLES_LOG2];
+
+   VkDescriptorSetLayout expand_depth_stencil_compute_ds_layout;
+   VkPipelineLayout expand_depth_stencil_compute_p_layout;
+   VkPipeline expand_depth_stencil_compute_pipeline;
 
    struct {
       VkPipelineLayout p_layout;
@@ -1429,6 +1432,8 @@ struct radv_cmd_state {
 
    /* Whether DRAW_{INDEX}_INDIRECT_MULTI is emitted. */
    bool uses_draw_indirect_multi;
+
+   uint32_t rt_stack_size;
 };
 
 struct radv_cmd_pool {
@@ -1684,6 +1689,13 @@ void radv_hash_shaders(unsigned char *hash, const VkPipelineShaderStageCreateInf
                        const struct radv_pipeline_layout *layout,
                        const struct radv_pipeline_key *key, uint32_t flags);
 
+void radv_hash_rt_shaders(unsigned char *hash, const VkRayTracingPipelineCreateInfoKHR *pCreateInfo,
+                          uint32_t flags);
+
+uint32_t radv_get_hash_flags(const struct radv_device *device, bool stats);
+
+bool radv_rt_pipeline_has_dynamic_stack_size(const VkRayTracingPipelineCreateInfoKHR *pCreateInfo);
+
 #define RADV_STAGE_MASK ((1 << MESA_SHADER_STAGES) - 1)
 
 #define radv_foreach_stage(stage, stage_bits)                                                      \
@@ -1725,8 +1737,28 @@ struct radv_binning_state {
 
 #define SI_GS_PER_ES 128
 
+enum radv_pipeline_type {
+   RADV_PIPELINE_GRAPHICS,
+   /* Compute pipeline (incl raytracing pipeline) */
+   RADV_PIPELINE_COMPUTE,
+   /* Pipeline library. This can't actually run and merely is a partial pipeline. */
+   RADV_PIPELINE_LIBRARY
+};
+
+struct radv_pipeline_group_handle {
+   uint32_t handles[2];
+};
+
+struct radv_pipeline_shader_stack_size {
+   uint32_t recursive_size;
+   /* anyhit + intersection */
+   uint32_t non_recursive_size;
+};
+
 struct radv_pipeline {
    struct vk_object_base base;
+   enum radv_pipeline_type type;
+
    struct radv_device *device;
    struct radv_dynamic_state dynamic_state;
 
@@ -1787,6 +1819,18 @@ struct radv_pipeline {
          /* Last pre-PS API stage */
          gl_shader_stage last_vgt_api_stage;
       } graphics;
+      struct {
+         struct radv_pipeline_group_handle *rt_group_handles;
+         struct radv_pipeline_shader_stack_size *rt_stack_sizes;
+         bool dynamic_stack_size;
+         uint32_t group_count;
+      } compute;
+      struct {
+         unsigned stage_count;
+         VkPipelineShaderStageCreateInfo *stages;
+         unsigned group_count;
+         VkRayTracingShaderGroupCreateInfoKHR *groups;
+      } library;
    };
 
    unsigned max_waves;
@@ -1835,6 +1879,16 @@ VkResult radv_graphics_pipeline_create(VkDevice device, VkPipelineCache cache,
                                        const VkGraphicsPipelineCreateInfo *pCreateInfo,
                                        const struct radv_graphics_pipeline_create_info *extra,
                                        const VkAllocationCallbacks *alloc, VkPipeline *pPipeline);
+
+VkResult radv_compute_pipeline_create(VkDevice _device, VkPipelineCache _cache,
+                                      const VkComputePipelineCreateInfo *pCreateInfo,
+                                      const VkAllocationCallbacks *pAllocator,
+                                      const uint8_t *custom_hash,
+                                      struct radv_pipeline_shader_stack_size *rt_stack_sizes,
+                                      uint32_t rt_group_count, VkPipeline *pPipeline);
+
+void radv_pipeline_destroy(struct radv_device *device, struct radv_pipeline *pipeline,
+                           const VkAllocationCallbacks *allocator);
 
 struct radv_binning_settings {
    unsigned context_states_per_bin;    /* allowed range: [1, 6] */

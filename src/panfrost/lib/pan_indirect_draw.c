@@ -356,13 +356,13 @@ init_shader_builder(struct indirect_draw_shader_builder *builder,
         if (index_min_max_search) {
                 builder->b =
                         nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
-                                                       pan_shader_get_compiler_options(dev),
+                                                       GENX(pan_shader_get_compiler_options)(),
                                                        "indirect_draw_min_max_index(index_size=%d)",
                                                        builder->index_size);
         } else {
                 builder->b =
                         nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
-                                                       pan_shader_get_compiler_options(dev),
+                                                       GENX(pan_shader_get_compiler_options)(),
                                                        "indirect_draw(index_size=%d%s%s%s)",
                                                        builder->index_size,
                                                        flags & PAN_INDIRECT_DRAW_HAS_PSIZ ?
@@ -801,6 +801,21 @@ update_jobs(struct indirect_draw_shader_builder *builder)
         update_job(builder, MALI_JOB_TYPE_TILER);
 }
 
+
+static void
+set_null_job(struct indirect_draw_shader_builder *builder,
+             nir_ssa_def *job_ptr)
+{
+        nir_builder *b = &builder->b;
+        nir_ssa_def *w4 = get_address_imm(b, job_ptr, WORD(4));
+        nir_ssa_def *val = load_global(b, w4, 1, 32);
+
+        /* Set job type to NULL (AKA NOOP) */
+        val = nir_ior(b, nir_iand_imm(b, val, 0xffffff01),
+                      nir_imm_int(b, MALI_JOB_TYPE_NULL << 1));
+        store_global(b, w4, val, 1);
+}
+
 static void
 get_instance_size(struct indirect_draw_shader_builder *builder)
 {
@@ -928,34 +943,44 @@ patch(struct indirect_draw_shader_builder *builder)
 
         assert(builder->draw.vertex_count->num_components);
 
-        get_instance_size(builder);
+        nir_ssa_def *num_vertices =
+                nir_imul(b, builder->draw.vertex_count, builder->draw.instance_count);
 
-        builder->instance_size.padded =
-                get_padded_count(b, builder->instance_size.raw,
-                                 &builder->instance_size.packed);
+        IF (nir_ieq(b, num_vertices, nir_imm_int(b, 0))) {
+                /* If there's nothing to draw, turn the vertex/tiler jobs into
+                 * null jobs.
+                 */
+                set_null_job(builder, builder->jobs.vertex_job);
+                set_null_job(builder, builder->jobs.tiler_job);
+        } ELSE {
+                get_instance_size(builder);
 
-        update_varyings(builder);
-        update_jobs(builder);
-        update_vertex_attribs(builder);
+                builder->instance_size.padded =
+                        get_padded_count(b, builder->instance_size.raw,
+                                         &builder->instance_size.packed);
 
-        IF (nir_ine(b, builder->jobs.first_vertex_sysval, nir_imm_int64(b, 0))) {
-                store_global(b, builder->jobs.first_vertex_sysval,
-                             builder->jobs.offset_start, 1);
+                update_varyings(builder);
+                update_jobs(builder);
+                update_vertex_attribs(builder);
+
+                IF (nir_ine(b, builder->jobs.first_vertex_sysval, nir_imm_int64(b, 0))) {
+                        store_global(b, builder->jobs.first_vertex_sysval,
+                                     builder->jobs.offset_start, 1);
+                } ENDIF
+
+                IF (nir_ine(b, builder->jobs.base_vertex_sysval, nir_imm_int64(b, 0))) {
+                        store_global(b, builder->jobs.base_vertex_sysval,
+                                     index_size ?
+                                     builder->draw.index_bias :
+                                     nir_imm_int(b, 0),
+                                     1);
+                } ENDIF
+
+                IF (nir_ine(b, builder->jobs.base_instance_sysval, nir_imm_int64(b, 0))) {
+                        store_global(b, builder->jobs.base_instance_sysval,
+                                     builder->draw.start_instance, 1);
+                } ENDIF
         } ENDIF
-
-        IF (nir_ine(b, builder->jobs.base_vertex_sysval, nir_imm_int64(b, 0))) {
-                store_global(b, builder->jobs.base_vertex_sysval,
-                             index_size ?
-                             builder->draw.index_bias :
-                             nir_imm_int(b, 0),
-                             1);
-        } ENDIF
-
-        IF (nir_ine(b, builder->jobs.base_instance_sysval, nir_imm_int64(b, 0))) {
-                store_global(b, builder->jobs.base_instance_sysval,
-                             builder->draw.start_instance, 1);
-        } ENDIF
-
 }
 
 /* Search the min/max index in the range covered by the indirect draw call */
@@ -1051,7 +1076,9 @@ get_shader_id(unsigned flags, unsigned index_size, bool index_min_max_search)
                 return flags;
         }
 
-        return PAN_INDIRECT_DRAW_MIN_MAX_SEARCH_1B_INDEX +
+        return ((flags & PAN_INDIRECT_DRAW_PRIMITIVE_RESTART) ?
+                PAN_INDIRECT_DRAW_MIN_MAX_SEARCH_1B_INDEX_PRIM_RESTART :
+                PAN_INDIRECT_DRAW_MIN_MAX_SEARCH_1B_INDEX) +
                util_logbase2(index_size);
 }
 
@@ -1076,7 +1103,7 @@ create_indirect_draw_shader(struct panfrost_device *dev,
         struct util_dynarray binary;
 
         util_dynarray_init(&binary, NULL);
-        pan_shader_compile(dev, b->shader, &inputs, &binary, &shader_info);
+        GENX(pan_shader_compile)(b->shader, &inputs, &binary, &shader_info);
 
         assert(!shader_info.tls_size);
         assert(!shader_info.wls_size);
@@ -1102,7 +1129,7 @@ create_indirect_draw_shader(struct panfrost_device *dev,
                 util_dynarray_fini(&binary);
 
                 pan_pack(state, RENDERER_STATE, cfg) {
-                        pan_shader_prepare_rsd(dev, &shader_info, address, &cfg);
+                        pan_shader_prepare_rsd(&shader_info, address, &cfg);
                 }
                 pthread_mutex_unlock(&dev->indirect_draw_shaders.lock);
 

@@ -659,6 +659,7 @@ init_context(isel_context* ctx, nir_shader* shader)
                case nir_intrinsic_load_push_constant:
                case nir_intrinsic_load_workgroup_id:
                case nir_intrinsic_load_num_workgroups:
+               case nir_intrinsic_load_ray_launch_size:
                case nir_intrinsic_load_subgroup_id:
                case nir_intrinsic_load_num_subgroups:
                case nir_intrinsic_load_first_vertex:
@@ -778,7 +779,6 @@ init_context(isel_context* ctx, nir_shader* shader)
                case nir_intrinsic_load_initial_edgeflags_amd:
                case nir_intrinsic_load_packed_passthrough_primitive_amd:
                case nir_intrinsic_gds_atomic_add_amd:
-               case nir_intrinsic_load_sbt_amd:
                case nir_intrinsic_bvh64_intersect_ray_amd:
                case nir_intrinsic_load_cull_small_prim_precision_amd: type = RegType::vgpr; break;
                case nir_intrinsic_load_shared:
@@ -801,9 +801,11 @@ init_context(isel_context* ctx, nir_shader* shader)
                case nir_intrinsic_inclusive_scan:
                case nir_intrinsic_exclusive_scan:
                case nir_intrinsic_reduce:
+               case nir_intrinsic_load_sbt_amd:
                case nir_intrinsic_load_ubo:
                case nir_intrinsic_load_ssbo:
                case nir_intrinsic_load_global:
+               case nir_intrinsic_load_global_constant:
                case nir_intrinsic_vulkan_resource_index:
                case nir_intrinsic_get_ssbo_size:
                   type = nir_dest_is_divergent(intrinsic->dest) ? RegType::vgpr : RegType::sgpr;
@@ -936,7 +938,7 @@ init_context(isel_context* ctx, nir_shader* shader)
    ctx->program->config->spi_ps_input_ena = spi_ps_inputs;
    ctx->program->config->spi_ps_input_addr = spi_ps_inputs;
 
-   ctx->cf_info.nir_to_aco.reset(nir_to_aco.release());
+   ctx->cf_info.nir_to_aco = std::move(nir_to_aco);
 
    /* align and copy constant data */
    while (ctx->program->constant_data.size() % 4u)

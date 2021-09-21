@@ -171,6 +171,7 @@ enum radv_ud_index {
    AC_UD_PS_MAX_UD,
    AC_UD_CS_GRID_SIZE = AC_UD_SHADER_START,
    AC_UD_CS_SBT_DESCRIPTORS,
+   AC_UD_CS_RAY_LAUNCH_SIZE,
    AC_UD_CS_MAX_UD,
    AC_UD_GS_MAX_UD,
    AC_UD_TCS_MAX_UD,
@@ -346,6 +347,7 @@ struct radv_shader_info {
       unsigned block_size[3];
 
       bool uses_sbt;
+      bool uses_ray_launch_size;
    } cs;
    struct {
       uint64_t tes_inputs_read;
@@ -447,7 +449,7 @@ void radv_destroy_shader_slabs(struct radv_device *device);
 VkResult radv_create_shaders(struct radv_pipeline *pipeline, struct radv_device *device,
                              struct radv_pipeline_cache *cache, const struct radv_pipeline_key *key,
                              const VkPipelineShaderStageCreateInfo **pStages,
-                             const VkPipelineCreateFlags flags,
+                             const VkPipelineCreateFlags flags, const uint8_t *custom_hash,
                              VkPipelineCreationFeedbackEXT *pipeline_feedback,
                              VkPipelineCreationFeedbackEXT **stage_feedbacks);
 

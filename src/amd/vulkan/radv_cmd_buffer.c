@@ -61,6 +61,8 @@ static void radv_handle_image_transition(struct radv_cmd_buffer *cmd_buffer,
                                          uint32_t dst_family, const VkImageSubresourceRange *range,
                                          struct radv_sample_locations_state *sample_locs);
 
+static void radv_set_rt_stack_size(struct radv_cmd_buffer *cmd_buffer, uint32_t size);
+
 const struct radv_dynamic_state default_dynamic_state = {
    .viewport =
       {
@@ -3288,7 +3290,9 @@ radv_stage_flush(struct radv_cmd_buffer *cmd_buffer, VkPipelineStageFlags src_st
 {
    if (src_stage_mask &
        (VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
-        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT | VK_PIPELINE_STAGE_ALL_COMMANDS_BIT)) {
+        VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
+        VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT |
+        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT)) {
       cmd_buffer->state.flush_bits |= RADV_CMD_FLAG_CS_PARTIAL_FLUSH;
    }
 
@@ -3341,6 +3345,7 @@ radv_src_access_flush(struct radv_cmd_buffer *cmd_buffer, VkAccessFlags src_flag
          if (!image_is_coherent)
             flush_bits |= RADV_CMD_FLAG_WB_L2;
          break;
+      case VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR:
       case VK_ACCESS_TRANSFORM_FEEDBACK_WRITE_BIT_EXT:
       case VK_ACCESS_TRANSFORM_FEEDBACK_COUNTER_WRITE_BIT_EXT:
          if (!image_is_coherent)
@@ -3437,7 +3442,13 @@ radv_dst_access_flush(struct radv_cmd_buffer *cmd_buffer, VkAccessFlags dst_flag
          if (!image_is_coherent)
             flush_bits |= RADV_CMD_FLAG_INV_L2;
          break;
+      case VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR:
+         flush_bits |= RADV_CMD_FLAG_INV_VCACHE;
+         if (cmd_buffer->device->physical_device->rad_info.chip_class < GFX9)
+            flush_bits |= RADV_CMD_FLAG_INV_L2;
+         break;
       case VK_ACCESS_SHADER_WRITE_BIT:
+      case VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR:
          break;
       case VK_ACCESS_COLOR_ATTACHMENT_READ_BIT:
       case VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT:
@@ -4344,6 +4355,7 @@ radv_CmdBindPipeline(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipeline
          (VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
           VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR |
           VK_SHADER_STAGE_INTERSECTION_BIT_KHR | VK_SHADER_STAGE_CALLABLE_BIT_KHR);
+      radv_set_rt_stack_size(cmd_buffer, cmd_buffer->state.rt_stack_size);
       break;
    case VK_PIPELINE_BIND_POINT_GRAPHICS:
       if (cmd_buffer->state.pipeline == pipeline)
@@ -6528,17 +6540,10 @@ radv_rt_bind_tables(struct radv_cmd_buffer *cmd_buffer,
 
    desc_ptr = ptr;
    for (unsigned i = 0; i < 4; ++i, desc_ptr += 4) {
-      uint32_t rsrc_word3 =
-         S_008F0C_DST_SEL_X(V_008F0C_SQ_SEL_X) | S_008F0C_DST_SEL_Y(V_008F0C_SQ_SEL_Y) |
-         S_008F0C_DST_SEL_Z(V_008F0C_SQ_SEL_Z) | S_008F0C_DST_SEL_W(V_008F0C_SQ_SEL_W) |
-         S_008F0C_FORMAT(V_008F0C_GFX10_FORMAT_32_UINT) |
-         S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_STRUCTURED) | S_008F0C_RESOURCE_LEVEL(1);
-
       desc_ptr[0] = tables[i].deviceAddress;
-      desc_ptr[1] = S_008F04_BASE_ADDRESS_HI(tables[i].deviceAddress >> 32) |
-                    S_008F04_STRIDE(tables[i].stride);
-      desc_ptr[2] = 0xffffffffu;
-      desc_ptr[3] = rsrc_word3;
+      desc_ptr[1] = tables[i].deviceAddress >> 32;
+      desc_ptr[2] = tables[i].stride;
+      desc_ptr[3] = 0;
    }
 
    uint64_t va = radv_buffer_get_va(cmd_buffer->upload.upload_bo) + offset;
@@ -6580,7 +6585,46 @@ radv_CmdTraceRaysKHR(VkCommandBuffer commandBuffer,
       return;
    }
 
+   struct radv_userdata_info *loc = radv_lookup_user_sgpr(
+      cmd_buffer->state.rt_pipeline, MESA_SHADER_COMPUTE, AC_UD_CS_RAY_LAUNCH_SIZE);
+
+   if (loc->sgpr_idx != -1) {
+      assert(loc->num_sgprs == 3);
+
+      radeon_set_sh_reg_seq(cmd_buffer->cs, R_00B900_COMPUTE_USER_DATA_0 + loc->sgpr_idx * 4, 3);
+      radeon_emit(cmd_buffer->cs, width);
+      radeon_emit(cmd_buffer->cs, height);
+      radeon_emit(cmd_buffer->cs, depth);
+   }
+
    radv_rt_dispatch(cmd_buffer, &info);
+}
+
+static void
+radv_set_rt_stack_size(struct radv_cmd_buffer *cmd_buffer, uint32_t size)
+{
+   unsigned wave_size = 0;
+   unsigned scratch_bytes_per_wave = 0;
+
+   if (cmd_buffer->state.rt_pipeline) {
+      scratch_bytes_per_wave = cmd_buffer->state.rt_pipeline->scratch_bytes_per_wave;
+      wave_size = cmd_buffer->state.rt_pipeline->shaders[MESA_SHADER_COMPUTE]->info.wave_size;
+   }
+
+   /* The hardware register is specified as a multiple of 256 DWORDS. */
+   scratch_bytes_per_wave += align(size * wave_size, 1024);
+
+   cmd_buffer->compute_scratch_size_per_wave_needed =
+      MAX2(cmd_buffer->compute_scratch_size_per_wave_needed, scratch_bytes_per_wave);
+}
+
+void
+radv_CmdSetRayTracingPipelineStackSizeKHR(VkCommandBuffer commandBuffer, uint32_t size)
+{
+   RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
+
+   radv_set_rt_stack_size(cmd_buffer, size);
+   cmd_buffer->state.rt_stack_size = size;
 }
 
 void
@@ -6681,7 +6725,7 @@ radv_handle_depth_image_transition(struct radv_cmd_buffer *cmd_buffer, struct ra
       cmd_buffer->state.flush_bits |=
          RADV_CMD_FLAG_FLUSH_AND_INV_DB | RADV_CMD_FLAG_FLUSH_AND_INV_DB_META;
 
-      radv_decompress_depth_stencil(cmd_buffer, image, range, sample_locs);
+      radv_expand_depth_stencil(cmd_buffer, image, range, sample_locs);
 
       cmd_buffer->state.flush_bits |=
          RADV_CMD_FLAG_FLUSH_AND_INV_DB | RADV_CMD_FLAG_FLUSH_AND_INV_DB_META;

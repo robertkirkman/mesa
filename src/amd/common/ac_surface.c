@@ -105,6 +105,14 @@ bool ac_modifier_has_dcc_retile(uint64_t modifier)
    return IS_AMD_FMT_MOD(modifier) && AMD_FMT_MOD_GET(DCC_RETILE, modifier);
 }
 
+bool ac_modifier_supports_dcc_image_stores(uint64_t modifier)
+{
+   return ac_modifier_has_dcc(modifier) &&
+         !AMD_FMT_MOD_GET(DCC_INDEPENDENT_64B, modifier) &&
+          AMD_FMT_MOD_GET(DCC_INDEPENDENT_128B, modifier) &&
+          AMD_FMT_MOD_GET(DCC_MAX_COMPRESSED_BLOCK, modifier) == AMD_FMT_MOD_DCC_BLOCK_128B;
+}
+
 static
 AddrSwizzleMode ac_modifier_gfx9_swizzle_mode(uint64_t modifier)
 {
@@ -310,6 +318,12 @@ bool ac_get_supported_modifiers(const struct radeon_info *info,
                     AMD_FMT_MOD_SET(DCC_INDEPENDENT_64B, 1) |
                     AMD_FMT_MOD_SET(DCC_INDEPENDENT_128B, independent_128b) |
                     AMD_FMT_MOD_SET(DCC_MAX_COMPRESSED_BLOCK, AMD_FMT_MOD_DCC_BLOCK_64B))
+
+            if (info->chip_class >= GFX10_3) {
+               ADD_MOD(AMD_FMT_MOD | common_dcc |
+                       AMD_FMT_MOD_SET(DCC_INDEPENDENT_128B, 1) |
+                       AMD_FMT_MOD_SET(DCC_MAX_COMPRESSED_BLOCK, AMD_FMT_MOD_DCC_BLOCK_128B))
+            }
          }
 
          ADD_MOD(AMD_FMT_MOD | common_dcc |
@@ -317,6 +331,13 @@ bool ac_get_supported_modifiers(const struct radeon_info *info,
                  AMD_FMT_MOD_SET(DCC_INDEPENDENT_64B, 1) |
                  AMD_FMT_MOD_SET(DCC_INDEPENDENT_128B, independent_128b) |
                  AMD_FMT_MOD_SET(DCC_MAX_COMPRESSED_BLOCK, AMD_FMT_MOD_DCC_BLOCK_64B))
+
+         if (info->chip_class >= GFX10_3) {
+            ADD_MOD(AMD_FMT_MOD | common_dcc |
+                    AMD_FMT_MOD_SET(DCC_RETILE, 1) |
+                    AMD_FMT_MOD_SET(DCC_INDEPENDENT_128B, 1) |
+                    AMD_FMT_MOD_SET(DCC_MAX_COMPRESSED_BLOCK, AMD_FMT_MOD_DCC_BLOCK_128B))
+         }
       }
 
       ADD_MOD(AMD_FMT_MOD |

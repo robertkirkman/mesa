@@ -20,67 +20,14 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
  */
+#include "radv_acceleration_structure.h"
 #include "radv_private.h"
 
+#include "util/format/format_utils.h"
 #include "util/half_float.h"
 #include "nir_builder.h"
 #include "radv_cs.h"
 #include "radv_meta.h"
-
-struct radv_accel_struct_header {
-   uint32_t root_node_offset;
-   uint32_t reserved;
-   float aabb[2][3];
-   uint64_t compacted_size;
-   uint64_t serialization_size;
-};
-
-struct radv_bvh_triangle_node {
-   float coords[3][3];
-   uint32_t reserved[3];
-   uint32_t triangle_id;
-   /* flags in upper 4 bits */
-   uint32_t geometry_id_and_flags;
-   uint32_t reserved2;
-   uint32_t id;
-};
-
-struct radv_bvh_aabb_node {
-   float aabb[2][3];
-   uint32_t primitive_id;
-   /* flags in upper 4 bits */
-   uint32_t geometry_id_and_flags;
-   uint32_t reserved[8];
-};
-
-struct radv_bvh_instance_node {
-   uint64_t base_ptr;
-   /* lower 24 bits are the custom instance index, upper 8 bits are the visibility mask */
-   uint32_t custom_instance_and_mask;
-   /* lower 24 bits are the sbt offset, upper 8 bits are VkGeometryInstanceFlagsKHR */
-   uint32_t sbt_offset_and_flags;
-
-   /* The translation component is actually a pre-translation instead of a post-translation. If you
-    * want to get a proper matrix out of it you need to apply the directional component of the
-    * matrix to it. The pre-translation of the world->object matrix is the same as the
-    * post-translation of the object->world matrix so this way we can share data between both
-    * matrices. */
-   float wto_matrix[12];
-   float aabb[2][3];
-   uint32_t instance_id;
-   uint32_t reserved[9];
-};
-
-struct radv_bvh_box16_node {
-   uint32_t children[4];
-   uint32_t coords[4][3];
-};
-
-struct radv_bvh_box32_node {
-   uint32_t children[4];
-   float coords[4][2][3];
-   uint32_t reserved[4];
-};
 
 void
 radv_GetAccelerationStructureBuildSizesKHR(
@@ -89,6 +36,12 @@ radv_GetAccelerationStructureBuildSizesKHR(
    const uint32_t *pMaxPrimitiveCounts, VkAccelerationStructureBuildSizesInfoKHR *pSizeInfo)
 {
    uint64_t triangles = 0, boxes = 0, instances = 0;
+
+   STATIC_ASSERT(sizeof(struct radv_bvh_triangle_node) == 64);
+   STATIC_ASSERT(sizeof(struct radv_bvh_aabb_node) == 64);
+   STATIC_ASSERT(sizeof(struct radv_bvh_instance_node) == 128);
+   STATIC_ASSERT(sizeof(struct radv_bvh_box16_node) == 64);
+   STATIC_ASSERT(sizeof(struct radv_bvh_box32_node) == 128);
 
    for (uint32_t i = 0; i < pBuildInfo->geometryCount; ++i) {
       const VkAccelerationStructureGeometryKHR *geometry;
@@ -268,6 +221,12 @@ build_triangles(struct radv_bvh_build_ctx *ctx, const VkAccelerationStructureGeo
          const char *v_data = (const char *)tri_data->vertexData.hostAddress + v_index * tri_data->vertexStride;
          float coords[4];
          switch (tri_data->vertexFormat) {
+         case VK_FORMAT_R32G32_SFLOAT:
+            coords[0] = *(const float *)(v_data + 0);
+            coords[1] = *(const float *)(v_data + 4);
+            coords[2] = 0.0f;
+            coords[3] = 1.0f;
+            break;
          case VK_FORMAT_R32G32B32_SFLOAT:
             coords[0] = *(const float *)(v_data + 0);
             coords[1] = *(const float *)(v_data + 4);
@@ -280,6 +239,12 @@ build_triangles(struct radv_bvh_build_ctx *ctx, const VkAccelerationStructureGeo
             coords[2] = *(const float *)(v_data + 8);
             coords[3] = *(const float *)(v_data + 12);
             break;
+         case VK_FORMAT_R16G16_SFLOAT:
+            coords[0] = _mesa_half_to_float(*(const uint16_t *)(v_data + 0));
+            coords[1] = _mesa_half_to_float(*(const uint16_t *)(v_data + 2));
+            coords[2] = 0.0f;
+            coords[3] = 1.0f;
+            break;
          case VK_FORMAT_R16G16B16_SFLOAT:
             coords[0] = _mesa_half_to_float(*(const uint16_t *)(v_data + 0));
             coords[1] = _mesa_half_to_float(*(const uint16_t *)(v_data + 2));
@@ -291,6 +256,18 @@ build_triangles(struct radv_bvh_build_ctx *ctx, const VkAccelerationStructureGeo
             coords[1] = _mesa_half_to_float(*(const uint16_t *)(v_data + 2));
             coords[2] = _mesa_half_to_float(*(const uint16_t *)(v_data + 4));
             coords[3] = _mesa_half_to_float(*(const uint16_t *)(v_data + 6));
+            break;
+         case VK_FORMAT_R16G16_SNORM:
+            coords[0] = _mesa_snorm_to_float(*(const int16_t *)(v_data + 0), 16);
+            coords[1] = _mesa_snorm_to_float(*(const int16_t *)(v_data + 2), 16);
+            coords[2] = 0.0f;
+            coords[3] = 1.0f;
+            break;
+         case VK_FORMAT_R16G16B16A16_SNORM:
+            coords[0] = _mesa_snorm_to_float(*(const int16_t *)(v_data + 0), 16);
+            coords[1] = _mesa_snorm_to_float(*(const int16_t *)(v_data + 2), 16);
+            coords[2] = _mesa_snorm_to_float(*(const int16_t *)(v_data + 4), 16);
+            coords[3] = _mesa_snorm_to_float(*(const int16_t *)(v_data + 6), 16);
             break;
          default:
             unreachable("Unhandled vertex format in BVH build");
@@ -348,6 +325,10 @@ build_instances(struct radv_device *device, struct radv_bvh_build_ctx *ctx,
          instance->instanceShaderBindingTableRecordOffset | (instance->flags << 24);
       node->instance_id = p;
 
+      for (unsigned i = 0; i < 3; ++i)
+         for (unsigned j = 0; j < 3; ++j)
+            node->otw_matrix[i * 3 + j] = instance->transform.matrix[j][i];
+
       RADV_FROM_HANDLE(radv_acceleration_structure, src_accel_struct,
                        (VkAccelerationStructureKHR)instance->accelerationStructureReference);
       const void *src_base = device->ws->buffer_map(src_accel_struct->bo);
@@ -382,7 +363,7 @@ build_aabbs(struct radv_bvh_build_ctx *ctx, const VkAccelerationStructureGeometr
    for (uint32_t p = 0; p < range->primitiveCount; ++p, ctx->curr_ptr += 64) {
       struct radv_bvh_aabb_node *node = (void*)ctx->curr_ptr;
       uint32_t node_offset = ctx->curr_ptr - ctx->base;
-      uint32_t node_id = (node_offset >> 3) | 6;
+      uint32_t node_id = (node_offset >> 3) | 7;
       *ctx->write_scratch++ = node_id;
 
       const VkAabbPositionsKHR *aabb =
@@ -461,6 +442,77 @@ compute_bounds(const char *base_ptr, uint32_t node_id, float *bounds)
    }
 }
 
+struct bvh_opt_entry {
+   uint64_t key;
+   uint32_t node_id;
+};
+
+static int
+bvh_opt_compare(const void *_a, const void *_b)
+{
+   const struct bvh_opt_entry *a = _a;
+   const struct bvh_opt_entry *b = _b;
+
+   if (a->key < b->key)
+      return -1;
+   if (a->key > b->key)
+      return 1;
+   if (a->node_id < b->node_id)
+      return -1;
+   if (a->node_id > b->node_id)
+      return 1;
+   return 0;
+}
+
+static void
+optimize_bvh(const char *base_ptr, uint32_t *node_ids, uint32_t node_count)
+{
+   float bounds[6];
+   for (unsigned i = 0; i < 3; ++i)
+      bounds[i] = INFINITY;
+   for (unsigned i = 0; i < 3; ++i)
+      bounds[3 + i] = -INFINITY;
+
+   for (uint32_t i = 0; i < node_count; ++i) {
+      float node_bounds[6];
+      compute_bounds(base_ptr, node_ids[i], node_bounds);
+      for (unsigned j = 0; j < 3; ++j)
+         bounds[j] = MIN2(bounds[j], node_bounds[j]);
+      for (unsigned j = 0; j < 3; ++j)
+         bounds[3 + j] = MAX2(bounds[3 + j], node_bounds[3 + j]);
+   }
+
+   struct bvh_opt_entry *entries = calloc(node_count, sizeof(struct bvh_opt_entry));
+   if (!entries)
+      return;
+
+   for (uint32_t i = 0; i < node_count; ++i) {
+      float node_bounds[6];
+      compute_bounds(base_ptr, node_ids[i], node_bounds);
+      float node_coords[3];
+      for (unsigned j = 0; j < 3; ++j)
+         node_coords[j] = (node_bounds[j] + node_bounds[3 + j]) * 0.5;
+      int32_t coords[3];
+      for (unsigned j = 0; j < 3; ++j)
+         coords[j] = MAX2(
+            MIN2((int32_t)((node_coords[j] - bounds[j]) / (bounds[3 + j] - bounds[j]) * (1 << 21)),
+                 (1 << 21) - 1),
+            0);
+      uint64_t key = 0;
+      for (unsigned j = 0; j < 21; ++j)
+         for (unsigned k = 0; k < 3; ++k)
+            key |= (uint64_t)((coords[k] >> j) & 1) << (j * 3 + k);
+      entries[i].key = key;
+      entries[i].node_id = node_ids[i];
+   }
+
+   qsort(entries, node_count, sizeof(entries[0]), bvh_opt_compare);
+   for (unsigned i = 0; i < node_count; ++i)
+      node_ids[i] = entries[i].node_id;
+
+   free(entries);
+}
+
 static VkResult
 build_bvh(struct radv_device *device, const VkAccelerationStructureBuildGeometryInfoKHR *info,
           const VkAccelerationStructureBuildRangeInfoKHR *ranges)
@@ -508,6 +560,7 @@ build_bvh(struct radv_device *device, const VkAccelerationStructureBuildGeometry
    }
 
    uint32_t node_counts[2] = {ctx.write_scratch - scratch[0], 0};
+   optimize_bvh(base_ptr, scratch[0], node_counts[0]);
    unsigned d;
 
    /*
@@ -657,10 +710,9 @@ get_vertices(nir_builder *b, nir_ssa_def *addresses, nir_ssa_def *format, nir_ss
       nir_variable_create(b->shader, nir_var_shader_temp, vec3_type, "vertex2")};
 
    VkFormat formats[] = {
-      VK_FORMAT_R32G32B32_SFLOAT,
-      VK_FORMAT_R32G32B32A32_SFLOAT,
-      VK_FORMAT_R16G16B16_SFLOAT,
-      VK_FORMAT_R16G16B16A16_SFLOAT,
+      VK_FORMAT_R32G32B32_SFLOAT,    VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R16G16B16_SFLOAT,
+      VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16_SFLOAT,       VK_FORMAT_R32G32_SFLOAT,
+      VK_FORMAT_R16G16_SNORM,        VK_FORMAT_R16G16B16A16_SNORM,
    };
 
    for (unsigned f = 0; f < ARRAY_SIZE(formats); ++f) {
@@ -676,15 +728,39 @@ get_vertices(nir_builder *b, nir_ssa_def *addresses, nir_ssa_def *format, nir_ss
                                                 .align_mul = 4, .align_offset = 0),
                           7);
             break;
+         case VK_FORMAT_R32G32_SFLOAT:
+         case VK_FORMAT_R16G16_SFLOAT:
          case VK_FORMAT_R16G16B16_SFLOAT:
-         case VK_FORMAT_R16G16B16A16_SFLOAT: {
+         case VK_FORMAT_R16G16B16A16_SFLOAT:
+         case VK_FORMAT_R16G16_SNORM:
+         case VK_FORMAT_R16G16B16A16_SNORM: {
+            unsigned components = MIN2(3, vk_format_get_nr_components(formats[f]));
+            unsigned comp_bits =
+               vk_format_get_blocksizebits(formats[f]) / vk_format_get_nr_components(formats[f]);
+            unsigned comp_bytes = comp_bits / 8;
             nir_ssa_def *values[3];
             nir_ssa_def *addr = nir_channel(b, addresses, i);
-            for (unsigned j = 0; j < 3; ++j)
-               values[j] =
-                  nir_build_load_global(b, 1, 16, nir_iadd(b, addr, nir_imm_int64(b, j * 2)),
-                                        .align_mul = 2, .align_offset = 0);
-            nir_store_var(b, results[i], nir_f2f32(b, nir_vec(b, values, 3)), 7);
+            for (unsigned j = 0; j < components; ++j)
+               values[j] = nir_build_load_global(
+                  b, 1, comp_bits, nir_iadd(b, addr, nir_imm_int64(b, j * comp_bytes)),
+                  .align_mul = comp_bytes, .align_offset = 0);
+
+            for (unsigned j = components; j < 3; ++j)
+               values[j] = nir_imm_intN_t(b, 0, comp_bits);
+
+            nir_ssa_def *vec;
+            if (util_format_is_snorm(vk_format_to_pipe_format(formats[f]))) {
+               for (unsigned j = 0; j < 3; ++j) {
+                  values[j] = nir_fdiv(b, nir_i2f32(b, values[j]),
+                                       nir_imm_float(b, (1u << (comp_bits - 1)) - 1));
+                  values[j] = nir_fmax(b, values[j], nir_imm_float(b, -1.0));
+               }
+               vec = nir_vec(b, values, 3);
+            } else if (comp_bits == 16)
+               vec = nir_f2f32(b, nir_vec(b, values, 3));
+            else
+               vec = nir_vec(b, values, 3);
+            nir_store_var(b, results[i], vec, 7);
             break;
          }
          default:
@@ -721,6 +797,7 @@ struct build_primitive_constants {
       };
       struct {
          uint64_t instance_data;
+         uint32_t array_of_pointers;
       };
       struct {
          uint64_t aabb_addr;
@@ -918,9 +995,25 @@ build_leaf_shader(struct radv_device *dev)
    nir_push_else(&b, NULL);
    { /* Instances */
 
-      nir_ssa_def *instance_addr =
-         nir_iadd(&b, nir_pack_64_2x32(&b, nir_channels(&b, pconst2, 3)),
-                  nir_u2u64(&b, nir_imul(&b, global_id, nir_imm_int(&b, 64))));
+      nir_variable *instance_addr_var =
+         nir_variable_create(b.shader, nir_var_shader_temp, glsl_uint64_t_type(), "instance_addr");
+      nir_push_if(&b, nir_ine(&b, nir_channel(&b, pconst2, 2), nir_imm_int(&b, 0)));
+      {
+         nir_ssa_def *ptr = nir_iadd(&b, nir_pack_64_2x32(&b, nir_channels(&b, pconst2, 3)),
+                                     nir_u2u64(&b, nir_imul(&b, global_id, nir_imm_int(&b, 8))));
+         nir_ssa_def *addr = nir_pack_64_2x32(
+            &b, nir_build_load_global(&b, 2, 32, ptr, .align_mul = 8, .align_offset = 0));
+         nir_store_var(&b, instance_addr_var, addr, 1);
+      }
+      nir_push_else(&b, NULL);
+      {
+         nir_ssa_def *addr = nir_iadd(&b, nir_pack_64_2x32(&b, nir_channels(&b, pconst2, 3)),
+                                      nir_u2u64(&b, nir_imul(&b, global_id, nir_imm_int(&b, 64))));
+         nir_store_var(&b, instance_addr_var, addr, 1);
+      }
+      nir_pop_if(&b, NULL);
+      nir_ssa_def *instance_addr = nir_load_var(&b, instance_addr_var);
+
       nir_ssa_def *inst_transform[] = {
          nir_build_load_global(&b, 4, 32, nir_iadd(&b, instance_addr, nir_imm_int64(&b, 0)),
                                .align_mul = 4, .align_offset = 0),
@@ -976,6 +1069,17 @@ build_leaf_shader(struct radv_device *dev)
 
       nir_store_var(&b, bounds[0], nir_vec(&b, bound_defs[0], 3), 7);
       nir_store_var(&b, bounds[1], nir_vec(&b, bound_defs[1], 3), 7);
+
+      /* Store object to world matrix */
+      for (unsigned i = 0; i < 3; ++i) {
+         nir_ssa_def *vals[3];
+         for (unsigned j = 0; j < 3; ++j)
+            vals[j] = nir_channel(&b, inst_transform[j], i);
+
+         nir_build_store_global(&b, nir_vec(&b, vals, 3),
+                                nir_iadd(&b, node_dst_addr, nir_imm_int64(&b, 92 + 12 * i)),
+                                .write_mask = 0x7, .align_mul = 4, .align_offset = 0);
+      }
 
       nir_ssa_def *m_in[3][3], *m_out[3][3], *m_vec[3][4];
       for (unsigned i = 0; i < 3; ++i)
@@ -1353,6 +1457,7 @@ radv_CmdBuildAccelerationStructuresKHR(
             break;
          case VK_GEOMETRY_TYPE_INSTANCES_KHR:
             prim_consts.instance_data = geom->geometry.instances.data.deviceAddress;
+            prim_consts.array_of_pointers = geom->geometry.instances.arrayOfPointers ? 1 : 0;
             prim_size = 128;
             break;
          default:

@@ -909,32 +909,12 @@ fd6_emit_streamout(struct fd_ringbuffer *ring, struct fd6_emit *emit) assert_dt
    if (emit->streamout_mask) {
       fd6_emit_add_group(emit, prog->streamout_stateobj, FD6_GROUP_SO,
                          ENABLE_ALL);
-   } else {
+   } else if (ctx->last.streamout_mask != 0) {
       /* If we transition from a draw with streamout to one without, turn
        * off streamout.
        */
-      if (ctx->last.streamout_mask != 0) {
-         unsigned sizedw = 4;
-
-         if (ctx->screen->info->a6xx.tess_use_shared)
-            sizedw += 2;
-
-         struct fd_ringbuffer *obj = fd_submit_new_ringbuffer(
-            emit->ctx->batch->submit, (1 + sizedw) * 4, FD_RINGBUFFER_STREAMING);
-
-         OUT_PKT7(obj, CP_CONTEXT_REG_BUNCH, sizedw);
-         OUT_RING(obj, REG_A6XX_VPC_SO_CNTL);
-         OUT_RING(obj, 0);
-         OUT_RING(obj, REG_A6XX_VPC_SO_STREAM_CNTL);
-         OUT_RING(obj, 0);
-
-         if (ctx->screen->info->a6xx.tess_use_shared) {
-            OUT_RING(ring, REG_A6XX_PC_SO_STREAM_CNTL);
-            OUT_RING(ring, 0);
-         }
-
-         fd6_emit_take_group(emit, obj, FD6_GROUP_SO, ENABLE_ALL);
-      }
+      fd6_emit_add_group(emit, fd6_context(ctx)->streamout_disable_stateobj,
+                         FD6_GROUP_SO, ENABLE_ALL);
    }
 
    /* Make sure that any use of our TFB outputs (indirect draw source or shader
@@ -1244,7 +1224,7 @@ fd6_emit_cs_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 void
 fd6_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
 {
-   // struct fd_context *ctx = batch->ctx;
+   struct fd_screen *screen = batch->ctx->screen;
 
    if (!batch->nondraw) {
       trace_start_state_restore(&batch->trace, ring);
@@ -1268,7 +1248,7 @@ fd6_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
    WRITE(REG_A6XX_SP_UNKNOWN_AE00, 0);
    WRITE(REG_A6XX_SP_PERFCTR_ENABLE, 0x3f);
    WRITE(REG_A6XX_TPL1_UNKNOWN_B605, 0x44);
-   WRITE(REG_A6XX_TPL1_UNKNOWN_B600, 0x100000);
+   WRITE(REG_A6XX_TPL1_DBG_ECO_CNTL, screen->info->a6xx.magic.TPL1_DBG_ECO_CNTL);
    WRITE(REG_A6XX_HLSQ_UNKNOWN_BE00, 0x80);
    WRITE(REG_A6XX_HLSQ_UNKNOWN_BE01, 0);
 

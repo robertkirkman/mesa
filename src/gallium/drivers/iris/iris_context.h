@@ -403,11 +403,6 @@ struct iris_uncompiled_shader {
    /** Have any shader variants been compiled yet? */
    bool compiled_once;
 
-   /** Should we use ALT mode for math?  Useful for ARB programs. */
-   bool use_alt_mode;
-
-   bool needs_edge_flag;
-
    /* Whether shader uses atomic operations. */
    bool uses_atomic_load_store;
 
@@ -863,6 +858,7 @@ void iris_flush_dirty_dmabufs(struct iris_context *ice);
 void iris_init_blit_functions(struct pipe_context *ctx);
 void iris_init_clear_functions(struct pipe_context *ctx);
 void iris_init_program_functions(struct pipe_context *ctx);
+void iris_init_screen_program_functions(struct pipe_screen *pscreen);
 void iris_init_resource_functions(struct pipe_context *ctx);
 void iris_init_perfquery_functions(struct pipe_context *ctx);
 void iris_update_compiled_shaders(struct iris_context *ice);

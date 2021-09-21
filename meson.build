@@ -819,7 +819,7 @@ if with_gallium_st_nine
     error('The nine state tracker requires gallium softpipe/llvmpipe.')
   elif not (with_gallium_radeonsi or with_gallium_nouveau or with_gallium_r600
             or with_gallium_r300 or with_gallium_svga or with_gallium_i915
-            or with_gallium_iris or with_gallium_crocus)
+            or with_gallium_iris or with_gallium_crocus or with_gallium_zink)
     error('The nine state tracker requires at least one non-swrast gallium driver.')
   endif
   if not with_dri3
@@ -865,6 +865,13 @@ if _power8 != 'disabled'
       error('POWER8 intrinsic support required but not found.')
     endif
   endif
+endif
+
+if get_option('vmware-mks-stats')
+  if not with_gallium_svga
+    error('vmware-mks-stats requires gallium VMware/svga driver.')
+  endif
+  pre_args += '-DVMX86_STATS=1'
 endif
 
 _opencl = get_option('gallium-opencl')

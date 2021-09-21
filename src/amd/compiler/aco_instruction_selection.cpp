@@ -833,7 +833,7 @@ emit_sop2_instruction(isel_context* ctx, nir_alu_instr* instr, aco_opcode op, Te
 }
 
 void
-emit_vop2_instruction(isel_context* ctx, nir_alu_instr* instr, aco_opcode op, Temp dst,
+emit_vop2_instruction(isel_context* ctx, nir_alu_instr* instr, aco_opcode opc, Temp dst,
                       bool commutative, bool swap_srcs = false, bool flush_denorms = false,
                       bool nuw = false, uint8_t uses_ub = 0)
 {
@@ -852,28 +852,27 @@ emit_vop2_instruction(isel_context* ctx, nir_alu_instr* instr, aco_opcode op, Te
       }
    }
 
-   Operand op0(src0);
-   Operand op1(src1);
+   Operand op[2] = {Operand(src0), Operand(src1)};
 
    for (int i = 0; i < 2; i++) {
       if (uses_ub & (1 << i)) {
          uint32_t src_ub = get_alu_src_ub(ctx, instr, swap_srcs ? !i : i);
          if (src_ub <= 0xffff)
-            bld.set16bit(i ? op1 : op0);
+            op[i].set16bit(true);
          else if (src_ub <= 0xffffff)
-            bld.set24bit(i ? op1 : op0);
+            op[i].set24bit(true);
       }
    }
 
    if (flush_denorms && ctx->program->chip_class < GFX9) {
       assert(dst.size() == 1);
-      Temp tmp = bld.vop2(op, bld.def(v1), op0, op1);
+      Temp tmp = bld.vop2(opc, bld.def(v1), op[0], op[1]);
       bld.vop2(aco_opcode::v_mul_f32, Definition(dst), Operand::c32(0x3f800000u), tmp);
    } else {
       if (nuw) {
-         bld.nuw().vop2(op, Definition(dst), op0, op1);
+         bld.nuw().vop2(opc, Definition(dst), op[0], op[1]);
       } else {
-         bld.vop2(op, Definition(dst), op0, op1);
+         bld.vop2(opc, Definition(dst), op[0], op[1]);
       }
    }
 }
@@ -1646,7 +1645,7 @@ visit_alu_instr(isel_context* ctx, nir_alu_instr* instr)
          emit_vop3p_instruction(ctx, instr, aco_opcode::v_pk_lshlrev_b16, dst, true);
       } else if (dst.regClass() == v1) {
          emit_vop2_instruction(ctx, instr, aco_opcode::v_lshlrev_b32, dst, false, true, false,
-                               false, 1);
+                               false, 2);
       } else if (dst.regClass() == v2 && ctx->program->chip_class >= GFX8) {
          bld.vop3(aco_opcode::v_lshlrev_b64, Definition(dst), get_alu_src(ctx, instr->src[1]),
                   get_alu_src(ctx, instr->src[0]));
@@ -5476,23 +5475,12 @@ void
 visit_load_sbt_amd(isel_context* ctx, nir_intrinsic_instr* instr)
 {
    Temp dst = get_ssa_temp(ctx, &instr->dest.ssa);
-   Temp index = get_ssa_temp(ctx, instr->src[0].ssa);
    unsigned binding = nir_intrinsic_binding(instr);
-   unsigned base = nir_intrinsic_base(instr);
-
-   index = as_vgpr(ctx, index);
 
    Builder bld(ctx->program, ctx->block);
    Temp desc_base = convert_pointer_to_64_bit(ctx, get_arg(ctx, ctx->args->ac.sbt_descriptors));
    Operand desc_off = bld.copy(bld.def(s1), Operand::c32(binding * 16u));
-   Temp rsrc = bld.smem(aco_opcode::s_load_dwordx4, bld.def(s4), desc_base, desc_off);
-
-   /* If we want more we need to implement */
-   assert(instr->dest.ssa.bit_size == 32);
-   assert(instr->num_components == 1);
-
-   bld.mubuf(aco_opcode::buffer_load_dword, Definition(dst), rsrc, index, Operand::zero(), base,
-             false, false, true);
+   bld.smem(aco_opcode::s_load_dwordx4, Definition(dst), desc_base, desc_off);
 }
 
 void
@@ -7117,7 +7105,7 @@ translate_nir_scope(nir_scope scope)
    case NIR_SCOPE_WORKGROUP: return scope_workgroup;
    case NIR_SCOPE_QUEUE_FAMILY: return scope_queuefamily;
    case NIR_SCOPE_DEVICE: return scope_device;
-   case NIR_SCOPE_SHADER_CALL: unreachable("unsupported scope");
+   case NIR_SCOPE_SHADER_CALL: return scope_invocation;
    }
    unreachable("invalid scope");
 }
@@ -8199,6 +8187,7 @@ visit_intrinsic(isel_context* ctx, nir_intrinsic_instr* instr)
    case nir_intrinsic_image_deref_samples: visit_image_samples(ctx, instr); break;
    case nir_intrinsic_load_ssbo: visit_load_ssbo(ctx, instr); break;
    case nir_intrinsic_store_ssbo: visit_store_ssbo(ctx, instr); break;
+   case nir_intrinsic_load_global_constant:
    case nir_intrinsic_load_global: visit_load_global(ctx, instr); break;
    case nir_intrinsic_load_buffer_amd: visit_load_buffer(ctx, instr); break;
    case nir_intrinsic_store_buffer_amd: visit_store_buffer(ctx, instr); break;
@@ -8234,6 +8223,12 @@ visit_intrinsic(isel_context* ctx, nir_intrinsic_instr* instr)
    case nir_intrinsic_load_num_workgroups: {
       Temp dst = get_ssa_temp(ctx, &instr->dest.ssa);
       bld.copy(Definition(dst), Operand(get_arg(ctx, ctx->args->ac.num_work_groups)));
+      emit_split_vector(ctx, dst, 3);
+      break;
+   }
+   case nir_intrinsic_load_ray_launch_size: {
+      Temp dst = get_ssa_temp(ctx, &instr->dest.ssa);
+      bld.copy(Definition(dst), Operand(get_arg(ctx, ctx->args->ac.ray_launch_size)));
       emit_split_vector(ctx, dst, 3);
       break;
    }

@@ -294,8 +294,8 @@ lower_intrinsics(nir_shader *nir, const struct radv_pipeline_key *key,
             if (nir_intrinsic_desc_type(intrin) == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR) {
                nir_ssa_def *addr =
                   convert_pointer_to_64(&b, pdev,
-                                        nir_iadd(&b, nir_channels(&b, intrin->src[0].ssa, 1),
-                                                 nir_channels(&b, intrin->src[0].ssa, 2)));
+                                        nir_iadd(&b, nir_channel(&b, intrin->src[0].ssa, 0),
+                                                 nir_channel(&b, intrin->src[0].ssa, 1)));
 
                def = nir_build_load_global(&b, 1, 64, addr, .access = ACCESS_NON_WRITEABLE,
                                            .align_mul = 8, .align_offset = 0);
@@ -488,6 +488,7 @@ radv_shader_compile_to_nir(struct radv_device *device, struct vk_shader_module *
                .multiview = true,
                .physical_storage_buffer_address = true,
                .post_depth_coverage = true,
+               .ray_tracing = true,
                .runtime_descriptor_array = true,
                .shader_clock = true,
                .shader_viewport_index_layer = true,
@@ -516,6 +517,7 @@ radv_shader_compile_to_nir(struct radv_device *device, struct vk_shader_module *
          .phys_ssbo_addr_format = nir_address_format_64bit_global,
          .push_const_addr_format = nir_address_format_logical,
          .shared_addr_format = nir_address_format_32bit_offset,
+         .constant_addr_format = nir_address_format_64bit_global,
          .frag_coord_is_sysval = true,
          .use_deref_buffer_array_length = true,
          .debug =
@@ -589,9 +591,6 @@ radv_shader_compile_to_nir(struct radv_device *device, struct vk_shader_module *
       NIR_PASS_V(nir, nir_propagate_invariant,
                  device->instance->debug_flags & RADV_DEBUG_INVARIANT_GEOM);
 
-      NIR_PASS_V(nir, nir_lower_system_values);
-      NIR_PASS_V(nir, nir_lower_compute_system_values, NULL);
-
       NIR_PASS_V(nir, nir_lower_clip_cull_distance_arrays);
 
       NIR_PASS_V(nir, nir_lower_discard_or_demote,
@@ -609,6 +608,9 @@ radv_shader_compile_to_nir(struct radv_device *device, struct vk_shader_module *
 
       NIR_PASS_V(nir, nir_lower_doubles, NULL, lower_doubles);
    }
+
+   NIR_PASS_V(nir, nir_lower_system_values);
+   NIR_PASS_V(nir, nir_lower_compute_system_values, NULL);
 
    /* Vulkan uses the separate-shader linking model */
    nir->info.separate_shader = true;
@@ -719,7 +721,8 @@ radv_shader_compile_to_nir(struct radv_device *device, struct vk_shader_module *
       }
    }
 
-   nir_lower_explicit_io(nir, nir_var_mem_global, nir_address_format_64bit_global);
+   nir_lower_explicit_io(nir, nir_var_mem_global | nir_var_mem_constant,
+                         nir_address_format_64bit_global);
 
    /* Lower large variables that are always constant with load_constant
     * intrinsics, which get turned into PC-relative loads from a data

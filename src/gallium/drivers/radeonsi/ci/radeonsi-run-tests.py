@@ -115,7 +115,7 @@ parser.set_defaults(deqp_gles2=True)
 parser.set_defaults(deqp_gles3=True)
 parser.set_defaults(deqp_gles31=True)
 
-parser.add_argument("output_folder", help="Output folder (logs, etc)")
+parser.add_argument("output_folder", nargs="?", help="Output folder (logs, etc)")
 
 args = parser.parse_args(sys.argv[1:])
 
@@ -151,7 +151,11 @@ for line in p.stdout.decode().split("\n"):
         gpu_name = line.replace("(TM)", "").split("(")[1].split(",")[0].lower()
         break
 
-output_folder = args.output_folder
+if args.output_folder:
+    output_folder = args.output_folder
+else:
+    output_folder = os.path.join(tempfile.gettempdir(), datetime.now().strftime('%Y-%m-%d-%H-%M-%S'))
+
 count = 1
 while os.path.exists(output_folder):
     output_folder = "{}.{}".format(args.output_folder, count)
@@ -305,16 +309,13 @@ if args.glcts:
     verify_results(baseline, new_baseline)
 
 if args.deqp:
-    if args.include_tests:
-        print_yellow("dEQP tests cannot be run with the -t/--include-tests option yet.")
-        sys.exit(0)
-
     print_yellow("Running   dEQP tests", args.verbose > 0)
 
     # Generate a test-suite file
+    out = os.path.join(output_folder, "deqp")
     suite_filename = os.path.join(output_folder, "deqp-suite.toml")
     suite = open(suite_filename, "w")
-    os.mkdir(os.path.join(output_folder, "deqp"))
+    os.mkdir(out)
     baseline = os.path.join(base, "{}-deqp-fail.csv".format(gpu_name))
     new_baseline = os.path.join(
         new_baseline_folder, "{}-deqp-fail.csv".format(gpu_name)
@@ -362,7 +363,7 @@ if args.deqp:
         os.path.join(output_folder, "deqp"),
         "--suite",
         suite_filename,
-    ]
+    ] + filters_args
     run_cmd(cmd, args.verbose)
     shutil.copy(os.path.join(out, "failures.csv"), new_baseline)
     verify_results(baseline, new_baseline)
