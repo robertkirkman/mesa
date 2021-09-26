@@ -71,6 +71,9 @@
 #include "vk_physical_device.h"
 #include "vk_shader_module.h"
 #include "vk_util.h"
+#include "vk_command_buffer.h"
+#include "vk_queue.h"
+#include "vk_log.h"
 
 /* Pre-declarations needed for WSI entrypoints */
 struct wl_surface;
@@ -439,12 +442,14 @@ void anv_loge_v(const char *format, va_list va);
 /**
  * Print a perf warning message.  Set INTEL_DEBUG=perf to see these.
  */
-#define anv_perf_warn(instance, obj, format, ...) \
+#define anv_perf_warn(objects_macro, format, ...)   \
    do { \
       static bool reported = false; \
       if (!reported && (INTEL_DEBUG & DEBUG_PERF)) { \
-         __anv_perf_warn(instance, obj, __FILE__, __LINE__,\
-                         format, ##__VA_ARGS__); \
+         __vk_log(VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT,      \
+                  VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,      \
+                  objects_macro, __FILE__, __LINE__,                    \
+                  format, ## __VA_ARGS__);                              \
          reported = true; \
       } \
    } while (0)
@@ -1072,7 +1077,7 @@ struct anv_queue_submit {
 };
 
 struct anv_queue {
-   struct vk_object_base                     base;
+   struct vk_queue                           vk;
 
    struct anv_device *                       device;
 
@@ -3103,7 +3108,7 @@ enum anv_cmd_buffer_exec_mode {
 struct anv_measure_batch;
 
 struct anv_cmd_buffer {
-   struct vk_object_base                        base;
+   struct vk_command_buffer                     vk;
 
    struct anv_device *                          device;
 
@@ -4738,13 +4743,13 @@ void anv_perf_write_pass_results(struct intel_perf_config *perf,
 #define ANV_FROM_HANDLE(__anv_type, __name, __handle) \
    VK_FROM_HANDLE(__anv_type, __name, __handle)
 
-VK_DEFINE_HANDLE_CASTS(anv_cmd_buffer, base, VkCommandBuffer,
+VK_DEFINE_HANDLE_CASTS(anv_cmd_buffer, vk.base, VkCommandBuffer,
                        VK_OBJECT_TYPE_COMMAND_BUFFER)
 VK_DEFINE_HANDLE_CASTS(anv_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)
 VK_DEFINE_HANDLE_CASTS(anv_instance, vk.base, VkInstance, VK_OBJECT_TYPE_INSTANCE)
 VK_DEFINE_HANDLE_CASTS(anv_physical_device, vk.base, VkPhysicalDevice,
                        VK_OBJECT_TYPE_PHYSICAL_DEVICE)
-VK_DEFINE_HANDLE_CASTS(anv_queue, base, VkQueue, VK_OBJECT_TYPE_QUEUE)
+VK_DEFINE_HANDLE_CASTS(anv_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(anv_acceleration_structure, base,
                                VkAccelerationStructureKHR,

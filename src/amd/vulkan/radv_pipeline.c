@@ -255,7 +255,6 @@ radv_pipeline_init_scratch(const struct radv_device *device, struct radv_pipelin
 {
    unsigned scratch_bytes_per_wave = 0;
    unsigned max_waves = 0;
-   unsigned min_waves = 1;
 
    for (int i = 0; i < MESA_SHADER_STAGES; ++i) {
       if (pipeline->shaders[i] && pipeline->shaders[i]->config.scratch_bytes_per_wave) {
@@ -269,13 +268,6 @@ radv_pipeline_init_scratch(const struct radv_device *device, struct radv_pipelin
                  radv_get_max_waves(device, pipeline->shaders[i], i));
          max_waves = MAX2(max_waves, max_stage_waves);
       }
-   }
-
-   if (pipeline->shaders[MESA_SHADER_COMPUTE]) {
-      unsigned group_size = pipeline->shaders[MESA_SHADER_COMPUTE]->info.cs.block_size[0] *
-                            pipeline->shaders[MESA_SHADER_COMPUTE]->info.cs.block_size[1] *
-                            pipeline->shaders[MESA_SHADER_COMPUTE]->info.cs.block_size[2];
-      min_waves = MAX2(min_waves, round_up_u32(group_size, 64));
    }
 
    pipeline->scratch_bytes_per_wave = scratch_bytes_per_wave;
@@ -2785,8 +2777,6 @@ radv_fill_shader_keys(struct radv_device *device, struct radv_shader_variant_key
    if (nir[MESA_SHADER_TESS_CTRL]) {
       keys[MESA_SHADER_VERTEX].vs_common_out.as_ls = true;
       keys[MESA_SHADER_TESS_CTRL].tcs.input_vertices = key->tess_input_vertices;
-      keys[MESA_SHADER_TESS_CTRL].tcs.primitive_mode =
-         nir[MESA_SHADER_TESS_EVAL]->info.tess.primitive_mode;
    }
 
    if (nir[MESA_SHADER_GEOMETRY]) {
@@ -2959,13 +2949,13 @@ radv_fill_shader_info(struct radv_pipeline *pipeline,
    if (pipeline->device->physical_device->rad_info.chip_class >= GFX9 &&
        nir[MESA_SHADER_TESS_CTRL]) {
       struct nir_shader *combined_nir[] = {nir[MESA_SHADER_VERTEX], nir[MESA_SHADER_TESS_CTRL]};
-      struct radv_shader_variant_key key = keys[MESA_SHADER_TESS_CTRL];
-      key.tcs.vs_key = keys[MESA_SHADER_VERTEX].vs;
+      struct radv_shader_variant_key *key = &keys[MESA_SHADER_TESS_CTRL];
+      key->tcs.vs_key = keys[MESA_SHADER_VERTEX].vs;
 
       radv_nir_shader_info_init(&infos[MESA_SHADER_TESS_CTRL]);
 
       for (int i = 0; i < 2; i++) {
-         radv_nir_shader_info_pass(pipeline->device, combined_nir[i], pipeline->layout, &key,
+         radv_nir_shader_info_pass(pipeline->device, combined_nir[i], pipeline->layout, key,
                                    &infos[MESA_SHADER_TESS_CTRL]);
       }
 
@@ -3661,13 +3651,13 @@ radv_create_shaders(struct radv_pipeline *pipeline, struct radv_device *device,
    if (device->physical_device->rad_info.chip_class >= GFX9 && modules[MESA_SHADER_TESS_CTRL]) {
       if (!pipeline->shaders[MESA_SHADER_TESS_CTRL]) {
          struct nir_shader *combined_nir[] = {nir[MESA_SHADER_VERTEX], nir[MESA_SHADER_TESS_CTRL]};
-         struct radv_shader_variant_key key = keys[MESA_SHADER_TESS_CTRL];
-         key.tcs.vs_key = keys[MESA_SHADER_VERTEX].vs;
+         struct radv_shader_variant_key *key = &keys[MESA_SHADER_TESS_CTRL];
+         key->tcs.vs_key = keys[MESA_SHADER_VERTEX].vs;
 
          radv_start_feedback(stage_feedbacks[MESA_SHADER_TESS_CTRL]);
 
          pipeline->shaders[MESA_SHADER_TESS_CTRL] = radv_shader_variant_compile(
-            device, modules[MESA_SHADER_TESS_CTRL], combined_nir, 2, pipeline->layout, &key,
+            device, modules[MESA_SHADER_TESS_CTRL], combined_nir, 2, pipeline->layout, key,
             &infos[MESA_SHADER_TESS_CTRL], keep_executable_info, keep_statistic_info,
             disable_optimizations, &binaries[MESA_SHADER_TESS_CTRL]);
 
@@ -4635,22 +4625,6 @@ radv_pipeline_generate_hw_ngg(struct radeon_cmdbuf *ctx_cs, struct radeon_cmdbuf
       S_028B90_CNT(gs_num_invocations) | S_028B90_ENABLE(gs_num_invocations > 1) |
          S_028B90_EN_MAX_VERT_OUT_PER_GS_INSTANCE(ngg_state->max_vert_out_per_gs_instance));
 
-   /* User edge flags are set by the pos exports. If user edge flags are
-    * not used, we must use hw-generated edge flags and pass them via
-    * the prim export to prevent drawing lines on internal edges of
-    * decomposed primitives (such as quads) with polygon mode = lines.
-    *
-    * TODO: We should combine hw-generated edge flags with user edge
-    *       flags in the shader.
-    */
-   radeon_set_context_reg(
-      ctx_cs, R_028838_PA_CL_NGG_CNTL,
-      S_028838_INDEX_BUF_EDGE_FLAG_ENA(!radv_pipeline_has_tess(pipeline) &&
-                                       !radv_pipeline_has_gs(pipeline)) |
-         /* Reuse for NGG. */
-         S_028838_VERTEX_REUSE_DEPTH(
-            pipeline->device->physical_device->rad_info.chip_class >= GFX10_3 ? 30 : 0));
-
    ge_cntl = S_03096C_PRIM_GRP_SIZE(ngg_state->max_gsprims) |
              S_03096C_VERT_GRP_SIZE(ngg_state->enable_vertex_grouping ? ngg_state->hw_max_esverts : 256) | /* 256 = disable vertex grouping */
              S_03096C_BREAK_WAVE_AT_EOI(break_wave_at_eoi);
@@ -4683,8 +4657,16 @@ radv_pipeline_generate_hw_ngg(struct radeon_cmdbuf *ctx_cs, struct radeon_cmdbuf
       S_00B204_CU_EN(0xffff) | S_00B204_SPI_SHADER_LATE_ALLOC_GS_GFX10(late_alloc_wave64));
 
    uint32_t oversub_pc_lines = late_alloc_wave64 ? pipeline->device->physical_device->rad_info.pc_lines / 4 : 0;
-   if (shader->info.has_ngg_culling)
-      oversub_pc_lines *= 3;
+   if (shader->info.has_ngg_culling) {
+      unsigned oversub_factor = 2;
+
+      if (outinfo->param_exports > 4)
+         oversub_factor = 4;
+      else if (outinfo->param_exports > 2)
+         oversub_factor = 3;
+
+      oversub_pc_lines *= oversub_factor;
+   }
 
    gfx10_emit_ge_pc_alloc(cs, pipeline->device->physical_device->rad_info.chip_class, oversub_pc_lines);
 }

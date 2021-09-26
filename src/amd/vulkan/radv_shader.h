@@ -89,7 +89,6 @@ struct radv_tes_variant_key {
 
 struct radv_tcs_variant_key {
    struct radv_vs_variant_key vs_key;
-   unsigned primitive_mode;
    unsigned input_vertices;
 };
 
@@ -215,6 +214,7 @@ struct radv_vs_output_info {
    bool writes_viewport_index;
    bool writes_primitive_shading_rate;
    bool export_prim_id;
+   bool export_clip_dists;
    unsigned pos_exports;
 };
 

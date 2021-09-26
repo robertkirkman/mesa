@@ -44,8 +44,13 @@ struct clc_compile_args {
    unsigned num_args;
 };
 
+struct clc_binary {
+   void *data;
+   size_t size;
+};
+
 struct clc_linker_args {
-   const struct clc_object * const *in_objs;
+   const struct clc_binary * const *in_objs;
    unsigned num_in_objs;
    unsigned create_library;
 };
@@ -56,11 +61,6 @@ struct clc_logger {
    void *priv;
    clc_msg_callback error;
    clc_msg_callback warning;
-};
-
-struct spirv_binary {
-   uint32_t *data;
-   size_t size;
 };
 
 enum clc_kernel_arg_type_qualifier {
@@ -108,10 +108,32 @@ struct clc_kernel_info {
    enum clc_vec_hint_type vec_hint_type;
 };
 
-struct clc_object {
-   struct spirv_binary spvbin;
+enum clc_spec_constant_type {
+   CLC_SPEC_CONSTANT_UNKNOWN,
+   CLC_SPEC_CONSTANT_BOOL,
+   CLC_SPEC_CONSTANT_FLOAT,
+   CLC_SPEC_CONSTANT_DOUBLE,
+   CLC_SPEC_CONSTANT_INT8,
+   CLC_SPEC_CONSTANT_UINT8,
+   CLC_SPEC_CONSTANT_INT16,
+   CLC_SPEC_CONSTANT_UINT16,
+   CLC_SPEC_CONSTANT_INT32,
+   CLC_SPEC_CONSTANT_UINT32,
+   CLC_SPEC_CONSTANT_INT64,
+   CLC_SPEC_CONSTANT_UINT64,
+};
+
+struct clc_parsed_spec_constant {
+   uint32_t id;
+   enum clc_spec_constant_type type;
+};
+
+struct clc_parsed_spirv {
    const struct clc_kernel_info *kernels;
    unsigned num_kernels;
+
+   const struct clc_parsed_spec_constant *spec_constants;
+   unsigned num_spec_constants;
 };
 
 #define CLC_MAX_CONSTS 32
@@ -187,33 +209,53 @@ struct clc_dxil_object {
    } binary;
 };
 
-struct clc_context {
-   const void *libclc_nir;
-};
+struct clc_libclc;
 
-struct clc_context_options {
+struct clc_libclc_options {
    unsigned optimize;
 };
 
-struct clc_context *clc_context_new(const struct clc_logger *logger, const struct clc_context_options *options);
+struct clc_libclc *clc_libclc_new(const struct clc_logger *logger, const struct clc_libclc_options *options);
 
-void clc_free_context(struct clc_context *ctx);
+void clc_free_libclc(struct clc_libclc *lib);
 
-void clc_context_serialize(struct clc_context *ctx, void **serialized, size_t *size);
-void clc_context_free_serialized(void *serialized);
-struct clc_context *clc_context_deserialize(void *serialized, size_t size);
+void clc_libclc_serialize(struct clc_libclc *lib, void **serialized, size_t *size);
+void clc_libclc_free_serialized(void *serialized);
+struct clc_libclc *clc_libclc_deserialize(void *serialized, size_t size);
 
-struct clc_object *
-clc_compile(struct clc_context *ctx,
-            const struct clc_compile_args *args,
-            const struct clc_logger *logger);
+bool
+clc_compile_c_to_spir(const struct clc_compile_args *args,
+                      const struct clc_logger *logger,
+                      struct clc_binary *out_spir);
 
-struct clc_object *
-clc_link(struct clc_context *ctx,
-         const struct clc_linker_args *args,
-         const struct clc_logger *logger);
+void
+clc_free_spir(struct clc_binary *spir);
 
-void clc_free_object(struct clc_object *obj);
+bool
+clc_compile_spir_to_spirv(const struct clc_binary *in_spir,
+                          const struct clc_logger *logger,
+                          struct clc_binary *out_spirv);
+
+void
+clc_free_spirv(struct clc_binary *spirv);
+
+bool
+clc_compile_c_to_spirv(const struct clc_compile_args *args,
+                       const struct clc_logger *logger,
+                       struct clc_binary *out_spirv);
+
+bool
+clc_link_spirv(const struct clc_linker_args *args,
+               const struct clc_logger *logger,
+               struct clc_binary *out_spirv);
+
+bool
+clc_parse_spirv(const struct clc_binary *in_spirv,
+                const struct clc_logger *logger,
+                struct clc_parsed_spirv *out_data);
+
+void
+clc_free_parsed_spirv(struct clc_parsed_spirv *data);
 
 struct clc_runtime_arg_info {
    union {
@@ -236,12 +278,46 @@ struct clc_runtime_kernel_conf {
    unsigned support_workgroup_id_offsets;
 };
 
-struct clc_dxil_object *
-clc_to_dxil(struct clc_context *ctx,
-            const struct clc_object *obj,
-            const char *entrypoint,
-            const struct clc_runtime_kernel_conf *conf,
-            const struct clc_logger *logger);
+typedef union {
+   bool b;
+   float f32;
+   double f64;
+   int8_t i8;
+   uint8_t u8;
+   int16_t i16;
+   uint16_t u16;
+   int32_t i32;
+   uint32_t u32;
+   int64_t i64;
+   uint64_t u64;
+} clc_spirv_const_value;
+
+struct clc_spirv_specialization {
+   uint32_t id;
+   clc_spirv_const_value value;
+   bool defined_on_module;
+};
+
+struct clc_spirv_specialization_consts {
+   const struct clc_spirv_specialization *specializations;
+   unsigned num_specializations;
+};
+
+bool
+clc_specialize_spirv(const struct clc_binary *in_spirv,
+                     const struct clc_parsed_spirv *parsed_data,
+                     const struct clc_spirv_specialization_consts *consts,
+                     struct clc_binary *out_spirv);
+
+bool
+clc_spirv_to_dxil(struct clc_libclc *lib,
+                  const struct clc_binary *linked_spirv,
+                  const struct clc_parsed_spirv *parsed_data,
+                  const char *entrypoint,
+                  const struct clc_runtime_kernel_conf *conf,
+                  const struct clc_spirv_specialization_consts *consts,
+                  const struct clc_logger *logger,
+                  struct clc_dxil_object *out_dxil);
 
 void clc_free_dxil_object(struct clc_dxil_object *dxil);
 

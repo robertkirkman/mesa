@@ -31,6 +31,8 @@
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Type.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/Bitcode/BitcodeWriter.h>
+#include <llvm/Bitcode/BitcodeReader.h>
 #include <llvm-c/Core.h>
 #include <llvm-c/Target.h>
 #include <LLVMSPIRVLib/LLVMSPIRVLib.h>
@@ -44,6 +46,7 @@
 
 #include <spirv-tools/libspirv.hpp>
 #include <spirv-tools/linker.hpp>
+#include <spirv-tools/optimizer.hpp>
 
 #include "util/macros.h"
 #include "glsl_types.h"
@@ -55,6 +58,8 @@
 
 #include "opencl-c.h.h"
 #include "opencl-c-base.h.h"
+
+constexpr spv_target_env spirv_target = SPV_ENV_UNIVERSAL_1_0;
 
 using ::llvm::Function;
 using ::llvm::LLVMContext;
@@ -100,7 +105,7 @@ class SPIRVKernelParser {
 public:
    SPIRVKernelParser() : curKernel(NULL)
    {
-      ctx = spvContextCreate(SPV_ENV_UNIVERSAL_1_0);
+      ctx = spvContextCreate(spirv_target);
    }
 
    ~SPIRVKernelParser()
@@ -291,6 +296,18 @@ public:
       assert(op->type == SPV_OPERAND_TYPE_DECORATION);
       decoration = ins->words[op->offset];
 
+      if (decoration == SpvDecorationSpecId) {
+         uint32_t spec_id = ins->words[ins->operands[2].offset];
+         for (auto &c : specConstants) {
+            if (c.second.id == spec_id) {
+               assert(c.first == id);
+               return;
+            }
+         }
+         specConstants.emplace_back(id, clc_parsed_spec_constant{ spec_id });
+         return;
+      }
+
       for (auto &kernel : kernels) {
          for (auto &arg : kernel.args) {
             if (arg.id == id) {
@@ -412,6 +429,104 @@ public:
       }
    }
 
+   void parseLiteralType(const spv_parsed_instruction_t *ins)
+   {
+      uint32_t typeId = ins->words[ins->operands[0].offset];
+      auto& literalType = literalTypes[typeId];
+      switch (ins->opcode) {
+      case SpvOpTypeBool:
+         literalType = CLC_SPEC_CONSTANT_BOOL;
+         break;
+      case SpvOpTypeFloat: {
+         uint32_t sizeInBits = ins->words[ins->operands[1].offset];
+         switch (sizeInBits) {
+         case 32:
+            literalType = CLC_SPEC_CONSTANT_FLOAT;
+            break;
+         case 64:
+            literalType = CLC_SPEC_CONSTANT_DOUBLE;
+            break;
+         case 16:
+            /* Can't be used for a spec constant */
+            break;
+         default:
+            unreachable("Unexpected float bit size");
+         }
+         break;
+      }
+      case SpvOpTypeInt: {
+         uint32_t sizeInBits = ins->words[ins->operands[1].offset];
+         bool isSigned = ins->words[ins->operands[2].offset];
+         if (isSigned) {
+            switch (sizeInBits) {
+            case 8:
+               literalType = CLC_SPEC_CONSTANT_INT8;
+               break;
+            case 16:
+               literalType = CLC_SPEC_CONSTANT_INT16;
+               break;
+            case 32:
+               literalType = CLC_SPEC_CONSTANT_INT32;
+               break;
+            case 64:
+               literalType = CLC_SPEC_CONSTANT_INT64;
+               break;
+            default:
+               unreachable("Unexpected int bit size");
+            }
+         } else {
+            switch (sizeInBits) {
+            case 8:
+               literalType = CLC_SPEC_CONSTANT_UINT8;
+               break;
+            case 16:
+               literalType = CLC_SPEC_CONSTANT_UINT16;
+               break;
+            case 32:
+               literalType = CLC_SPEC_CONSTANT_UINT32;
+               break;
+            case 64:
+               literalType = CLC_SPEC_CONSTANT_UINT64;
+               break;
+            default:
+               unreachable("Unexpected uint bit size");
+            }
+         }
+         break;
+      }
+      default:
+         unreachable("Unexpected type opcode");
+      }
+   }
+
+   void parseSpecConstant(const spv_parsed_instruction_t *ins)
+   {
+      uint32_t id = ins->result_id;
+      for (auto& c : specConstants) {
+         if (c.first == id) {
+            auto& data = c.second;
+            switch (ins->opcode) {
+            case SpvOpSpecConstant: {
+               uint32_t typeId = ins->words[ins->operands[0].offset];
+
+               // This better be an integer or float type
+               auto typeIter = literalTypes.find(typeId);
+               assert(typeIter != literalTypes.end());
+
+               data.type = typeIter->second;
+               break;
+            }
+            case SpvOpSpecConstantFalse:
+            case SpvOpSpecConstantTrue:
+               data.type = CLC_SPEC_CONSTANT_BOOL;
+               break;
+            default:
+               unreachable("Composites and Ops are not directly specializable.");
+            }
+         }
+      }
+   }
+
    static spv_result_t
    parseInstruction(void *data, const spv_parsed_instruction_t *ins)
    {
@@ -452,6 +567,16 @@ public:
       case SpvOpExecutionMode:
          parser->parseExecutionMode(ins);
          break;
+      case SpvOpTypeBool:
+      case SpvOpTypeInt:
+      case SpvOpTypeFloat:
+         parser->parseLiteralType(ins);
+         break;
+      case SpvOpSpecConstant:
+      case SpvOpSpecConstantFalse:
+      case SpvOpSpecConstantTrue:
+         parser->parseSpecConstant(ins);
+         break;
       default:
          break;
       }
@@ -474,7 +599,7 @@ public:
       return true;
    }
 
-   void parseBinary(const struct spirv_binary &spvbin)
+   bool parseBinary(const struct clc_binary &spvbin, const struct clc_logger *logger)
    {
       /* 3 passes should be enough to retrieve all kernel information:
        * 1st pass: all entry point name and number of args
@@ -482,35 +607,53 @@ public:
        * 3rd pass: pointer type names
        */
       for (unsigned pass = 0; pass < 3; pass++) {
-         spvBinaryParse(ctx, reinterpret_cast<void *>(this),
-                        spvbin.data, spvbin.size / 4,
-                        NULL, parseInstruction, NULL);
+         spv_diagnostic diagnostic = NULL;
+         auto result = spvBinaryParse(ctx, reinterpret_cast<void *>(this),
+                                      static_cast<uint32_t*>(spvbin.data), spvbin.size / 4,
+                                      NULL, parseInstruction, &diagnostic);
+
+         if (result != SPV_SUCCESS) {
+            if (diagnostic && logger)
+               logger->error(logger->priv, diagnostic->error);
+            return false;
+         }
 
          if (parsingComplete())
-            return;
+            return true;
       }
 
       assert(0);
+      return false;
    }
 
    std::vector<SPIRVKernelInfo> kernels;
+   std::vector<std::pair<uint32_t, clc_parsed_spec_constant>> specConstants;
+   std::map<uint32_t, enum clc_spec_constant_type> literalTypes;
    std::map<uint32_t, std::vector<uint32_t>> decorationGroups;
    SPIRVKernelInfo *curKernel;
    spv_context ctx;
 };
 
-const struct clc_kernel_info *
-clc_spirv_get_kernels_info(const struct spirv_binary *spvbin,
-                           unsigned *num_kernels)
+bool
+clc_spirv_get_kernels_info(const struct clc_binary *spvbin,
+                           const struct clc_kernel_info **out_kernels,
+                           unsigned *num_kernels,
+                           const struct clc_parsed_spec_constant **out_spec_constants,
+                           unsigned *num_spec_constants,
+                           const struct clc_logger *logger)
 {
    struct clc_kernel_info *kernels;
+   struct clc_parsed_spec_constant *spec_constants;
 
    SPIRVKernelParser parser;
 
-   parser.parseBinary(*spvbin);
+   if (!parser.parseBinary(*spvbin, logger))
+      return false;
+
    *num_kernels = parser.kernels.size();
+   *num_spec_constants = parser.specConstants.size();
    if (!*num_kernels)
-      return NULL;
+      return false;
 
    kernels = reinterpret_cast<struct clc_kernel_info *>(calloc(*num_kernels,
                                                                sizeof(*kernels)));
@@ -539,7 +682,20 @@ clc_spirv_get_kernels_info(const struct spirv_binary *spvbin,
       }
    }
 
-   return kernels;
+   if (*num_spec_constants) {
+      spec_constants = reinterpret_cast<struct clc_parsed_spec_constant *>(calloc(*num_spec_constants,
+                                                                                  sizeof(*spec_constants)));
+      assert(spec_constants);
+
+      for (unsigned i = 0; i < parser.specConstants.size(); ++i) {
+         spec_constants[i] = parser.specConstants[i].second;
+      }
+   }
+
+   *out_kernels = kernels;
+   *out_spec_constants = spec_constants;
+
+   return true;
 }
 
 void
@@ -562,10 +718,9 @@ clc_free_kernels_info(const struct clc_kernel_info *kernels,
    free((void *)kernels);
 }
 
-int
-clc_to_spirv(const struct clc_compile_args *args,
-             struct spirv_binary *spvbin,
-             const struct clc_logger *logger)
+static std::pair<std::unique_ptr<::llvm::Module>, std::unique_ptr<LLVMContext>>
+clc_compile_to_llvm_module(const struct clc_compile_args *args,
+                           const struct clc_logger *logger)
 {
    LLVMInitializeAllTargets();
    LLVMInitializeAllTargetInfos();
@@ -612,13 +767,13 @@ clc_to_spirv(const struct clc_compile_args *args,
                                                   diag)) {
       log += "Couldn't create Clang invocation.\n";
       clc_error(logger, log.c_str());
-      return -1;
+      return {};
    }
 
    if (diag.hasErrorOccurred()) {
       log += "Errors occurred during Clang invocation.\n";
       clc_error(logger, log.c_str());
-      return -1;
+      return {};
    }
 
    // This is a workaround for a Clang bug which causes the number
@@ -682,10 +837,19 @@ clc_to_spirv(const struct clc_compile_args *args,
    if (!c->ExecuteAction(act)) {
       log += "Error executing LLVM compilation action.\n";
       clc_error(logger, log.c_str());
-      return -1;
+      return {};
    }
 
-   auto mod = act.takeModule();
+   return { act.takeModule(), std::move(llvm_ctx) };
+}
+
+static int
+llvm_mod_to_spirv(std::unique_ptr<::llvm::Module> mod,
+                  std::unique_ptr<LLVMContext> context,
+                  const struct clc_logger *logger,
+                  struct clc_binary *out_spirv)
+{
+   std::string log;
    std::ostringstream spv_stream;
    if (!::llvm::writeSpirv(mod.get(), spv_stream, log)) {
       log += "Translation from LLVM IR to SPIR-V failed.\n";
@@ -694,41 +858,61 @@ clc_to_spirv(const struct clc_compile_args *args,
    }
 
    const std::string spv_out = spv_stream.str();
-   spvbin->size = spv_out.size();
-   spvbin->data = static_cast<uint32_t *>(malloc(spvbin->size));
-   memcpy(spvbin->data, spv_out.data(), spvbin->size);
+   out_spirv->size = spv_out.size();
+   out_spirv->data = malloc(out_spirv->size);
+   memcpy(out_spirv->data, spv_out.data(), out_spirv->size);
 
    return 0;
 }
 
-static const char *
-spv_result_to_str(spv_result_t res)
+int
+clc_c_to_spir(const struct clc_compile_args *args,
+              const struct clc_logger *logger,
+              struct clc_binary *out_spir)
 {
-   switch (res) {
-   case SPV_SUCCESS: return "success";
-   case SPV_UNSUPPORTED: return "unsupported";
-   case SPV_END_OF_STREAM: return "end of stream";
-   case SPV_WARNING: return "warning";
-   case SPV_FAILED_MATCH: return "failed match";
-   case SPV_REQUESTED_TERMINATION: return "requested termination";
-   case SPV_ERROR_INTERNAL: return "internal error";
-   case SPV_ERROR_OUT_OF_MEMORY: return "out of memory";
-   case SPV_ERROR_INVALID_POINTER: return "invalid pointer";
-   case SPV_ERROR_INVALID_BINARY: return "invalid binary";
-   case SPV_ERROR_INVALID_TEXT: return "invalid text";
-   case SPV_ERROR_INVALID_TABLE: return "invalid table";
-   case SPV_ERROR_INVALID_VALUE: return "invalid value";
-   case SPV_ERROR_INVALID_DIAGNOSTIC: return "invalid diagnostic";
-   case SPV_ERROR_INVALID_LOOKUP: return "invalid lookup";
-   case SPV_ERROR_INVALID_ID: return "invalid id";
-   case SPV_ERROR_INVALID_CFG: return "invalid config";
-   case SPV_ERROR_INVALID_LAYOUT: return "invalid layout";
-   case SPV_ERROR_INVALID_CAPABILITY: return "invalid capability";
-   case SPV_ERROR_INVALID_DATA: return "invalid data";
-   case SPV_ERROR_MISSING_EXTENSION: return "missing extension";
-   case SPV_ERROR_WRONG_VERSION: return "wrong version";
-   default: return "unknown error";
-   }
+   auto pair = clc_compile_to_llvm_module(args, logger);
+   if (!pair.first)
+      return -1;
+
+   ::llvm::SmallVector<char> buffer;
+   ::llvm::BitcodeWriter writer(buffer);
+   writer.writeModule(*pair.first);
+
+   out_spir->size = buffer.size_in_bytes();
+   out_spir->data = malloc(out_spir->size);
+   memcpy(out_spir->data, buffer.data(), out_spir->size);
+
+   return 0;
+}
+
+int
+clc_c_to_spirv(const struct clc_compile_args *args,
+               const struct clc_logger *logger,
+               struct clc_binary *out_spirv)
+{
+   auto pair = clc_compile_to_llvm_module(args, logger);
+   if (!pair.first)
+      return -1;
+   return llvm_mod_to_spirv(std::move(pair.first), std::move(pair.second), logger, out_spirv);
+}
+
+int
+clc_spir_to_spirv(const struct clc_binary *in_spir,
+                  const struct clc_logger *logger,
+                  struct clc_binary *out_spirv)
+{
+   LLVMInitializeAllTargets();
+   LLVMInitializeAllTargetInfos();
+   LLVMInitializeAllTargetMCs();
+   LLVMInitializeAllAsmPrinters();
+
+   std::unique_ptr<LLVMContext> llvm_ctx{ new LLVMContext };
+   ::llvm::StringRef spir_ref(static_cast<const char*>(in_spir->data), in_spir->size);
+   auto mod = ::llvm::parseBitcodeFile(::llvm::MemoryBufferRef(spir_ref, "<spir>"), *llvm_ctx);
+   if (!mod)
+      return -1;
+
+   return llvm_mod_to_spirv(std::move(mod.get()), std::move(llvm_ctx), logger, out_spirv);
 }
 
 class SPIRVMessageConsumer {
@@ -762,20 +946,19 @@ private:
 
 int
 clc_link_spirv_binaries(const struct clc_linker_args *args,
-                        struct spirv_binary *dst_bin,
-                        const struct clc_logger *logger)
+                        const struct clc_logger *logger,
+                        struct clc_binary *out_spirv)
 {
    std::vector<std::vector<uint32_t>> binaries;
 
    for (unsigned i = 0; i < args->num_in_objs; i++) {
-      std::vector<uint32_t> bin(args->in_objs[i]->spvbin.data,
-                                args->in_objs[i]->spvbin.data +
-                                   (args->in_objs[i]->spvbin.size / 4));
+      const uint32_t *data = static_cast<const uint32_t *>(args->in_objs[i]->data);
+      std::vector<uint32_t> bin(data, data + (args->in_objs[i]->size / 4));
       binaries.push_back(bin);
    }
 
    SPIRVMessageConsumer msgconsumer(logger);
-   spvtools::Context context(SPV_ENV_UNIVERSAL_1_0);
+   spvtools::Context context(spirv_target);
    context.SetMessageConsumer(msgconsumer);
    spvtools::LinkerOptions options;
    options.SetAllowPartialLinkage(args->create_library);
@@ -786,18 +969,83 @@ clc_link_spirv_binaries(const struct clc_linker_args *args,
       return -1;
    }
 
-   dst_bin->size = linkingResult.size() * 4;
-   dst_bin->data = static_cast<uint32_t *>(malloc(dst_bin->size));
-   memcpy(dst_bin->data, linkingResult.data(), dst_bin->size);
+   out_spirv->size = linkingResult.size() * 4;
+   out_spirv->data = static_cast<uint32_t *>(malloc(out_spirv->size));
+   memcpy(out_spirv->data, linkingResult.data(), out_spirv->size);
 
    return 0;
 }
 
-void
-clc_dump_spirv(const struct spirv_binary *spvbin, FILE *f)
+int
+clc_spirv_specialize(const struct clc_binary *in_spirv,
+                     const struct clc_parsed_spirv *parsed_data,
+                     const struct clc_spirv_specialization_consts *consts,
+                     struct clc_binary *out_spirv)
 {
-   spvtools::SpirvTools tools(SPV_ENV_UNIVERSAL_1_0);
-   std::vector<uint32_t> bin(spvbin->data, spvbin->data + (spvbin->size / 4));
+   std::unordered_map<uint32_t, std::vector<uint32_t>> spec_const_map;
+   for (unsigned i = 0; i < consts->num_specializations; ++i) {
+      unsigned id = consts->specializations[i].id;
+      auto parsed_spec_const = std::find_if(parsed_data->spec_constants,
+         parsed_data->spec_constants + parsed_data->num_spec_constants,
+         [id](const clc_parsed_spec_constant &c) { return c.id == id; });
+      assert(parsed_spec_const != parsed_data->spec_constants + parsed_data->num_spec_constants);
+
+      std::vector<uint32_t> words;
+      switch (parsed_spec_const->type) {
+      case CLC_SPEC_CONSTANT_BOOL:
+         words.push_back(consts->specializations[i].value.b);
+         break;
+      case CLC_SPEC_CONSTANT_INT32:
+      case CLC_SPEC_CONSTANT_UINT32:
+      case CLC_SPEC_CONSTANT_FLOAT:
+         words.push_back(consts->specializations[i].value.u32);
+         break;
+      case CLC_SPEC_CONSTANT_INT16:
+         words.push_back((uint32_t)(int32_t)consts->specializations[i].value.i16);
+         break;
+      case CLC_SPEC_CONSTANT_INT8:
+         words.push_back((uint32_t)(int32_t)consts->specializations[i].value.i8);
+         break;
+      case CLC_SPEC_CONSTANT_UINT16:
+         words.push_back((uint32_t)consts->specializations[i].value.u16);
+         break;
+      case CLC_SPEC_CONSTANT_UINT8:
+         words.push_back((uint32_t)consts->specializations[i].value.u8);
+         break;
+      case CLC_SPEC_CONSTANT_DOUBLE:
+      case CLC_SPEC_CONSTANT_INT64:
+      case CLC_SPEC_CONSTANT_UINT64:
+         words.resize(2);
+         memcpy(words.data(), &consts->specializations[i].value.u64, 8);
+         break;
+      case CLC_SPEC_CONSTANT_UNKNOWN:
+         assert(0);
+         break;
+      }
+
+      ASSERTED auto ret = spec_const_map.emplace(id, std::move(words));
+      assert(ret.second);
+   }
+
+   spvtools::Optimizer opt(spirv_target);
+   opt.RegisterPass(spvtools::CreateSetSpecConstantDefaultValuePass(std::move(spec_const_map)));
+
+   std::vector<uint32_t> result;
+   if (!opt.Run(static_cast<const uint32_t*>(in_spirv->data), in_spirv->size / 4, &result))
+      return false;
+
+   out_spirv->size = result.size() * 4;
+   out_spirv->data = malloc(out_spirv->size);
+   memcpy(out_spirv->data, result.data(), out_spirv->size);
+   return true;
+}
+
+void
+clc_dump_spirv(const struct clc_binary *spvbin, FILE *f)
+{
+   spvtools::SpirvTools tools(spirv_target);
+   const uint32_t *data = static_cast<const uint32_t *>(spvbin->data);
+   std::vector<uint32_t> bin(data, data + (spvbin->size / 4));
    std::string out;
    tools.Disassemble(bin, &out,
                      SPV_BINARY_TO_TEXT_OPTION_INDENT |
@@ -806,7 +1054,13 @@ clc_dump_spirv(const struct spirv_binary *spvbin, FILE *f)
 }
 
 void
-clc_free_spirv_binary(struct spirv_binary *spvbin)
+clc_free_spir_binary(struct clc_binary *spir)
+{
+   free(spir->data);
+}
+
+void
+clc_free_spirv_binary(struct clc_binary *spvbin)
 {
    free(spvbin->data);
 }

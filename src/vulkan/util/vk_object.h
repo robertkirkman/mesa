@@ -46,6 +46,9 @@ struct vk_object_base {
 
    /* For VK_EXT_private_data */
    struct util_sparse_array private_data;
+
+   /* VK_EXT_debug_utils */
+   char *object_name;
 };
 
 void vk_object_base_init(UNUSED struct vk_device *device,
@@ -169,6 +172,9 @@ vk_object_base_get_private_data(struct vk_device *device,
                                 uint64_t objectHandle,
                                 VkPrivateDataSlotEXT privateDataSlot,
                                 uint64_t *pData);
+
+const char *
+vk_object_base_name(struct vk_object_base *obj);
 
 #ifdef __cplusplus
 }

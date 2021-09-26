@@ -982,13 +982,13 @@ void radv_lower_ngg(struct radv_device *device, struct nir_shader *nir,
             key->vs_common_out.as_ngg_passthrough,
             key->vs_common_out.export_prim_id,
             key->vs.provoking_vtx_last,
+            false,
             key->vs.instance_rate_inputs);
 
       info->has_ngg_culling = out_conf.can_cull;
       info->has_ngg_early_prim_export = out_conf.early_prim_export;
       info->num_lds_blocks_when_not_culling = DIV_ROUND_UP(out_conf.lds_bytes_if_culling_off, device->physical_device->rad_info.lds_encode_granularity);
       info->is_ngg_passthrough = out_conf.passthrough;
-      key->vs_common_out.as_ngg_passthrough = out_conf.passthrough;
    } else if (nir->info.stage == MESA_SHADER_GEOMETRY) {
       assert(info->is_ngg);
       ac_nir_lower_ngg_gs(
@@ -1291,13 +1291,14 @@ radv_postprocess_config(const struct radv_device *device, const struct ac_shader
       } else
          unreachable("Unexpected ES shader stage");
 
+      bool nggc = info->has_ngg_culling; /* Culling uses GS vertex offsets 0, 1, 2. */
       bool tes_triangles =
          stage == MESA_SHADER_TESS_EVAL && info->tes.primitive_mode >= 4; /* GL_TRIANGLES */
-      if (info->uses_invocation_id || stage == MESA_SHADER_VERTEX) {
+      if (info->uses_invocation_id) {
          gs_vgpr_comp_cnt = 3; /* VGPR3 contains InvocationID. */
       } else if (info->uses_prim_id) {
          gs_vgpr_comp_cnt = 2; /* VGPR2 contains PrimitiveID. */
-      } else if (info->gs.vertices_in >= 3 || tes_triangles) {
+      } else if (info->gs.vertices_in >= 3 || tes_triangles || nggc) {
          gs_vgpr_comp_cnt = 1; /* VGPR1 contains offsets 2, 3 */
       } else {
          gs_vgpr_comp_cnt = 0; /* VGPR0 contains offsets 0, 1 */

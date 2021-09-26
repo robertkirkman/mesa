@@ -2068,9 +2068,9 @@ void si_shader_change_notify(struct si_context *sctx)
          struct si_descriptors *descs = &sctx->descriptors[start]; \
          unsigned sh_offset = sh_reg_base + descs->shader_userdata_offset; \
          \
-         radeon_set_sh_reg_seq(&sctx->gfx_cs, sh_offset, count); \
+         radeon_set_sh_reg_seq(sh_offset, count); \
          for (int i = 0; i < count; i++) \
-            radeon_emit_32bit_pointer(sctx->screen, cs, descs[i].gpu_address); \
+            radeon_emit_32bit_pointer(sctx->screen, descs[i].gpu_address); \
       } \
    } \
 } while (0)
@@ -2161,12 +2161,12 @@ void si_emit_compute_shader_pointers(struct si_context *sctx)
    if (num_shaderbufs && sctx->compute_shaderbuf_sgprs_dirty) {
       struct si_descriptors *desc = si_const_and_shader_buffer_descriptors(sctx, PIPE_SHADER_COMPUTE);
 
-      radeon_set_sh_reg_seq(cs, R_00B900_COMPUTE_USER_DATA_0 +
+      radeon_set_sh_reg_seq(R_00B900_COMPUTE_USER_DATA_0 +
                             shader->cs_shaderbufs_sgpr_index * 4,
                             num_shaderbufs * 4);
 
       for (unsigned i = 0; i < num_shaderbufs; i++)
-         radeon_emit_array(cs, &desc->list[si_get_shaderbuf_slot(i) * 4], 4);
+         radeon_emit_array(&desc->list[si_get_shaderbuf_slot(i) * 4], 4);
 
       sctx->compute_shaderbuf_sgprs_dirty = false;
    }
@@ -2176,7 +2176,7 @@ void si_emit_compute_shader_pointers(struct si_context *sctx)
    if (num_images && sctx->compute_image_sgprs_dirty) {
       struct si_descriptors *desc = si_sampler_and_image_descriptors(sctx, PIPE_SHADER_COMPUTE);
 
-      radeon_set_sh_reg_seq(cs, R_00B900_COMPUTE_USER_DATA_0 +
+      radeon_set_sh_reg_seq(R_00B900_COMPUTE_USER_DATA_0 +
                             shader->cs_images_sgpr_index * 4,
                             shader->cs_images_num_sgprs);
 
@@ -2190,7 +2190,7 @@ void si_emit_compute_shader_pointers(struct si_context *sctx)
             num_sgprs = 4;
          }
 
-         radeon_emit_array(cs, &desc->list[desc_offset], num_sgprs);
+         radeon_emit_array(&desc->list[desc_offset], num_sgprs);
       }
 
       sctx->compute_image_sgprs_dirty = false;
