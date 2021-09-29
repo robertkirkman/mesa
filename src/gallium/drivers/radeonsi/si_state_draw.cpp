@@ -217,10 +217,12 @@ static bool si_update_shaders(struct si_context *sctx)
       }
    }
 
-   sctx->vs_uses_base_instance =
-      sctx->shader.vs.current ? sctx->shader.vs.current->uses_base_instance :
-      sctx->queued.named.hs ? sctx->queued.named.hs->uses_base_instance :
-      sctx->shader.gs.current->uses_base_instance;
+   if (GFX_VERSION >= GFX9 && HAS_TESS)
+      sctx->vs_uses_base_instance = sctx->queued.named.hs->uses_base_instance;
+   else if (GFX_VERSION >= GFX9 && HAS_GS)
+      sctx->vs_uses_base_instance = sctx->shader.gs.current->uses_base_instance;
+   else
+      sctx->vs_uses_base_instance = sctx->shader.vs.current->uses_base_instance;
 
    union si_vgt_stages_key key;
    key.index = 0;
@@ -1599,7 +1601,8 @@ static void si_emit_draw_packets(struct si_context *sctx, const struct pipe_draw
          }
       } else {
          /* Set the index buffer for fast launch. The VS prolog will load the indices. */
-         if (NGG && sctx->ngg_culling & SI_NGG_CULL_GS_FAST_LAUNCH_INDEX_SIZE_PACKED(~0)) {
+         if (GFX_VERSION >= GFX10_3 && NGG &&
+             sctx->ngg_culling & SI_NGG_CULL_GS_FAST_LAUNCH_INDEX_SIZE_PACKED(~0)) {
             index_max_size = (indexbuf->width0 - index_offset) >> util_logbase2(original_index_size);
 
             radeon_add_to_buffer_list(sctx, &sctx->gfx_cs, si_resource(indexbuf),
@@ -2154,21 +2157,36 @@ static void si_draw_vbo(struct pipe_context *ctx,
 
       if (NGG && !HAS_GS &&
           /* Tessellation sets ngg_cull_vert_threshold to UINT_MAX if the prim type
-           * is not triangles, so this check is only needed without tessellation. */
-          (HAS_TESS || sctx->current_rast_prim == PIPE_PRIM_TRIANGLES) &&
-          total_direct_count > hw_vs->ngg_cull_vert_threshold) {
+           * is not points, so this check is only needed without tessellation. */
+          (HAS_TESS || util_rast_prim_is_lines_or_triangles(sctx->current_rast_prim)) &&
+          /* Only the first draw for a shader starts with culling disabled and it's disabled
+           * until we pass the total_direct_count check and then it stays enabled until
+           * the shader is changed. This eliminates most culling on/off state changes. */
+          (old_ngg_culling || total_direct_count > hw_vs->ngg_cull_vert_threshold)) {
+         /* Check that the current shader allows culling. */
+         assert(hw_vs->ngg_cull_vert_threshold != UINT_MAX);
+
          uint8_t ngg_culling = sctx->viewport0_y_inverted ? rs->ngg_cull_flags_y_inverted :
                                                             rs->ngg_cull_flags;
+         assert(ngg_culling); /* rasterizer state should always set this to non-zero */
+
+         if (util_prim_is_lines(sctx->current_rast_prim)) {
+            /* Overwrite it to mask out face cull flags. */
+            ngg_culling = SI_NGG_CULL_ENABLED | SI_NGG_CULL_LINES;
+         }
 
          /* Use NGG fast launch for certain primitive types.
           * A draw must have at least 1 full primitive.
           * The fast launch doesn't work with tessellation.
           *
+          * Fast launch is disabled on Navi1x because enabling it requires VGT_FLUSH,
+          * which decreases performance by up to 10%. Only use fast launch on gfx10.3 and newer.
+          *
           * Since NGG fast launch is enabled by VGT_SHADER_STAGES_EN, which causes a context roll,
           * which decreases performance, decrease the frequency of switching it on/off using
           * a high vertex count threshold.
           */
-         if (!HAS_TESS && ngg_culling && total_direct_count >= 8000 &&
+         if (GFX_VERSION >= GFX10_3 && !HAS_TESS && total_direct_count >= 8000 &&
              !(sctx->screen->debug_flags & DBG(NO_FAST_LAUNCH))) {
             if (prim == PIPE_PRIM_TRIANGLES && !index_size) {
                ngg_culling |= SI_NGG_CULL_GS_FAST_LAUNCH_TRI_LIST;
@@ -2178,8 +2196,6 @@ static void si_draw_vbo(struct pipe_context *ctx,
                } else if (!primitive_restart) {
                   ngg_culling |= SI_NGG_CULL_GS_FAST_LAUNCH_TRI_STRIP |
                                  SI_NGG_CULL_GS_FAST_LAUNCH_INDEX_SIZE_PACKED(MIN2(index_size, 3));
-                  /* The index buffer will be emulated. */
-                  index_size = 0;
                }
             }
          }
@@ -2201,19 +2217,14 @@ static void si_draw_vbo(struct pipe_context *ctx,
          return;
       }
 
-      /* Insert a VGT_FLUSH when enabling fast launch changes to prevent hangs.
-       * See issues #2418, #2426, #2434
-       *
-       * This is the setting that is used by the draw.
+      /* si_update_shaders can clear the ngg_culling settings if the shader compilation hasn't
+       * finished.
        */
-      if (GFX_VERSION >= GFX10) {
+      if (GFX_VERSION >= GFX10 && NGG) {
          uint8_t ngg_culling = si_get_vs_inline(sctx, HAS_TESS, HAS_GS)->current->key.opt.ngg_culling;
-         if (GFX_VERSION == GFX10 &&
-             !(old_ngg_culling & SI_NGG_CULL_GS_FAST_LAUNCH_ALL) &&
-             ngg_culling & SI_NGG_CULL_GS_FAST_LAUNCH_ALL)
-            sctx->flags |= SI_CONTEXT_VGT_FLUSH;
 
-         if (old_ngg_culling & SI_NGG_CULL_GS_FAST_LAUNCH_INDEX_SIZE_PACKED(~0) &&
+         if (GFX_VERSION >= GFX10_3 &&
+             old_ngg_culling & SI_NGG_CULL_GS_FAST_LAUNCH_INDEX_SIZE_PACKED(~0) &&
              !(ngg_culling & SI_NGG_CULL_GS_FAST_LAUNCH_INDEX_SIZE_PACKED(~0))) {
             /* Need to re-set these, because we have bound an index buffer there. */
             sctx->shader_pointers_dirty |=
@@ -2226,6 +2237,11 @@ static void si_draw_vbo(struct pipe_context *ctx,
          sctx->ngg_culling = ngg_culling;
       }
    }
+
+   /* ngg_culling can be changed after si_update_shaders above, so determine index_size here. */
+   if (GFX_VERSION >= GFX10_3 && NGG &&
+       sctx->ngg_culling & SI_NGG_CULL_GS_FAST_LAUNCH_INDEX_SIZE_PACKED(~0))
+      index_size = 0; /* The index buffer will be emulated. */
 
    /* Since we've called si_context_add_resource_size for vertex buffers,
     * this must be called after si_need_cs_space, because we must let
@@ -2265,7 +2281,7 @@ static void si_draw_vbo(struct pipe_context *ctx,
    /* Use optimal packet order based on whether we need to sync the pipeline. */
    if (unlikely(sctx->flags & (SI_CONTEXT_FLUSH_AND_INV_CB | SI_CONTEXT_FLUSH_AND_INV_DB |
                                SI_CONTEXT_PS_PARTIAL_FLUSH | SI_CONTEXT_CS_PARTIAL_FLUSH |
-                               SI_CONTEXT_VS_PARTIAL_FLUSH))) {
+                               SI_CONTEXT_VS_PARTIAL_FLUSH | SI_CONTEXT_VGT_FLUSH))) {
       /* If we have to wait for idle, set all states first, so that all
        * SET packets are processed in parallel with previous draw calls.
        * Then draw and prefetch at the end. This ensures that the time

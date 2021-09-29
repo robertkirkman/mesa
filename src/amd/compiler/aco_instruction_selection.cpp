@@ -635,24 +635,10 @@ convert_int(isel_context* ctx, Builder& bld, Temp src, unsigned src_bits, unsign
       assert(src_bits < 32);
       bld.pseudo(aco_opcode::p_extract, Definition(tmp), bld.def(s1, scc), src, Operand::zero(),
                  Operand::c32(src_bits), Operand::c32((unsigned)sign_extend));
-   } else if (ctx->options->chip_class >= GFX8) {
-      assert(src_bits < 32);
-      assert(src_bits != 8 || src.regClass() == v1b);
-      assert(src_bits != 16 || src.regClass() == v2b);
-      assert(dst_bits >= 16);
-      aco_ptr<SDWA_instruction> sdwa{
-         create_instruction<SDWA_instruction>(aco_opcode::v_mov_b32, asSDWA(Format::VOP1), 1, 1)};
-      sdwa->operands[0] = Operand(src);
-      sdwa->definitions[0] = Definition(tmp);
-      sdwa->sel[0] = SubdwordSel(src_bits / 8, 0, sign_extend);
-      sdwa->dst_sel = tmp.bytes() == 2 ? SubdwordSel::uword : SubdwordSel::dword;
-      bld.insert(std::move(sdwa));
    } else {
       assert(src_bits < 32);
-      assert(ctx->options->chip_class == GFX6 || ctx->options->chip_class == GFX7);
-      aco_opcode opcode = sign_extend ? aco_opcode::v_bfe_i32 : aco_opcode::v_bfe_u32;
-      bld.vop3(opcode, Definition(tmp), src, Operand::zero(),
-               Operand::c32(src_bits == 8 ? 8u : 16u));
+      bld.pseudo(aco_opcode::p_extract, Definition(tmp), src, Operand::zero(), Operand::c32(src_bits),
+                 Operand::c32((unsigned)sign_extend));
    }
 
    if (dst_bits == 64) {
@@ -3925,7 +3911,10 @@ emit_load(isel_context* ctx, Builder& bld, const LoadEmitInfo& info,
 Operand
 load_lds_size_m0(Builder& bld)
 {
-   /* TODO: m0 does not need to be initialized on GFX9+ */
+   /* m0 does not need to be initialized on GFX9+ */
+   if (bld.program->chip_class >= GFX9)
+      return Operand(s1);
+
    return bld.m0((Temp)bld.copy(bld.def(s1, m0), Operand::c32(0xffffffffu)));
 }
 
@@ -3990,6 +3979,9 @@ lds_load_callback(Builder& bld, const LoadEmitInfo& info, Temp offset, unsigned 
    else
       instr = bld.ds(op, Definition(val), offset, m, const_offset);
    instr->ds().sync = info.sync;
+
+   if (m.isUndefined())
+      instr->operands.pop_back();
 
    return val;
 }
@@ -4424,6 +4416,9 @@ store_lds(isel_context* ctx, unsigned elem_size_bytes, Temp data, uint32_t wrmas
          instr = bld.ds(op, address_offset, split_data, m, inline_offset);
       }
       instr->ds().sync = memory_sync_info(storage_shared);
+
+      if (m.isUndefined())
+         instr->operands.pop_back();
    }
 }
 
@@ -5022,7 +5017,7 @@ visit_load_input(isel_context* ctx, nir_intrinsic_instr* instr)
       uint32_t attrib_stride = ctx->options->key.vs.vertex_attribute_strides[location];
       unsigned attrib_format = ctx->options->key.vs.vertex_attribute_formats[location];
       unsigned binding_align = ctx->options->key.vs.vertex_binding_align[attrib_binding];
-      enum ac_fetch_format alpha_adjust = ctx->options->key.vs.alpha_adjust[location];
+      enum ac_fetch_format alpha_adjust = ctx->options->key.vs.vertex_alpha_adjust[location];
 
       unsigned dfmt = attrib_format & 0xf;
       unsigned nfmt = (attrib_format >> 4) & 0x7;
@@ -5030,7 +5025,7 @@ visit_load_input(isel_context* ctx, nir_intrinsic_instr* instr)
 
       unsigned mask = nir_ssa_def_components_read(&instr->dest.ssa) << component;
       unsigned num_channels = MIN2(util_last_bit(mask), vtx_info->num_channels);
-      bool post_shuffle = ctx->options->key.vs.post_shuffle & (1 << location);
+      bool post_shuffle = ctx->options->key.vs.vertex_post_shuffle & (1 << location);
       if (post_shuffle)
          num_channels = MAX2(num_channels, 3);
 
@@ -7307,6 +7302,10 @@ visit_shared_atomic(isel_context* ctx, nir_intrinsic_instr* instr)
    if (return_previous)
       ds->definitions[0] = Definition(get_ssa_temp(ctx, &instr->dest.ssa));
    ds->sync = memory_sync_info(storage_shared, semantic_atomicrmw);
+
+   if (m.isUndefined())
+      ds->operands.pop_back();
+
    ctx->block->instructions.emplace_back(std::move(ds));
 }
 
@@ -7388,9 +7387,9 @@ visit_load_sample_mask_in(isel_context* ctx, nir_intrinsic_instr* instr)
 {
    uint8_t log2_ps_iter_samples;
    if (ctx->program->info->ps.uses_sample_shading) {
-      log2_ps_iter_samples = util_logbase2(ctx->options->key.fs.num_samples);
+      log2_ps_iter_samples = util_logbase2(ctx->options->key.ps.num_samples);
    } else {
-      log2_ps_iter_samples = ctx->options->key.fs.log2_ps_iter_samples;
+      log2_ps_iter_samples = ctx->options->key.ps.log2_ps_iter_samples;
    }
 
    Builder bld(ctx->program, ctx->block);
@@ -8000,7 +7999,7 @@ visit_intrinsic(isel_context* ctx, nir_intrinsic_instr* instr)
    }
    case nir_intrinsic_load_barycentric_at_sample: {
       uint32_t sample_pos_offset = RING_PS_SAMPLE_POSITIONS * 16;
-      switch (ctx->options->key.fs.num_samples) {
+      switch (ctx->options->key.ps.num_samples) {
       case 2: sample_pos_offset += 1 << 3; break;
       case 4: sample_pos_offset += 3 << 3; break;
       case 8: sample_pos_offset += 7 << 3; break;
@@ -8899,7 +8898,7 @@ visit_intrinsic(isel_context* ctx, nir_intrinsic_instr* instr)
              ctx->shader->info.stage == MESA_SHADER_TESS_EVAL);
 
       Temp dst = get_ssa_temp(ctx, &instr->dest.ssa);
-      bld.copy(Definition(dst), Operand::c32(ctx->args->options->key.tcs.input_vertices));
+      bld.copy(Definition(dst), Operand::c32(ctx->args->options->key.tcs.tess_input_vertices));
       break;
    }
    case nir_intrinsic_emit_vertex_with_counter: {
@@ -8985,11 +8984,13 @@ visit_intrinsic(isel_context* ctx, nir_intrinsic_instr* instr)
 
       Temp gs_invocation_id = get_arg(ctx, ctx->args->ac.gs_invocation_id);
       /* Get initial edgeflags for each vertex at bits 8, 9, 10 of gs_invocation_id. */
-      Temp flags = bld.vop2(aco_opcode::v_and_b32, bld.def(v1), Operand::c32(0x700u), gs_invocation_id);
+      Temp flags =
+         bld.vop2(aco_opcode::v_and_b32, bld.def(v1), Operand::c32(0x700u), gs_invocation_id);
       /* Move the bits to their desired position: 8->9, 9->19, 10->29. */
       flags = bld.vop2(aco_opcode::v_mul_u32_u24, bld.def(v1), Operand::c32(0x80402u), flags);
       /* Remove garbage bits that are a byproduct of the multiplication. */
-      bld.vop2(aco_opcode::v_and_b32, Definition(get_ssa_temp(ctx, &instr->dest.ssa)), Operand::c32(0x20080200), flags);
+      bld.vop2(aco_opcode::v_and_b32, Definition(get_ssa_temp(ctx, &instr->dest.ssa)),
+               Operand::c32(0x20080200), flags);
       break;
    }
    case nir_intrinsic_load_packed_passthrough_primitive_amd: {
@@ -10987,10 +10988,10 @@ export_fs_mrt_color(isel_context* ctx, int slot)
 
    slot -= FRAG_RESULT_DATA0;
    target = V_008DFC_SQ_EXP_MRT + slot;
-   col_format = (ctx->options->key.fs.col_format >> (4 * slot)) & 0xf;
+   col_format = (ctx->options->key.ps.col_format >> (4 * slot)) & 0xf;
 
-   bool is_int8 = (ctx->options->key.fs.is_int8 >> slot) & 1;
-   bool is_int10 = (ctx->options->key.fs.is_int10 >> slot) & 1;
+   bool is_int8 = (ctx->options->key.ps.is_int8 >> slot) & 1;
+   bool is_int10 = (ctx->options->key.ps.is_int10 >> slot) & 1;
    bool is_16bit = values[0].regClass() == v2b;
 
    /* Replace NaN by zero (only 32-bit) to fix game bugs if requested. */

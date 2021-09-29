@@ -358,8 +358,10 @@ void si_begin_new_gfx_cs(struct si_context *ctx, bool first_cs)
                  SI_CONTEXT_INV_L2 | SI_CONTEXT_START_PIPELINE_STATS;
    ctx->pipeline_stats_enabled = -1;
 
-   /* We don't know if the last draw used NGG. */
-   if (ctx->screen->info.has_vgt_flush_ngg_legacy_bug)
+   /* We don't know if the last draw used NGG because it can be a different process.
+    * When switching NGG->legacy, we need to flush VGT for certain hw generations.
+    */
+   if (ctx->screen->info.has_vgt_flush_ngg_legacy_bug && !ctx->ngg)
       ctx->flags |= SI_CONTEXT_VGT_FLUSH;
 
    if (ctx->border_color_buffer) {

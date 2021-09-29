@@ -604,6 +604,9 @@ struct vtn_value {
    /* Valid for vtn_value_type_constant to indicate the value is OpConstantNull. */
    bool is_null_constant:1;
 
+   /* Valid when all the members of the value are undef. */
+   bool is_undef_constant:1;
+
    const char *name;
    struct vtn_decoration *decoration;
    struct vtn_type *type;
@@ -695,6 +698,9 @@ struct vtn_builder {
 
    /* True if we need to fix up CS OpControlBarrier */
    bool wa_glslang_cs_barrier;
+
+   /* True if we need to ignore undef initializers */
+   bool wa_llvm_spirv_ignore_workgroup_initializer;
 
    /* Workaround discard bugs in HLSL -> SPIR-V compilers */
    bool uses_demote_to_helper_invocation;

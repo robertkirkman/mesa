@@ -91,6 +91,11 @@ typedef uint32_t xcb_window_t;
 
 #include "wsi_common.h"
 
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 /* Helper to determine if we should compile
  * any of the Android AHB support.
  *
@@ -345,34 +350,6 @@ struct radv_pipeline_cache {
    bool modified;
 
    VkAllocationCallbacks alloc;
-};
-
-struct radv_pipeline_key {
-   uint32_t instance_rate_inputs;
-   uint32_t instance_rate_divisors[MAX_VERTEX_ATTRIBS];
-   uint8_t vertex_attribute_formats[MAX_VERTEX_ATTRIBS];
-   uint32_t vertex_attribute_bindings[MAX_VERTEX_ATTRIBS];
-   uint32_t vertex_attribute_offsets[MAX_VERTEX_ATTRIBS];
-   uint32_t vertex_attribute_strides[MAX_VERTEX_ATTRIBS];
-   uint8_t vertex_binding_align[MAX_VBS];
-   enum ac_fetch_format vertex_alpha_adjust[MAX_VERTEX_ATTRIBS];
-   uint32_t vertex_post_shuffle;
-   unsigned tess_input_vertices;
-   uint32_t col_format;
-   uint32_t is_int8;
-   uint32_t is_int10;
-   uint8_t log2_ps_iter_samples;
-   uint8_t num_samples;
-   uint32_t has_multiview_view_index : 1;
-   uint32_t optimisations_disabled : 1;
-   uint32_t provoking_vtx_last : 1;
-   uint8_t topology;
-
-   /* Non-zero if a required subgroup size is specified via
-    * VK_EXT_subgroup_size_control.
-    */
-   uint8_t compute_subgroup_size;
-   bool require_full_subgroups;
 };
 
 struct radv_shader_binary;
@@ -695,9 +672,6 @@ struct radv_queue {
    struct radv_device *device;
    struct radeon_winsys_ctx *hw_ctx;
    enum radeon_ctx_priority priority;
-   uint32_t queue_family_index;
-   int queue_idx;
-   VkDeviceQueueCreateFlags flags;
 
    uint32_t scratch_size_per_wave;
    uint32_t scratch_waves;
@@ -1687,6 +1661,8 @@ struct radv_event {
 #define RADV_HASH_SHADER_ROBUST_BUFFER_ACCESS (1 << 14)
 #define RADV_HASH_SHADER_ROBUST_BUFFER_ACCESS2 (1 << 15)
 
+struct radv_pipeline_key;
+
 void radv_hash_shaders(unsigned char *hash, const VkPipelineShaderStageCreateInfo **stages,
                        const struct radv_pipeline_layout *layout,
                        const struct radv_pipeline_key *key, uint32_t flags);
@@ -2409,7 +2385,7 @@ struct radv_subpass_barrier {
    VkAccessFlags dst_access_mask;
 };
 
-void radv_subpass_barrier(struct radv_cmd_buffer *cmd_buffer,
+void radv_emit_subpass_barrier(struct radv_cmd_buffer *cmd_buffer,
                           const struct radv_subpass_barrier *barrier);
 
 struct radv_subpass_attachment {
@@ -2614,11 +2590,10 @@ void llvm_compile_shader(struct radv_device *device, unsigned shader_count,
 
 /* radv_shader_info.h */
 struct radv_shader_info;
-struct radv_shader_variant_key;
 
 void radv_nir_shader_info_pass(struct radv_device *device, const struct nir_shader *nir,
                                const struct radv_pipeline_layout *layout,
-                               const struct radv_shader_variant_key *key,
+                               const struct radv_pipeline_key *pipeline_key,
                                struct radv_shader_info *info);
 
 void radv_nir_shader_info_init(struct radv_shader_info *info);
@@ -2709,6 +2684,30 @@ si_conv_gl_prim_to_vertices(unsigned gl_prim)
    case 0xc: /* GL_TRIANGLES_ADJACENCY_ARB */
       return 6;
    case 7: /* GL_QUADS */
+      return V_028A6C_TRISTRIP;
+   default:
+      assert(0);
+      return 0;
+   }
+}
+
+static inline uint32_t
+si_conv_prim_to_gs_out(enum VkPrimitiveTopology topology)
+{
+   switch (topology) {
+   case VK_PRIMITIVE_TOPOLOGY_POINT_LIST:
+   case VK_PRIMITIVE_TOPOLOGY_PATCH_LIST:
+      return V_028A6C_POINTLIST;
+   case VK_PRIMITIVE_TOPOLOGY_LINE_LIST:
+   case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP:
+   case VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY:
+   case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY:
+      return V_028A6C_LINESTRIP;
+   case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST:
+   case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP:
+   case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN:
+   case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY:
+   case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP_WITH_ADJACENCY:
       return V_028A6C_TRISTRIP;
    default:
       assert(0);
@@ -2902,5 +2901,9 @@ RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_render_pass, VkRenderPass)
 RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_sampler, VkSampler)
 RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_sampler_ycbcr_conversion, VkSamplerYcbcrConversion)
 RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_semaphore, VkSemaphore)
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* RADV_PRIVATE_H */

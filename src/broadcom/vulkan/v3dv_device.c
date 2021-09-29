@@ -1676,13 +1676,15 @@ v3dv_EnumerateDeviceLayerProperties(VkPhysicalDevice physicalDevice,
 }
 
 static VkResult
-queue_init(struct v3dv_device *device, struct v3dv_queue *queue)
+queue_init(struct v3dv_device *device, struct v3dv_queue *queue,
+           const VkDeviceQueueCreateInfo *create_info,
+           uint32_t index_in_family)
 {
-   VkResult result = vk_queue_init(&queue->vk, &device->vk);
+   VkResult result = vk_queue_init(&queue->vk, &device->vk, create_info,
+                                   index_in_family);
    if (result != VK_SUCCESS)
       return result;
    queue->device = device;
-   queue->flags = 0;
    queue->noop_job = NULL;
    list_inithead(&queue->submit_wait_list);
    pthread_mutex_init(&queue->mutex, NULL);
@@ -1778,7 +1780,8 @@ v3dv_CreateDevice(VkPhysicalDevice physicalDevice,
 
    pthread_mutex_init(&device->mutex, NULL);
 
-   result = queue_init(device, &device->queue);
+   result = queue_init(device, &device->queue,
+                       pCreateInfo->pQueueCreateInfos, 0);
    if (result != VK_SUCCESS)
       goto fail;
 
@@ -1856,20 +1859,6 @@ v3dv_DestroyDevice(VkDevice _device,
 
    vk_device_finish(&device->vk);
    vk_free2(&device->vk.alloc, pAllocator, device);
-}
-
-VKAPI_ATTR void VKAPI_CALL
-v3dv_GetDeviceQueue(VkDevice _device,
-                    uint32_t queueFamilyIndex,
-                    uint32_t queueIndex,
-                    VkQueue *pQueue)
-{
-   V3DV_FROM_HANDLE(v3dv_device, device, _device);
-
-   assert(queueIndex == 0);
-   assert(queueFamilyIndex == 0);
-
-   *pQueue = v3dv_queue_to_handle(&device->queue);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL

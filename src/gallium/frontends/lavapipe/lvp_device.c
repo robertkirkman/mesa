@@ -44,7 +44,7 @@
     defined(VK_USE_PLATFORM_DISPLAY_KHR)
 #define LVP_USE_WSI_PLATFORM
 #endif
-#define LVP_API_VERSION VK_MAKE_VERSION(1, 1, VK_HEADER_VERSION)
+#define LVP_API_VERSION VK_MAKE_VERSION(1, 2, VK_HEADER_VERSION)
 
 VKAPI_ATTR VkResult VKAPI_CALL lvp_EnumerateInstanceVersion(uint32_t* pApiVersion)
 {
@@ -103,6 +103,7 @@ static const struct vk_device_extension_table lvp_device_extensions_supported = 
    .KHR_external_fence                    = true,
    .KHR_external_memory                   = true,
    .KHR_external_semaphore                = true,
+   .KHR_shader_float_controls             = true,
    .KHR_get_memory_requirements2          = true,
 #ifdef LVP_USE_WSI_PLATFORM
    .KHR_incremental_present               = true,
@@ -466,6 +467,63 @@ lvp_get_physical_device_features_1_1(struct lvp_physical_device *pdevice,
    f->shaderDrawParameters                = true;
 }
 
+static void
+lvp_get_physical_device_features_1_2(struct lvp_physical_device *pdevice,
+                                     VkPhysicalDeviceVulkan12Features *f)
+{
+   assert(f->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES);
+
+   f->samplerMirrorClampToEdge = true;
+   f->drawIndirectCount = true;
+   f->storageBuffer8BitAccess = true;
+   f->uniformAndStorageBuffer8BitAccess = true;
+   f->storagePushConstant8 = true;
+   f->shaderBufferInt64Atomics = true;
+   f->shaderSharedInt64Atomics = true;
+   f->shaderFloat16 = pdevice->pscreen->get_shader_param(pdevice->pscreen, PIPE_SHADER_FRAGMENT, PIPE_SHADER_CAP_FP16) != 0;
+   f->shaderInt8 = true;
+
+   f->descriptorIndexing = false;
+   f->shaderInputAttachmentArrayDynamicIndexing = false;
+   f->shaderUniformTexelBufferArrayDynamicIndexing = false;
+   f->shaderStorageTexelBufferArrayDynamicIndexing = false;
+   f->shaderUniformBufferArrayNonUniformIndexing = false;
+   f->shaderSampledImageArrayNonUniformIndexing = false;
+   f->shaderStorageBufferArrayNonUniformIndexing = false;
+   f->shaderStorageImageArrayNonUniformIndexing = false;
+   f->shaderInputAttachmentArrayNonUniformIndexing = false;
+   f->shaderUniformTexelBufferArrayNonUniformIndexing = false;
+   f->shaderStorageTexelBufferArrayNonUniformIndexing = false;
+   f->descriptorBindingUniformBufferUpdateAfterBind = false;
+   f->descriptorBindingSampledImageUpdateAfterBind = false;
+   f->descriptorBindingStorageImageUpdateAfterBind = false;
+   f->descriptorBindingStorageBufferUpdateAfterBind = false;
+   f->descriptorBindingUniformTexelBufferUpdateAfterBind = false;
+   f->descriptorBindingStorageTexelBufferUpdateAfterBind = false;
+   f->descriptorBindingUpdateUnusedWhilePending = false;
+   f->descriptorBindingPartiallyBound = false;
+   f->descriptorBindingVariableDescriptorCount = false;
+   f->runtimeDescriptorArray = false;
+
+   f->samplerFilterMinmax = true;
+   f->scalarBlockLayout = true;
+   f->imagelessFramebuffer = true;
+   f->uniformBufferStandardLayout = true;
+   f->shaderSubgroupExtendedTypes = true;
+   f->separateDepthStencilLayouts = true;
+   f->hostQueryReset = true;
+   f->timelineSemaphore = true;
+   f->bufferDeviceAddress = true;
+   f->bufferDeviceAddressCaptureReplay = false;
+   f->bufferDeviceAddressMultiDevice = false;
+   f->vulkanMemoryModel = false;
+   f->vulkanMemoryModelDeviceScope = false;
+   f->vulkanMemoryModelAvailabilityVisibilityChains = false;
+   f->shaderOutputViewportIndex = true;
+   f->shaderOutputLayer = true;
+   f->subgroupBroadcastDynamicId = true;
+}
+
 VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceFeatures2(
    VkPhysicalDevice                            physicalDevice,
    VkPhysicalDeviceFeatures2                  *pFeatures)
@@ -478,46 +536,19 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceFeatures2(
    };
    lvp_get_physical_device_features_1_1(pdevice, &core_1_1);
 
-#define CORE_FEATURE(major, minor, feature) \
-   features->feature = core_##major##_##minor.feature
+   VkPhysicalDeviceVulkan12Features core_1_2 = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+   };
+   lvp_get_physical_device_features_1_2(pdevice, &core_1_2);
 
    vk_foreach_struct(ext, pFeatures->pNext) {
+
+      if (vk_get_physical_device_core_1_1_feature_ext(ext, &core_1_1))
+         continue;
+      if (vk_get_physical_device_core_1_2_feature_ext(ext, &core_1_2))
+         continue;
+
       switch (ext->sType) {
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTERS_FEATURES: {
-         VkPhysicalDeviceVariablePointersFeatures *features = (void *)ext;
-         CORE_FEATURE(1, 1, variablePointersStorageBuffer);
-         CORE_FEATURE(1, 1, variablePointers);
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES: {
-         VkPhysicalDeviceShaderDrawParametersFeatures *features =
-            (VkPhysicalDeviceShaderDrawParametersFeatures*)ext;
-         CORE_FEATURE(1, 1, shaderDrawParameters);
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROTECTED_MEMORY_FEATURES: {
-         VkPhysicalDeviceProtectedMemoryFeatures *features =
-            (VkPhysicalDeviceProtectedMemoryFeatures*)ext;
-         CORE_FEATURE(1, 1, protectedMemory);
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES: {
-         VkPhysicalDevice8BitStorageFeaturesKHR *features =
-            (VkPhysicalDevice8BitStorageFeaturesKHR *)ext;
-         features->storageBuffer8BitAccess = true;
-         features->uniformAndStorageBuffer8BitAccess = true;
-         features->storagePushConstant8 = true;
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES: {
-         VkPhysicalDevice16BitStorageFeatures *features =
-            (VkPhysicalDevice16BitStorageFeatures*)ext;
-         CORE_FEATURE(1, 1, storageBuffer16BitAccess);
-         CORE_FEATURE(1, 1, uniformAndStorageBuffer16BitAccess);
-         CORE_FEATURE(1, 1, storagePushConstant16);
-         CORE_FEATURE(1, 1, storageInputOutput16);
-         break;
-      }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIVATE_DATA_FEATURES_EXT: {
          VkPhysicalDevicePrivateDataFeaturesEXT *features =
             (VkPhysicalDevicePrivateDataFeaturesEXT *)ext;
@@ -575,89 +606,10 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceFeatures2(
          features->inheritedConditionalRendering = false;
          break;
       }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES: {
-         VkPhysicalDeviceTimelineSemaphoreFeatures *features =
-            (VkPhysicalDeviceTimelineSemaphoreFeatures*)ext;
-         features->timelineSemaphore = true;
-         break;
-      }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT: {
          VkPhysicalDeviceExtendedDynamicStateFeaturesEXT *features =
             (VkPhysicalDeviceExtendedDynamicStateFeaturesEXT*)ext;
          features->extendedDynamicState = true;
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES: {
-         VkPhysicalDeviceMultiviewFeatures *features = (VkPhysicalDeviceMultiviewFeatures*)ext;
-         CORE_FEATURE(1, 1, multiview);
-         CORE_FEATURE(1, 1, multiviewGeometryShader);
-         CORE_FEATURE(1, 1, multiviewTessellationShader);
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES: {
-         lvp_get_physical_device_features_1_1(pdevice, (void *)ext);
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFORM_BUFFER_STANDARD_LAYOUT_FEATURES_KHR: {
-         VkPhysicalDeviceUniformBufferStandardLayoutFeaturesKHR *features =
-            (VkPhysicalDeviceUniformBufferStandardLayoutFeaturesKHR *)ext;
-         features->uniformBufferStandardLayout = true;
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES_EXT: {
-         VkPhysicalDeviceScalarBlockLayoutFeaturesEXT *features =
-            (VkPhysicalDeviceScalarBlockLayoutFeaturesEXT *)ext;
-         features->scalarBlockLayout = true;
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES: {
-         VkPhysicalDeviceSamplerYcbcrConversionFeatures *features =
-            (VkPhysicalDeviceSamplerYcbcrConversionFeatures *) ext;
-         CORE_FEATURE(1, 1, samplerYcbcrConversion);
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES_EXT: {
-         VkPhysicalDeviceHostQueryResetFeaturesEXT *features =
-            (VkPhysicalDeviceHostQueryResetFeaturesEXT *)ext;
-         features->hostQueryReset = true;
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES_KHR: {
-         VkPhysicalDeviceBufferDeviceAddressFeaturesKHR *features = (void *)ext;
-         features->bufferDeviceAddress = true;
-         features->bufferDeviceAddressCaptureReplay = false;
-         features->bufferDeviceAddressMultiDevice = false;
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES: {
-         VkPhysicalDeviceShaderFloat16Int8Features *features =
-            (VkPhysicalDeviceShaderFloat16Int8Features*)ext;
-         features->shaderFloat16 = pdevice->pscreen->get_shader_param(pdevice->pscreen, PIPE_SHADER_FRAGMENT, PIPE_SHADER_CAP_FP16) != 0;
-         features->shaderInt8 = true;
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES_KHR: {
-         VkPhysicalDeviceShaderAtomicInt64FeaturesKHR *features = (void *)ext;
-         features->shaderBufferInt64Atomics = true;
-         features->shaderSharedInt64Atomics = true;
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGELESS_FRAMEBUFFER_FEATURES: {
-         VkPhysicalDeviceImagelessFramebufferFeatures *features =
-            (VkPhysicalDeviceImagelessFramebufferFeatures*)ext;
-         features->imagelessFramebuffer = true;
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_EXTENDED_TYPES_FEATURES: {
-         VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures *features =
-            (VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures *)ext;
-         features->shaderSubgroupExtendedTypes = true;
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SEPARATE_DEPTH_STENCIL_LAYOUTS_FEATURES_KHR: {
-         VkPhysicalDeviceSeparateDepthStencilLayoutsFeaturesKHR *features =
-            (VkPhysicalDeviceSeparateDepthStencilLayoutsFeaturesKHR *)ext;
-         features->separateDepthStencilLayouts = true;
          break;
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT: {
@@ -892,6 +844,83 @@ lvp_get_physical_device_properties_1_1(struct lvp_physical_device *pdevice,
    p->maxMemoryAllocationSize = (1u << 31);
 }
 
+static void
+lvp_get_physical_device_properties_1_2(struct lvp_physical_device *pdevice,
+                                       VkPhysicalDeviceVulkan12Properties *p)
+{
+   p->driverID = VK_DRIVER_ID_MESA_LLVMPIPE;
+   snprintf(p->driverName, VK_MAX_DRIVER_NAME_SIZE, "llvmpipe");
+   snprintf(p->driverInfo, VK_MAX_DRIVER_INFO_SIZE, "Mesa " PACKAGE_VERSION MESA_GIT_SHA1
+#ifdef MESA_LLVM_VERSION_STRING
+                  " (LLVM " MESA_LLVM_VERSION_STRING ")"
+#endif
+            );
+
+   p->conformanceVersion = (VkConformanceVersion){
+      .major = 0,
+      .minor = 0,
+      .subminor = 0,
+      .patch = 0,
+   };
+
+   p->denormBehaviorIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL_KHR;
+   p->roundingModeIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL_KHR;
+   p->shaderDenormFlushToZeroFloat16 = false;
+   p->shaderDenormPreserveFloat16 = false;
+   p->shaderRoundingModeRTEFloat16 = true;
+   p->shaderRoundingModeRTZFloat16 = false;
+   p->shaderSignedZeroInfNanPreserveFloat16 = true;
+
+   p->shaderDenormFlushToZeroFloat32 = false;
+   p->shaderDenormPreserveFloat32 = false;
+   p->shaderRoundingModeRTEFloat32 = true;
+   p->shaderRoundingModeRTZFloat32 = false;
+   p->shaderSignedZeroInfNanPreserveFloat32 = true;
+
+   p->shaderDenormFlushToZeroFloat64 = false;
+   p->shaderDenormPreserveFloat64 = false;
+   p->shaderRoundingModeRTEFloat64 = true;
+   p->shaderRoundingModeRTZFloat64 = false;
+   p->shaderSignedZeroInfNanPreserveFloat64 = true;
+
+   p->maxUpdateAfterBindDescriptorsInAllPools = UINT32_MAX / 64;
+   p->shaderUniformBufferArrayNonUniformIndexingNative = false;
+   p->shaderSampledImageArrayNonUniformIndexingNative = false;
+   p->shaderStorageBufferArrayNonUniformIndexingNative = false;
+   p->shaderStorageImageArrayNonUniformIndexingNative = false;
+   p->shaderInputAttachmentArrayNonUniformIndexingNative = false;
+   p->robustBufferAccessUpdateAfterBind = true;
+   p->quadDivergentImplicitLod = false;
+
+   size_t max_descriptor_set_size = 65536; //TODO
+   p->maxPerStageDescriptorUpdateAfterBindSamplers = max_descriptor_set_size;
+   p->maxPerStageDescriptorUpdateAfterBindUniformBuffers = max_descriptor_set_size;
+   p->maxPerStageDescriptorUpdateAfterBindStorageBuffers = max_descriptor_set_size;
+   p->maxPerStageDescriptorUpdateAfterBindSampledImages = max_descriptor_set_size;
+   p->maxPerStageDescriptorUpdateAfterBindStorageImages = max_descriptor_set_size;
+   p->maxPerStageDescriptorUpdateAfterBindInputAttachments = max_descriptor_set_size;
+   p->maxPerStageUpdateAfterBindResources = max_descriptor_set_size;
+   p->maxDescriptorSetUpdateAfterBindSamplers = max_descriptor_set_size;
+   p->maxDescriptorSetUpdateAfterBindUniformBuffers = max_descriptor_set_size;
+   p->maxDescriptorSetUpdateAfterBindUniformBuffersDynamic = 16;
+   p->maxDescriptorSetUpdateAfterBindStorageBuffers = max_descriptor_set_size;
+   p->maxDescriptorSetUpdateAfterBindStorageBuffersDynamic = 16;
+   p->maxDescriptorSetUpdateAfterBindSampledImages = max_descriptor_set_size;
+   p->maxDescriptorSetUpdateAfterBindStorageImages = max_descriptor_set_size;
+   p->maxDescriptorSetUpdateAfterBindInputAttachments = max_descriptor_set_size;
+
+   p->supportedDepthResolveModes = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT | VK_RESOLVE_MODE_AVERAGE_BIT;
+   p->supportedStencilResolveModes = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+   p->independentResolveNone = false;
+   p->independentResolve = false;
+
+   p->filterMinmaxImageComponentMapping = true;
+   p->filterMinmaxSingleComponentFormats = true;
+
+   p->maxTimelineSemaphoreValueDifference = UINT64_MAX;
+   p->framebufferIntegerColorSampleCounts = VK_SAMPLE_COUNT_1_BIT;
+}
+
 VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceProperties2(
    VkPhysicalDevice                            physicalDevice,
    VkPhysicalDeviceProperties2                *pProperties)
@@ -904,44 +933,22 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceProperties2(
    };
    lvp_get_physical_device_properties_1_1(pdevice, &core_1_1);
 
-#define CORE_RENAMED_PROPERTY(major, minor, ext_property, core_property) \
-   memcpy(&properties->ext_property, &core_##major##_##minor.core_property, \
-          sizeof(core_##major##_##minor.core_property))
-
-#define CORE_PROPERTY(major, minor, property) \
-   CORE_RENAMED_PROPERTY(major, minor, property, property)
+   VkPhysicalDeviceVulkan12Properties core_1_2 = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES,
+   };
+   lvp_get_physical_device_properties_1_2(pdevice, &core_1_2);
 
    vk_foreach_struct(ext, pProperties->pNext) {
-      switch (ext->sType) {
 
+      if (vk_get_physical_device_core_1_1_property_ext(ext, &core_1_1))
+         continue;
+      if (vk_get_physical_device_core_1_2_property_ext(ext, &core_1_2))
+         continue;
+      switch (ext->sType) {
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR: {
          VkPhysicalDevicePushDescriptorPropertiesKHR *properties =
             (VkPhysicalDevicePushDescriptorPropertiesKHR *) ext;
          properties->maxPushDescriptors = MAX_PUSH_DESCRIPTORS;
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES: {
-         VkPhysicalDeviceMaintenance3Properties *properties =
-            (VkPhysicalDeviceMaintenance3Properties*)ext;
-         CORE_PROPERTY(1, 1, maxPerSetDescriptors);
-         CORE_PROPERTY(1, 1, maxMemoryAllocationSize);
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES_KHR: {
-         VkPhysicalDeviceDriverPropertiesKHR *driver_props =
-            (VkPhysicalDeviceDriverPropertiesKHR *) ext;
-         driver_props->driverID = VK_DRIVER_ID_MESA_LLVMPIPE;
-         snprintf(driver_props->driverName, VK_MAX_DRIVER_NAME_SIZE_KHR, "llvmpipe");
-         snprintf(driver_props->driverInfo, VK_MAX_DRIVER_INFO_SIZE_KHR,
-                  "Mesa " PACKAGE_VERSION MESA_GIT_SHA1
-#ifdef MESA_LLVM_VERSION_STRING
-                  " (LLVM " MESA_LLVM_VERSION_STRING ")"
-#endif
-                 );
-         driver_props->conformanceVersion.major = 1;
-         driver_props->conformanceVersion.minor = 0;
-         driver_props->conformanceVersion.subminor = 0;
-         driver_props->conformanceVersion.patch = 0;;
          break;
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_POINT_CLIPPING_PROPERTIES: {
@@ -974,41 +981,6 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceProperties2(
          properties->transformFeedbackDraw = true;
          break;
       }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_PROPERTIES: {
-         VkPhysicalDeviceMultiviewProperties *properties =
-            (VkPhysicalDeviceMultiviewProperties *)ext;
-         CORE_PROPERTY(1, 1, maxMultiviewViewCount);
-         CORE_PROPERTY(1, 1, maxMultiviewInstanceIndex);
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_PROPERTIES: {
-         VkPhysicalDeviceTimelineSemaphoreProperties *properties =
-            (VkPhysicalDeviceTimelineSemaphoreProperties *)ext;
-         properties->maxTimelineSemaphoreValueDifference = UINT64_MAX;
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES: {
-         VkPhysicalDeviceIDProperties *properties =
-            (VkPhysicalDeviceIDProperties *)ext;
-         CORE_PROPERTY(1, 1, deviceUUID);
-         CORE_PROPERTY(1, 1, driverUUID);
-         CORE_PROPERTY(1, 1, deviceLUID);
-         CORE_PROPERTY(1, 1, deviceLUIDValid);
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROTECTED_MEMORY_PROPERTIES: {
-         VkPhysicalDeviceProtectedMemoryProperties *properties =
-            (VkPhysicalDeviceProtectedMemoryProperties *)ext;
-         CORE_PROPERTY(1, 1, protectedNoFault);
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_FILTER_MINMAX_PROPERTIES_EXT: {
-         VkPhysicalDeviceSamplerFilterMinmaxPropertiesEXT *properties =
-            (VkPhysicalDeviceSamplerFilterMinmaxPropertiesEXT *)ext;
-         properties->filterMinmaxImageComponentMapping = true;
-         properties->filterMinmaxSingleComponentFormats = true;
-         break;
-      }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_PROPERTIES_EXT: {
          VkPhysicalDeviceLineRasterizationPropertiesEXT *properties =
             (VkPhysicalDeviceLineRasterizationPropertiesEXT *)ext;
@@ -1023,21 +995,6 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceProperties2(
          properties->minImportedHostPointerAlignment = 4096;
          break;
       }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES: {
-         VkPhysicalDeviceSubgroupProperties *properties =
-            (VkPhysicalDeviceSubgroupProperties*)ext;
-         CORE_PROPERTY(1, 1, subgroupSize);
-         CORE_RENAMED_PROPERTY(1, 1, supportedStages,
-                               subgroupSupportedStages);
-         CORE_RENAMED_PROPERTY(1, 1, supportedOperations,
-                               subgroupSupportedOperations);
-         CORE_RENAMED_PROPERTY(1, 1, quadOperationsInAllStages,
-                               subgroupQuadOperationsInAllStages);
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES:
-         lvp_get_physical_device_properties_1_1(pdevice, (void *)ext);
-         break;
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_PROPERTIES_EXT: {
          VkPhysicalDeviceCustomBorderColorPropertiesEXT *properties =
             (VkPhysicalDeviceCustomBorderColorPropertiesEXT *)ext;
@@ -1054,15 +1011,6 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceProperties2(
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTI_DRAW_PROPERTIES_EXT: {
          VkPhysicalDeviceMultiDrawPropertiesEXT *props = (VkPhysicalDeviceMultiDrawPropertiesEXT *)ext;
          props->maxMultiDrawCount = 2048;
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES: {
-         VkPhysicalDeviceDepthStencilResolveProperties *properties =
-            (VkPhysicalDeviceDepthStencilResolveProperties *)ext;
-         properties->supportedDepthResolveModes = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT | VK_RESOLVE_MODE_AVERAGE_BIT;
-         properties->supportedStencilResolveModes = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
-         properties->independentResolveNone = false;
-         properties->independentResolve = false;
          break;
       }
       default:
@@ -1408,16 +1356,18 @@ queue_thread(void *data, void *gdata, int thread_index)
 }
 
 static VkResult
-lvp_queue_init(struct lvp_device *device, struct lvp_queue *queue)
+lvp_queue_init(struct lvp_device *device, struct lvp_queue *queue,
+               const VkDeviceQueueCreateInfo *create_info,
+               uint32_t index_in_family)
 {
-   VkResult result = vk_queue_init(&queue->vk, &device->vk);
+   VkResult result = vk_queue_init(&queue->vk, &device->vk, create_info,
+                                   index_in_family);
    if (result != VK_SUCCESS)
       return result;
 
    queue->device = device;
 
    simple_mtx_init(&queue->last_lock, mtx_plain);
-   queue->flags = 0;
    queue->timeline = 0;
    queue->ctx = device->pscreen->context_create(device->pscreen, NULL, PIPE_CONTEXT_ROBUST_BUFFER_ACCESS);
    queue->cso = cso_create_context(queue->ctx, CSO_NO_VBUF);
@@ -1490,7 +1440,10 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateDevice(
 
    device->pscreen = physical_device->pscreen;
 
-   lvp_queue_init(device, &device->queue);
+   assert(pCreateInfo->queueCreateInfoCount == 1);
+   assert(pCreateInfo->pQueueCreateInfos[0].queueFamilyIndex == 0);
+   assert(pCreateInfo->pQueueCreateInfos[0].queueCount == 1);
+   lvp_queue_init(device, &device->queue, pCreateInfo->pQueueCreateInfos, 0);
 
    *pDevice = lvp_device_to_handle(device);
 
@@ -1548,47 +1501,6 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_EnumerateDeviceLayerProperties(
 
    /* None supported at this time */
    return vk_error(NULL, VK_ERROR_LAYER_NOT_PRESENT);
-}
-
-VKAPI_ATTR void VKAPI_CALL lvp_GetDeviceQueue2(
-   VkDevice                                    _device,
-   const VkDeviceQueueInfo2*                   pQueueInfo,
-   VkQueue*                                    pQueue)
-{
-   LVP_FROM_HANDLE(lvp_device, device, _device);
-   struct lvp_queue *queue;
-
-   queue = &device->queue;
-   if (pQueueInfo->flags != queue->flags) {
-      /* From the Vulkan 1.1.70 spec:
-       *
-       * "The queue returned by vkGetDeviceQueue2 must have the same
-       * flags value from this structure as that used at device
-       * creation time in a VkDeviceQueueCreateInfo instance. If no
-       * matching flags were specified at device creation time then
-       * pQueue will return VK_NULL_HANDLE."
-       */
-      *pQueue = VK_NULL_HANDLE;
-      return;
-   }
-
-   *pQueue = lvp_queue_to_handle(queue);
-}
-
-
-VKAPI_ATTR void VKAPI_CALL lvp_GetDeviceQueue(
-   VkDevice                                    _device,
-   uint32_t                                    queueFamilyIndex,
-   uint32_t                                    queueIndex,
-   VkQueue*                                    pQueue)
-{
-   const VkDeviceQueueInfo2 info = (VkDeviceQueueInfo2) {
-      .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_INFO_2,
-      .queueFamilyIndex = queueFamilyIndex,
-      .queueIndex = queueIndex
-   };
-
-   lvp_GetDeviceQueue2(_device, &info, pQueue);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL lvp_QueueSubmit(
@@ -1710,15 +1622,8 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_DeviceWaitIdle(
 {
    LVP_FROM_HANDLE(lvp_device, device, _device);
 
-   util_queue_finish(&device->queue.queue);
-   simple_mtx_lock(&device->queue.last_lock);
-   uint64_t timeline = device->queue.last_fence_timeline;
-   if (device->queue.last_fence) {
-      device->pscreen->fence_finish(device->pscreen, NULL, device->queue.last_fence, PIPE_TIMEOUT_INFINITE);
-      device->pscreen->fence_reference(device->pscreen, &device->queue.last_fence, NULL);
-      device->queue.last_finished = timeline;
-   }
-   simple_mtx_unlock(&device->queue.last_lock);
+   lvp_QueueWaitIdle(lvp_queue_to_handle(&device->queue));
+
    return VK_SUCCESS;
 }
 

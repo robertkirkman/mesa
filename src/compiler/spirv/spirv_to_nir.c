@@ -1964,17 +1964,20 @@ vtn_handle_constant(struct vtn_builder *b, SpvOp opcode,
                   spirv_op_to_string(opcode), elem_count, val->type->length);
 
       nir_constant **elems = ralloc_array(b, nir_constant *, elem_count);
+      val->is_undef_constant = true;
       for (unsigned i = 0; i < elem_count; i++) {
-         struct vtn_value *val = vtn_untyped_value(b, w[i + 3]);
+         struct vtn_value *elem_val = vtn_untyped_value(b, w[i + 3]);
 
-         if (val->value_type == vtn_value_type_constant) {
-            elems[i] = val->constant;
+         if (elem_val->value_type == vtn_value_type_constant) {
+            elems[i] = elem_val->constant;
+            val->is_undef_constant = val->is_undef_constant &&
+                                     elem_val->is_undef_constant;
          } else {
-            vtn_fail_if(val->value_type != vtn_value_type_undef,
+            vtn_fail_if(elem_val->value_type != vtn_value_type_undef,
                         "only constants or undefs allowed for "
                         "SpvOpConstantComposite");
             /* to make it easier, just insert a NULL constant for now */
-            elems[i] = vtn_null_constant(b, val->type);
+            elems[i] = vtn_null_constant(b, elem_val->type);
          }
       }
 
@@ -4532,7 +4535,7 @@ vtn_handle_preamble_instruction(struct vtn_builder *b, SpvOp opcode,
          break;
 
       case SpvCapabilityGroups:
-         spv_check_supported(amd_shader_ballot, cap);
+         spv_check_supported(groups, cap);
          break;
 
       case SpvCapabilitySubgroupDispatch:
@@ -6038,6 +6041,29 @@ vtn_create_builder(const uint32_t *words, size_t word_count,
    b->wa_glslang_cs_barrier =
       (b->generator_id == vtn_generator_glslang_reference_front_end &&
        generator_version < 3);
+
+   /* Identifying the LLVM-SPIRV translator:
+    *
+    * The LLVM-SPIRV translator currently doesn't store any generator ID [1].
+    * Our use case involving the SPIRV-Tools linker also mean we want to check
+    * for that tool instead. Finally the SPIRV-Tools linker also stores its
+    * generator ID in the wrong location [2].
+    *
+    * [1] : https://github.com/KhronosGroup/SPIRV-LLVM-Translator/pull/1223
+    * [2] : https://github.com/KhronosGroup/SPIRV-Tools/pull/4549
+    */
+   const bool is_llvm_spirv_translator =
+      (b->generator_id == 0 &&
+       generator_version == vtn_generator_spirv_tools_linker) ||
+      b->generator_id == vtn_generator_spirv_tools_linker;
+
+   /* The LLVM-SPIRV translator generates Undef initializers for _local
+    * variables [1].
+    *
+    * [1] : https://github.com/KhronosGroup/SPIRV-LLVM-Translator/issues/1224
+    */
+   b->wa_llvm_spirv_ignore_workgroup_initializer =
+      b->options->environment == NIR_SPIRV_OPENCL && is_llvm_spirv_translator;
 
    /* words[2] == generator magic */
    unsigned value_id_bound = words[3];
