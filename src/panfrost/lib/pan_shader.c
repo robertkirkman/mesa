@@ -92,7 +92,7 @@ collect_varyings(nir_shader *s, nir_variable_mode varying_mode,
 {
         *varying_count = 0;
 
-        unsigned comps[MAX_VARYING] = { 0 };
+        unsigned comps[PAN_MAX_VARYINGS] = { 0 };
 
         nir_foreach_variable_with_modes(var, s, varying_mode) {
                 unsigned loc = var->data.driver_location;
@@ -142,6 +142,7 @@ collect_varyings(nir_shader *s, nir_variable_mode varying_mode,
                 assert(format != PIPE_FORMAT_NONE);
 
                 for (int c = 0; c < sz; ++c) {
+                        assert(loc + c < PAN_MAX_VARYINGS);
                         varyings[loc + c].location = var->data.location + c;
                         varyings[loc + c].format = format;
                 }
@@ -151,24 +152,24 @@ collect_varyings(nir_shader *s, nir_variable_mode varying_mode,
 }
 
 #if PAN_ARCH >= 6
-static enum mali_bifrost_register_file_format
+static enum mali_register_file_format
 bifrost_blend_type_from_nir(nir_alu_type nir_type)
 {
         switch(nir_type) {
         case 0: /* Render target not in use */
                 return 0;
         case nir_type_float16:
-                return MALI_BIFROST_REGISTER_FILE_FORMAT_F16;
+                return MALI_REGISTER_FILE_FORMAT_F16;
         case nir_type_float32:
-                return MALI_BIFROST_REGISTER_FILE_FORMAT_F32;
+                return MALI_REGISTER_FILE_FORMAT_F32;
         case nir_type_int32:
-                return MALI_BIFROST_REGISTER_FILE_FORMAT_I32;
+                return MALI_REGISTER_FILE_FORMAT_I32;
         case nir_type_uint32:
-                return MALI_BIFROST_REGISTER_FILE_FORMAT_U32;
+                return MALI_REGISTER_FILE_FORMAT_U32;
         case nir_type_int16:
-                return MALI_BIFROST_REGISTER_FILE_FORMAT_I16;
+                return MALI_REGISTER_FILE_FORMAT_I16;
         case nir_type_uint16:
-                return MALI_BIFROST_REGISTER_FILE_FORMAT_U16;
+                return MALI_REGISTER_FILE_FORMAT_U16;
         default:
                 unreachable("Unsupported blend shader type for NIR alu type");
                 return 0;
@@ -191,7 +192,7 @@ GENX(pan_shader_compile)(nir_shader *s,
                 enum pipe_format fmt = inputs->rt_formats[i];
                 unsigned wb_fmt = panfrost_blendable_formats_v6[fmt].writeback;
 
-                if (wb_fmt <= MALI_MFBD_COLOR_FORMAT_RAW2048)
+                if (wb_fmt < MALI_COLOR_FORMAT_R8)
                         inputs->raw_fmt_mask |= BITFIELD_BIT(i);
         }
 

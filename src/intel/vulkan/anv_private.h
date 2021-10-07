@@ -66,6 +66,7 @@
 #include "vk_alloc.h"
 #include "vk_debug_report.h"
 #include "vk_device.h"
+#include "vk_enum_defines.h"
 #include "vk_image.h"
 #include "vk_instance.h"
 #include "vk_physical_device.h"
@@ -2538,34 +2539,35 @@ enum anv_pipe_bits {
 
 static inline enum anv_pipe_bits
 anv_pipe_flush_bits_for_access_flags(struct anv_device *device,
-                                     VkAccessFlags flags)
+                                     VkAccessFlags2KHR flags)
 {
    enum anv_pipe_bits pipe_bits = 0;
 
-   u_foreach_bit(b, flags) {
-      switch ((VkAccessFlagBits)(1 << b)) {
-      case VK_ACCESS_SHADER_WRITE_BIT:
+   u_foreach_bit64(b, flags) {
+      switch ((VkAccessFlags2KHR)(1 << b)) {
+      case VK_ACCESS_2_SHADER_WRITE_BIT_KHR:
+      case VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT_KHR:
          /* We're transitioning a buffer that was previously used as write
           * destination through the data port. To make its content available
           * to future operations, flush the hdc pipeline.
           */
          pipe_bits |= ANV_PIPE_HDC_PIPELINE_FLUSH_BIT;
          break;
-      case VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT:
+      case VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT_KHR:
          /* We're transitioning a buffer that was previously used as render
           * target. To make its content available to future operations, flush
           * the render target cache.
           */
          pipe_bits |= ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT;
          break;
-      case VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT:
+      case VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT_KHR:
          /* We're transitioning a buffer that was previously used as depth
           * buffer. To make its content available to future operations, flush
           * the depth cache.
           */
          pipe_bits |= ANV_PIPE_DEPTH_CACHE_FLUSH_BIT;
          break;
-      case VK_ACCESS_TRANSFER_WRITE_BIT:
+      case VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR:
          /* We're transitioning a buffer that was previously used as a
           * transfer write destination. Generic write operations include color
           * & depth operations as well as buffer operations like :
@@ -2582,19 +2584,27 @@ anv_pipe_flush_bits_for_access_flags(struct anv_device *device,
          pipe_bits |= ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT;
          pipe_bits |= ANV_PIPE_DEPTH_CACHE_FLUSH_BIT;
          break;
-      case VK_ACCESS_MEMORY_WRITE_BIT:
+      case VK_ACCESS_2_MEMORY_WRITE_BIT_KHR:
          /* We're transitioning a buffer for generic write operations. Flush
           * all the caches.
           */
          pipe_bits |= ANV_PIPE_FLUSH_BITS;
          break;
-      case VK_ACCESS_HOST_WRITE_BIT:
+      case VK_ACCESS_2_HOST_WRITE_BIT_KHR:
          /* We're transitioning a buffer for access by CPU. Invalidate
           * all the caches. Since data and tile caches don't have invalidate,
           * we are forced to flush those as well.
           */
          pipe_bits |= ANV_PIPE_FLUSH_BITS;
          pipe_bits |= ANV_PIPE_INVALIDATE_BITS;
+         break;
+      case VK_ACCESS_2_TRANSFORM_FEEDBACK_WRITE_BIT_EXT:
+      case VK_ACCESS_2_TRANSFORM_FEEDBACK_COUNTER_WRITE_BIT_EXT:
+         /* We're transitioning a buffer written either from VS stage or from
+          * the command streamer (see CmdEndTransformFeedbackEXT), we just
+          * need to stall the CS.
+          */
+         pipe_bits |= ANV_PIPE_CS_STALL_BIT;
          break;
       default:
          break; /* Nothing to do */
@@ -2606,13 +2616,13 @@ anv_pipe_flush_bits_for_access_flags(struct anv_device *device,
 
 static inline enum anv_pipe_bits
 anv_pipe_invalidate_bits_for_access_flags(struct anv_device *device,
-                                          VkAccessFlags flags)
+                                          VkAccessFlags2KHR flags)
 {
    enum anv_pipe_bits pipe_bits = 0;
 
-   u_foreach_bit(b, flags) {
-      switch ((VkAccessFlagBits)(1 << b)) {
-      case VK_ACCESS_INDIRECT_COMMAND_READ_BIT:
+   u_foreach_bit64(b, flags) {
+      switch ((VkAccessFlags2KHR)(1 << b)) {
+      case VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT_KHR:
          /* Indirect draw commands take a buffer as input that we're going to
           * read from the command streamer to load some of the HW registers
           * (see genX_cmd_buffer.c:load_indirect_parameters). This requires a
@@ -2634,15 +2644,15 @@ anv_pipe_invalidate_bits_for_access_flags(struct anv_device *device,
           */
          pipe_bits |= ANV_PIPE_TILE_CACHE_FLUSH_BIT;
          break;
-      case VK_ACCESS_INDEX_READ_BIT:
-      case VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT:
+      case VK_ACCESS_2_INDEX_READ_BIT_KHR:
+      case VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT_KHR:
          /* We transitioning a buffer to be used for as input for vkCmdDraw*
           * commands, so we invalidate the VF cache to make sure there is no
           * stale data when we start rendering.
           */
          pipe_bits |= ANV_PIPE_VF_CACHE_INVALIDATE_BIT;
          break;
-      case VK_ACCESS_UNIFORM_READ_BIT:
+      case VK_ACCESS_2_UNIFORM_READ_BIT_KHR:
          /* We transitioning a buffer to be used as uniform data. Because
           * uniform is accessed through the data port & sampler, we need to
           * invalidate the texture cache (sampler) & constant cache (data
@@ -2654,39 +2664,40 @@ anv_pipe_invalidate_bits_for_access_flags(struct anv_device *device,
          else
             pipe_bits |= ANV_PIPE_HDC_PIPELINE_FLUSH_BIT;
          break;
-      case VK_ACCESS_SHADER_READ_BIT:
-      case VK_ACCESS_INPUT_ATTACHMENT_READ_BIT:
-      case VK_ACCESS_TRANSFER_READ_BIT:
+      case VK_ACCESS_2_SHADER_READ_BIT_KHR:
+      case VK_ACCESS_2_INPUT_ATTACHMENT_READ_BIT_KHR:
+      case VK_ACCESS_2_TRANSFER_READ_BIT_KHR:
          /* Transitioning a buffer to be read through the sampler, so
           * invalidate the texture cache, we don't want any stale data.
           */
          pipe_bits |= ANV_PIPE_TEXTURE_CACHE_INVALIDATE_BIT;
          break;
-      case VK_ACCESS_MEMORY_READ_BIT:
+      case VK_ACCESS_2_MEMORY_READ_BIT_KHR:
          /* Transitioning a buffer for generic read, invalidate all the
           * caches.
           */
          pipe_bits |= ANV_PIPE_INVALIDATE_BITS;
          break;
-      case VK_ACCESS_MEMORY_WRITE_BIT:
+      case VK_ACCESS_2_MEMORY_WRITE_BIT_KHR:
          /* Generic write, make sure all previously written things land in
           * memory.
           */
          pipe_bits |= ANV_PIPE_FLUSH_BITS;
          break;
-      case VK_ACCESS_CONDITIONAL_RENDERING_READ_BIT_EXT:
-         /* Transitioning a buffer for conditional rendering. We'll load the
-          * content of this buffer into HW registers using the command
-          * streamer, so we need to stall the command streamer to make sure
-          * any in-flight flush operations have completed. Needs tile cache 
-          * and data cache flush because command stream isn't L3 coherent yet.
+      case VK_ACCESS_2_CONDITIONAL_RENDERING_READ_BIT_EXT:
+      case VK_ACCESS_2_TRANSFORM_FEEDBACK_COUNTER_READ_BIT_EXT:
+         /* Transitioning a buffer for conditional rendering or transform
+          * feedback. We'll load the content of this buffer into HW registers
+          * using the command streamer, so we need to stall the command
+          * streamer , so we need to stall the command streamer to make sure
+          * any in-flight flush operations have completed.
           */
          pipe_bits |= ANV_PIPE_CS_STALL_BIT;
          pipe_bits |= ANV_PIPE_TILE_CACHE_FLUSH_BIT;
          pipe_bits |= ANV_PIPE_DATA_CACHE_FLUSH_BIT;
          break;
-      case VK_ACCESS_HOST_READ_BIT:
-         /* We're transitioning a buffer that was written by CPU.  Flush 
+      case VK_ACCESS_2_HOST_READ_BIT_KHR:
+         /* We're transitioning a buffer that was written by CPU.  Flush
           * all the caches.
           */
          pipe_bits |= ANV_PIPE_FLUSH_BITS;
@@ -3091,6 +3102,7 @@ struct anv_cmd_pool {
    struct list_head                             cmd_buffers;
 
    VkCommandPoolCreateFlags                     flags;
+   struct anv_queue_family *                    queue_family;
 };
 
 #define ANV_MIN_CMD_BUFFER_BATCH_SIZE 8192
@@ -3694,6 +3706,12 @@ anv_pipeline_has_stage(const struct anv_graphics_pipeline *pipeline,
                        gl_shader_stage stage)
 {
    return (pipeline->active_stages & mesa_to_vk_shader_stage(stage)) != 0;
+}
+
+static inline bool
+anv_pipeline_is_primitive(const struct anv_graphics_pipeline *pipeline)
+{
+   return anv_pipeline_has_stage(pipeline, MESA_SHADER_VERTEX);
 }
 
 #define ANV_DECL_GET_GRAPHICS_PROG_DATA_FUNC(prefix, stage)             \
@@ -4408,10 +4426,15 @@ struct anv_image_create_info {
    isl_surf_usage_flags_t isl_extra_usage_flags;
 };
 
-VkResult anv_image_create(VkDevice _device,
-                          const struct anv_image_create_info *info,
-                          const VkAllocationCallbacks* alloc,
-                          VkImage *pImage);
+VkResult anv_image_init(struct anv_device *device, struct anv_image *image,
+                        const struct anv_image_create_info *create_info);
+
+void anv_image_finish(struct anv_image *image);
+
+void anv_image_get_memory_requirements(struct anv_device *device,
+                                       struct anv_image *image,
+                                       VkImageAspectFlags aspects,
+                                       VkMemoryRequirements2 *pMemoryRequirements);
 
 enum isl_format
 anv_isl_format_for_descriptor_type(const struct anv_device *device,
@@ -4702,7 +4725,7 @@ anv_add_pending_pipe_bits(struct anv_cmd_buffer* cmd_buffer,
                           const char* reason)
 {
    cmd_buffer->state.pending_pipe_bits |= bits;
-   if (unlikely(INTEL_DEBUG & DEBUG_PIPE_CONTROL) && bits)
+   if ((INTEL_DEBUG & DEBUG_PIPE_CONTROL) && bits)
    {
       fputs("pc: add ", stderr);
       anv_dump_pipe_bits(bits);

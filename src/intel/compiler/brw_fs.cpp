@@ -716,7 +716,7 @@ fs_visitor::limit_dispatch_width(unsigned n, const char *msg)
    } else {
       max_dispatch_width = MIN2(max_dispatch_width, n);
       brw_shader_perf_log(compiler, log_data,
-                          "Shader dispatch width limited to SIMD%d: %s",
+                          "Shader dispatch width limited to SIMD%d: %s\n",
                           n, msg);
    }
 }
@@ -9585,6 +9585,28 @@ brw_nir_move_interpolation_to_top(nir_shader *nir)
    return progress;
 }
 
+static bool
+brw_nir_demote_sample_qualifiers_instr(nir_builder *b,
+                                       nir_instr *instr,
+                                       UNUSED void *cb_data)
+{
+   if (instr->type != nir_instr_type_intrinsic)
+      return false;
+
+   nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
+   if (intrin->intrinsic != nir_intrinsic_load_barycentric_sample &&
+       intrin->intrinsic != nir_intrinsic_load_barycentric_at_sample)
+      return false;
+
+   b->cursor = nir_before_instr(instr);
+   nir_ssa_def *centroid =
+      nir_load_barycentric(b, nir_intrinsic_load_barycentric_centroid,
+                           nir_intrinsic_interp_mode(intrin));
+   nir_ssa_def_rewrite_uses(&intrin->dest.ssa, centroid);
+   nir_instr_remove(instr);
+   return true;
+}
+
 /**
  * Demote per-sample barycentric intrinsics to centroid.
  *
@@ -9593,41 +9615,11 @@ brw_nir_move_interpolation_to_top(nir_shader *nir)
 bool
 brw_nir_demote_sample_qualifiers(nir_shader *nir)
 {
-   bool progress = true;
-
-   nir_foreach_function(f, nir) {
-      if (!f->impl)
-         continue;
-
-      nir_builder b;
-      nir_builder_init(&b, f->impl);
-
-      nir_foreach_block(block, f->impl) {
-         nir_foreach_instr_safe(instr, block) {
-            if (instr->type != nir_instr_type_intrinsic)
-               continue;
-
-            nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
-            if (intrin->intrinsic != nir_intrinsic_load_barycentric_sample &&
-                intrin->intrinsic != nir_intrinsic_load_barycentric_at_sample)
-               continue;
-
-            b.cursor = nir_before_instr(instr);
-            nir_ssa_def *centroid =
-               nir_load_barycentric(&b, nir_intrinsic_load_barycentric_centroid,
-                                    nir_intrinsic_interp_mode(intrin));
-            nir_ssa_def_rewrite_uses(&intrin->dest.ssa,
-                                     centroid);
-            nir_instr_remove(instr);
-            progress = true;
-         }
-      }
-
-      nir_metadata_preserve(f->impl, nir_metadata_block_index |
-                                     nir_metadata_dominance);
-   }
-
-   return progress;
+   return nir_shader_instructions_pass(nir,
+                                       brw_nir_demote_sample_qualifiers_instr,
+                                       nir_metadata_block_index |
+                                       nir_metadata_dominance,
+                                       NULL);
 }
 
 void
@@ -9810,7 +9802,7 @@ brw_compile_fs(const struct brw_compiler *compiler,
       v16->import_uniforms(v8);
       if (!v16->run_fs(allow_spilling, params->use_rep_send)) {
          brw_shader_perf_log(compiler, params->log_data,
-                             "SIMD16 shader failed to compile: %s",
+                             "SIMD16 shader failed to compile: %s\n",
                              v16->fail_msg);
       } else {
          simd16_cfg = v16->cfg;
@@ -9838,7 +9830,7 @@ brw_compile_fs(const struct brw_compiler *compiler,
       v32->import_uniforms(v8);
       if (!v32->run_fs(allow_spilling, false)) {
          brw_shader_perf_log(compiler, params->log_data,
-                             "SIMD32 shader failed to compile: %s",
+                             "SIMD32 shader failed to compile: %s\n",
                              v32->fail_msg);
       } else {
          const performance &perf = v32->performance_analysis.require();
@@ -10109,7 +10101,8 @@ brw_compile_cs(const struct brw_compiler *compiler,
    struct brw_cs_prog_data *prog_data = params->prog_data;
    int shader_time_index = params->shader_time ? params->shader_time_index : -1;
 
-   const bool debug_enabled = INTEL_DEBUG & DEBUG_CS;
+   const bool debug_enabled =
+      INTEL_DEBUG & (params->debug_flag ? params->debug_flag : DEBUG_CS);
 
    prog_data->base.stage = MESA_SHADER_COMPUTE;
    prog_data->base.total_shared = nir->info.shared_size;
@@ -10211,7 +10204,7 @@ brw_compile_cs(const struct brw_compiler *compiler,
       const bool allow_spilling = generate_all || v == NULL;
       if (!v16->run_cs(allow_spilling)) {
          brw_shader_perf_log(compiler, params->log_data,
-                             "SIMD16 shader failed to compile: %s",
+                             "SIMD16 shader failed to compile: %s\n",
                              v16->fail_msg);
          if (!v) {
             assert(v8 == NULL);
@@ -10259,7 +10252,7 @@ brw_compile_cs(const struct brw_compiler *compiler,
       const bool allow_spilling = generate_all || v == NULL;
       if (!v32->run_cs(allow_spilling)) {
          brw_shader_perf_log(compiler, params->log_data,
-                             "SIMD32 shader failed to compile: %s",
+                             "SIMD32 shader failed to compile: %s\n",
                              v32->fail_msg);
          if (!v) {
             assert(v8 == NULL);
@@ -10430,7 +10423,7 @@ compile_single_bs(const struct brw_compiler *compiler, void *log_data,
    bool has_spilled = false;
 
    uint8_t simd_size = 0;
-   if (likely(!(INTEL_DEBUG & DEBUG_NO8))) {
+   if (!(INTEL_DEBUG & DEBUG_NO8)) {
       v8 = new fs_visitor(compiler, log_data, mem_ctx, &key->base,
                           &prog_data->base, shader,
                           8, -1 /* shader time */, debug_enabled);
@@ -10448,14 +10441,14 @@ compile_single_bs(const struct brw_compiler *compiler, void *log_data,
       }
    }
 
-   if (!has_spilled && likely(!(INTEL_DEBUG & DEBUG_NO16))) {
+   if (!has_spilled && !(INTEL_DEBUG & DEBUG_NO16)) {
       v16 = new fs_visitor(compiler, log_data, mem_ctx, &key->base,
                            &prog_data->base, shader,
                            16, -1 /* shader time */, debug_enabled);
       const bool allow_spilling = (v == NULL);
       if (!v16->run_bs(allow_spilling)) {
          brw_shader_perf_log(compiler, log_data,
-                             "SIMD16 shader failed to compile: %s",
+                             "SIMD16 shader failed to compile: %s\n",
                              v16->fail_msg);
          if (v == NULL) {
             assert(v8 == NULL);

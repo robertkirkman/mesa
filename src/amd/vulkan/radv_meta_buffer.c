@@ -214,12 +214,13 @@ fill_buffer_shader(struct radv_cmd_buffer *cmd_buffer, struct radeon_winsys_bo *
    struct radv_device *device = cmd_buffer->device;
    uint64_t block_count = round_up_u64(size, 1024);
    struct radv_meta_saved_state saved_state;
+   struct radv_buffer dst_buffer;
 
    radv_meta_save(
       &saved_state, cmd_buffer,
       RADV_META_SAVE_COMPUTE_PIPELINE | RADV_META_SAVE_CONSTANTS | RADV_META_SAVE_DESCRIPTORS);
 
-   struct radv_buffer dst_buffer = {.bo = bo, .offset = offset, .size = size};
+   radv_buffer_init(&dst_buffer, cmd_buffer->device, bo, size, offset);
 
    radv_CmdBindPipeline(radv_cmd_buffer_to_handle(cmd_buffer), VK_PIPELINE_BIND_POINT_COMPUTE,
                         device->meta_state.buffer.fill_pipeline);
@@ -244,6 +245,8 @@ fill_buffer_shader(struct radv_cmd_buffer *cmd_buffer, struct radeon_winsys_bo *
 
    radv_CmdDispatch(radv_cmd_buffer_to_handle(cmd_buffer), block_count, 1, 1);
 
+   radv_buffer_finish(&dst_buffer);
+
    radv_meta_restore(&saved_state, cmd_buffer);
 }
 
@@ -255,13 +258,13 @@ copy_buffer_shader(struct radv_cmd_buffer *cmd_buffer, struct radeon_winsys_bo *
    struct radv_device *device = cmd_buffer->device;
    uint64_t block_count = round_up_u64(size, 1024);
    struct radv_meta_saved_state saved_state;
+   struct radv_buffer src_buffer, dst_buffer;
 
    radv_meta_save(&saved_state, cmd_buffer,
                   RADV_META_SAVE_COMPUTE_PIPELINE | RADV_META_SAVE_DESCRIPTORS);
 
-   struct radv_buffer dst_buffer = {.bo = dst_bo, .offset = dst_offset, .size = size};
-
-   struct radv_buffer src_buffer = {.bo = src_bo, .offset = src_offset, .size = size};
+   radv_buffer_init(&src_buffer, cmd_buffer->device, src_bo, size, src_offset);
+   radv_buffer_init(&dst_buffer, cmd_buffer->device, dst_bo, size, dst_offset);
 
    radv_CmdBindPipeline(radv_cmd_buffer_to_handle(cmd_buffer), VK_PIPELINE_BIND_POINT_COMPUTE,
                         device->meta_state.buffer.copy_pipeline);
@@ -289,6 +292,9 @@ copy_buffer_shader(struct radv_cmd_buffer *cmd_buffer, struct radeon_winsys_bo *
                                                    .range = size}}});
 
    radv_CmdDispatch(radv_cmd_buffer_to_handle(cmd_buffer), block_count, 1, 1);
+
+   radv_buffer_finish(&src_buffer);
+   radv_buffer_finish(&dst_buffer);
 
    radv_meta_restore(&saved_state, cmd_buffer);
 }
@@ -409,13 +415,34 @@ radv_CmdCopyBuffer2KHR(VkCommandBuffer commandBuffer, const VkCopyBufferInfo2KHR
 }
 
 void
+radv_update_buffer_cp(struct radv_cmd_buffer *cmd_buffer, uint64_t va, const void *data,
+                      uint64_t size)
+{
+   uint64_t words = size / 4;
+   bool mec = radv_cmd_buffer_uses_mec(cmd_buffer);
+
+   assert(size < RADV_BUFFER_UPDATE_THRESHOLD);
+
+   si_emit_cache_flush(cmd_buffer);
+   radeon_check_space(cmd_buffer->device->ws, cmd_buffer->cs, words + 4);
+
+   radeon_emit(cmd_buffer->cs, PKT3(PKT3_WRITE_DATA, 2 + words, 0));
+   radeon_emit(cmd_buffer->cs, S_370_DST_SEL(mec ? V_370_MEM : V_370_MEM_GRBM) |
+                                  S_370_WR_CONFIRM(1) | S_370_ENGINE_SEL(V_370_ME));
+   radeon_emit(cmd_buffer->cs, va);
+   radeon_emit(cmd_buffer->cs, va >> 32);
+   radeon_emit_array(cmd_buffer->cs, data, words);
+
+   if (unlikely(cmd_buffer->device->trace_bo))
+      radv_cmd_buffer_trace_emit(cmd_buffer);
+}
+
+void
 radv_CmdUpdateBuffer(VkCommandBuffer commandBuffer, VkBuffer dstBuffer, VkDeviceSize dstOffset,
                      VkDeviceSize dataSize, const void *pData)
 {
    RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
    RADV_FROM_HANDLE(radv_buffer, dst_buffer, dstBuffer);
-   bool mec = radv_cmd_buffer_uses_mec(cmd_buffer);
-   uint64_t words = dataSize / 4;
    uint64_t va = radv_buffer_get_va(dst_buffer->bo);
    va += dstOffset + dst_buffer->offset;
 
@@ -426,21 +453,8 @@ radv_CmdUpdateBuffer(VkCommandBuffer commandBuffer, VkBuffer dstBuffer, VkDevice
       return;
 
    if (dataSize < RADV_BUFFER_UPDATE_THRESHOLD) {
-      si_emit_cache_flush(cmd_buffer);
-
       radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, dst_buffer->bo);
-
-      radeon_check_space(cmd_buffer->device->ws, cmd_buffer->cs, words + 4);
-
-      radeon_emit(cmd_buffer->cs, PKT3(PKT3_WRITE_DATA, 2 + words, 0));
-      radeon_emit(cmd_buffer->cs, S_370_DST_SEL(mec ? V_370_MEM : V_370_MEM_GRBM) |
-                                     S_370_WR_CONFIRM(1) | S_370_ENGINE_SEL(V_370_ME));
-      radeon_emit(cmd_buffer->cs, va);
-      radeon_emit(cmd_buffer->cs, va >> 32);
-      radeon_emit_array(cmd_buffer->cs, pData, words);
-
-      if (unlikely(cmd_buffer->device->trace_bo))
-         radv_cmd_buffer_trace_emit(cmd_buffer);
+      radv_update_buffer_cp(cmd_buffer, va, pData, dataSize);
    } else {
       uint32_t buf_offset;
       radv_cmd_buffer_upload_data(cmd_buffer, dataSize, pData, &buf_offset);

@@ -527,6 +527,7 @@ struct pb_slab *si_bindless_descriptor_slab_alloc(void *priv, unsigned heap, uns
 void si_bindless_descriptor_slab_free(void *priv, struct pb_slab *pslab);
 void si_rebind_buffer(struct si_context *sctx, struct pipe_resource *buf);
 /* si_state.c */
+uint32_t si_translate_colorformat(enum chip_class chip_class, enum pipe_format format);
 void si_init_state_compute_functions(struct si_context *sctx);
 void si_init_state_functions(struct si_context *sctx);
 void si_init_screen_state_functions(struct si_screen *sscreen);
@@ -600,7 +601,10 @@ void si_init_tess_factor_ring(struct si_context *sctx);
 bool si_update_gs_ring_buffers(struct si_context *sctx);
 bool si_update_spi_tmpring_size(struct si_context *sctx, unsigned bytes);
 
-/* si_state_draw.c */
+/* si_state_draw.cpp */
+void si_set_vertex_buffer_descriptor(struct si_screen *sscreen, struct si_vertex_elements *velems,
+                                     struct pipe_vertex_buffer *vb, unsigned element_index,
+                                     uint32_t *out);
 void si_init_draw_functions_GFX6(struct si_context *sctx);
 void si_init_draw_functions_GFX7(struct si_context *sctx);
 void si_init_draw_functions_GFX8(struct si_context *sctx);

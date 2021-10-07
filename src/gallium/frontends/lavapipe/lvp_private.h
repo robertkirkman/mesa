@@ -55,6 +55,7 @@ typedef uint32_t xcb_window_t;
 #include "lvp_entrypoints.h"
 #include "vk_device.h"
 #include "vk_instance.h"
+#include "vk_image.h"
 #include "vk_physical_device.h"
 #include "vk_shader_module.h"
 #include "vk_util.h"
@@ -215,18 +216,24 @@ struct lvp_device {
 
 void lvp_device_get_cache_uuid(void *uuid);
 
+enum lvp_device_memory_type {
+   LVP_DEVICE_MEMORY_TYPE_DEFAULT,
+   LVP_DEVICE_MEMORY_TYPE_USER_PTR,
+   LVP_DEVICE_MEMORY_TYPE_OPAQUE_FD,
+};
+
 struct lvp_device_memory {
    struct vk_object_base base;
    struct pipe_memory_allocation *pmem;
    uint32_t                                     type_index;
    VkDeviceSize                                 map_size;
    void *                                       map;
-   bool is_user_ptr;
+   enum lvp_device_memory_type memory_type;
+   int                                          backed_fd;
 };
 
 struct lvp_image {
-   struct vk_object_base base;
-   VkImageType type;
+   struct vk_image vk;
    VkDeviceSize size;
    uint32_t alignment;
    struct pipe_memory_allocation *pmem;
@@ -623,7 +630,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_device_memory, base, VkDeviceMemory,
 VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_event, base, VkEvent, VK_OBJECT_TYPE_EVENT)
 VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_framebuffer, base, VkFramebuffer,
                                VK_OBJECT_TYPE_FRAMEBUFFER)
-VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_image, base, VkImage, VK_OBJECT_TYPE_IMAGE)
+VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_image, vk.base, VkImage, VK_OBJECT_TYPE_IMAGE)
 VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_image_view, base, VkImageView,
                                VK_OBJECT_TYPE_IMAGE_VIEW);
 VK_DEFINE_NONDISP_HANDLE_CASTS(lvp_pipeline_cache, base, VkPipelineCache,
@@ -675,8 +682,6 @@ lvp_vk_format_to_pipe_format(VkFormat format)
 {
    /* Some formats cause problems with CTS right now.*/
    if (format == VK_FORMAT_R4G4B4A4_UNORM_PACK16 ||
-       format == VK_FORMAT_A4R4G4B4_UNORM_PACK16_EXT || /* VK_EXT_4444_formats */
-       format == VK_FORMAT_A4B4G4R4_UNORM_PACK16_EXT || /* VK_EXT_4444_formats */
        format == VK_FORMAT_R5G5B5A1_UNORM_PACK16 ||
        format == VK_FORMAT_R8_SRGB ||
        format == VK_FORMAT_R8G8_SRGB ||

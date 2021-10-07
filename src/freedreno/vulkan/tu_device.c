@@ -202,13 +202,26 @@ tu_physical_device_init(struct tu_physical_device *device,
 {
    VkResult result = VK_SUCCESS;
 
-   device->name = fd_dev_name(&device->dev_id);
+   const char *fd_name = fd_dev_name(&device->dev_id);
+   if (strncmp(fd_name, "FD", 2) == 0) {
+      device->name = vk_asprintf(&instance->vk.alloc,
+                                 VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE,
+                                 "Turnip Adreno (TM) %s", &fd_name[2]);
+   } else {
+      device->name = vk_strdup(&instance->vk.alloc, fd_name,
+                               VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
+
+   }
+   if (!device->name) {
+      return vk_startup_errorf(instance, VK_ERROR_OUT_OF_HOST_MEMORY,
+                               "device name alloc fail");
+   }
 
    const struct fd_dev_info *info = fd_dev_info(&device->dev_id);
    if (!info) {
       result = vk_startup_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
                                  "device %s is unsupported", device->name);
-      return result;
+      goto fail_free_name;
    }
    switch (fd_dev_gen(&device->dev_id)) {
    case 6:
@@ -220,12 +233,12 @@ tu_physical_device_init(struct tu_physical_device *device,
    default:
       result = vk_startup_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
                                  "device %s is unsupported", device->name);
-      return result;
+      goto fail_free_name;
    }
    if (tu_device_get_cache_uuid(fd_dev_gpu_id(&device->dev_id), device->cache_uuid)) {
       result = vk_startup_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
                                  "cannot generate UUID");
-      return result;
+      goto fail_free_name;
    }
 
    /* The gpu id is already embedded in the uuid so we just pass "tu"
@@ -251,18 +264,24 @@ tu_physical_device_init(struct tu_physical_device *device,
                                     &supported_extensions,
                                     &dispatch_table);
    if (result != VK_SUCCESS)
-      return result;
+      goto fail_free_cache;
 
 #if TU_HAS_SURFACE
    result = tu_wsi_init(device);
    if (result != VK_SUCCESS) {
       vk_startup_errorf(instance, result, "WSI init failure");
       vk_physical_device_finish(&device->vk);
-      return result;
+      goto fail_free_cache;
    }
 #endif
 
    return VK_SUCCESS;
+
+fail_free_cache:
+   disk_cache_destroy(device->disk_cache);
+fail_free_name:
+   vk_free(&instance->vk.alloc, (void *)device->name);
+   return result;
 }
 
 static void
@@ -276,6 +295,8 @@ tu_physical_device_finish(struct tu_physical_device *device)
    close(device->local_fd);
    if (device->master_fd != -1)
       close(device->master_fd);
+
+   vk_free(&device->instance->vk.alloc, (void *)device->name);
 
    vk_physical_device_finish(&device->vk);
 }
@@ -911,7 +932,7 @@ tu_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
       .maxSamplerLodBias = 4095.0 / 256.0, /* [-16, 15.99609375] */
       .maxSamplerAnisotropy = 16,
       .maxViewports = MAX_VIEWPORTS,
-      .maxViewportDimensions = { (1 << 14), (1 << 14) },
+      .maxViewportDimensions = { MAX_VIEWPORT_SIZE, MAX_VIEWPORT_SIZE },
       .viewportBoundsRange = { INT16_MIN, INT16_MAX },
       .viewportSubPixelBits = 8,
       .minMemoryMapAlignment = 4096, /* A page */
@@ -959,8 +980,8 @@ tu_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
    pProperties->properties = (VkPhysicalDeviceProperties) {
       .apiVersion = TU_API_VERSION,
       .driverVersion = vk_get_driver_version(),
-      .vendorID = 0, /* TODO */
-      .deviceID = 0,
+      .vendorID = 0x5143,
+      .deviceID = pdevice->dev_id.chip_id,
       .deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
       .limits = limits,
       .sparseProperties = { 0 },
@@ -1372,24 +1393,6 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
    bool custom_border_colors = false;
    bool perf_query_pools = false;
    bool robust_buffer_access2 = false;
-
-   /* Check enabled features */
-   if (pCreateInfo->pEnabledFeatures) {
-      VkPhysicalDeviceFeatures2 supported_features = {
-         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-      };
-      tu_GetPhysicalDeviceFeatures2(physicalDevice, &supported_features);
-      VkBool32 *supported_feature = (VkBool32 *) &supported_features.features;
-      VkBool32 *enabled_feature = (VkBool32 *) pCreateInfo->pEnabledFeatures;
-      unsigned num_features =
-         sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32);
-      for (uint32_t i = 0; i < num_features; i++) {
-         if (enabled_feature[i] && !supported_feature[i])
-            return vk_startup_errorf(physical_device->instance,
-                                     VK_ERROR_FEATURE_NOT_PRESENT,
-                                     "Missing feature bit %d\n", i);
-      }
-   }
 
    vk_foreach_struct_const(ext, pCreateInfo->pNext) {
       switch (ext->sType) {

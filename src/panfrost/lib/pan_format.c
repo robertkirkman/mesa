@@ -24,7 +24,7 @@
  *   Alyssa Rosenzweig <alyssa.rosenzweig@collabora.com>
  */
 
-#include "gen_macros.h"
+#include "genxml/gen_macros.h"
 #include "pan_format.h"
 #include "util/format/u_format.h"
 
@@ -47,7 +47,7 @@
 #define BFMT2(pipe, internal, writeback, srgb) \
         [PIPE_FORMAT_##pipe] = { \
                 MALI_COLOR_BUFFER_INTERNAL_FORMAT_## internal, \
-                MALI_MFBD_COLOR_FORMAT_## writeback, \
+                MALI_COLOR_FORMAT_## writeback, \
                 { MALI_BLEND_PU_ ## internal | (srgb ? (1 << 20) : 0) | \
                         PAN_V6_SWIZZLE(R, G, B, A), \
                   MALI_BLEND_AU_ ## internal | (srgb ? (1 << 20) : 0) | \
@@ -57,7 +57,7 @@
 #define BFMT2(pipe, internal, writeback, srgb) \
         [PIPE_FORMAT_##pipe] = { \
                 MALI_COLOR_BUFFER_INTERNAL_FORMAT_## internal, \
-                MALI_MFBD_COLOR_FORMAT_## writeback, \
+                MALI_COLOR_FORMAT_## writeback, \
                 { MALI_BLEND_PU_ ## internal | (srgb ? (1 << 20) : 0), \
                   MALI_BLEND_AU_ ## internal | (srgb ? (1 << 20) : 0) } \
         }
@@ -226,6 +226,26 @@ const struct panfrost_format GENX(panfrost_pipe_format)[PIPE_FORMAT_COUNT] = {
         FMT(ASTC_10x10_SRGB,         ASTC_2D_LDR,     RGBA, S, _T__),
         FMT(ASTC_12x10_SRGB,         ASTC_2D_LDR,     RGBA, S, _T__),
         FMT(ASTC_12x12_SRGB,         ASTC_2D_LDR,     RGBA, S, _T__),
+        FMT(ASTC_3x3x3,              ASTC_3D_HDR,     RGBA, L, _T__),
+        FMT(ASTC_4x3x3,              ASTC_3D_HDR,     RGBA, L, _T__),
+        FMT(ASTC_4x4x3,              ASTC_3D_HDR,     RGBA, L, _T__),
+        FMT(ASTC_4x4x4,              ASTC_3D_HDR,     RGBA, L, _T__),
+        FMT(ASTC_5x4x4,              ASTC_3D_HDR,     RGBA, L, _T__),
+        FMT(ASTC_5x5x4,              ASTC_3D_HDR,     RGBA, L, _T__),
+        FMT(ASTC_5x5x5,              ASTC_3D_HDR,     RGBA, L, _T__),
+        FMT(ASTC_6x5x5,              ASTC_3D_HDR,     RGBA, L, _T__),
+        FMT(ASTC_6x6x5,              ASTC_3D_HDR,     RGBA, L, _T__),
+        FMT(ASTC_6x6x6,              ASTC_3D_HDR,     RGBA, L, _T__),
+        FMT(ASTC_3x3x3_SRGB,         ASTC_3D_LDR,     RGBA, S, _T__),
+        FMT(ASTC_4x3x3_SRGB,         ASTC_3D_LDR,     RGBA, S, _T__),
+        FMT(ASTC_4x4x3_SRGB,         ASTC_3D_LDR,     RGBA, S, _T__),
+        FMT(ASTC_4x4x4_SRGB,         ASTC_3D_LDR,     RGBA, S, _T__),
+        FMT(ASTC_5x4x4_SRGB,         ASTC_3D_LDR,     RGBA, S, _T__),
+        FMT(ASTC_5x5x4_SRGB,         ASTC_3D_LDR,     RGBA, S, _T__),
+        FMT(ASTC_5x5x5_SRGB,         ASTC_3D_LDR,     RGBA, S, _T__),
+        FMT(ASTC_6x5x5_SRGB,         ASTC_3D_LDR,     RGBA, S, _T__),
+        FMT(ASTC_6x6x5_SRGB,         ASTC_3D_LDR,     RGBA, S, _T__),
+        FMT(ASTC_6x6x6_SRGB,         ASTC_3D_LDR,     RGBA, S, _T__),
         FMT(R5G6B5_UNORM,            RGB565,          RGB1, L, VTR_),
         FMT(B5G6R5_UNORM,            RGB565,          BGR1, L, VTR_),
         FMT(R5G5B5X1_UNORM,          RGB5_A1_UNORM,   RGB1, L, VT__),
@@ -439,13 +459,13 @@ const struct panfrost_format GENX(panfrost_pipe_format)[PIPE_FORMAT_COUNT] = {
         FMT(A16_FLOAT,               R16F,            000R, L, VTR_),
 
 #else
-        FMT(Z16_UNORM,               RGB332_UNORM /* XXX: Deduplicate enum */,    RGBA, L, _T_Z),
+        FMT(Z16_UNORM,               Z16_UNORM,       RGBA, L, _T_Z),
         FMT(Z24_UNORM_S8_UINT,       Z24X8_UNORM,     RGBA, L, _T_Z),
         FMT(Z24X8_UNORM,             Z24X8_UNORM,     RGBA, L, _T_Z),
         FMT(Z32_FLOAT,               R32F,            RGBA, L, _T_Z),
         FMT(Z32_FLOAT_S8X24_UINT,    Z32_X32,         RGBA, L, _T_Z),
-        FMT(X32_S8X24_UINT,          X32_S8X24,       GRBA, L, _T_Z),
-        FMT(X24S8_UINT,              TILEBUFFER_NATIVE /* XXX: Deduplicate enum */, GRBA, L, _T_Z),
+        FMT(X32_S8X24_UINT,          X32_S8X24,       GRBA, L, _T__),
+        FMT(X24S8_UINT,              X24S8,           GRBA, L, _T_Z),
         FMT(S8_UINT,                 S8,              GRBA, L, _T__),
 
         FMT(A8_UNORM,                A8_UNORM,        000A, L, VTR_),

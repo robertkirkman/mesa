@@ -278,52 +278,11 @@ void
 setup_vs_output_info(isel_context* ctx, nir_shader* nir, bool export_prim_id,
                      bool export_clip_dists, radv_vs_output_info* outinfo)
 {
-   memset(outinfo->vs_output_param_offset, AC_EXP_PARAM_UNDEFINED,
-          sizeof(outinfo->vs_output_param_offset));
-
-   outinfo->param_exports = 0;
-   int pos_written = 0x1;
-   bool writes_primitive_shading_rate =
-      outinfo->writes_primitive_shading_rate || ctx->options->force_vrs_rates;
-   if (outinfo->writes_pointsize || outinfo->writes_viewport_index || outinfo->writes_layer ||
-       writes_primitive_shading_rate)
-      pos_written |= 1 << 1;
-
-   uint64_t mask = nir->info.outputs_written;
-   while (mask) {
-      int idx = u_bit_scan64(&mask);
-      if (idx >= VARYING_SLOT_VAR0 || idx == VARYING_SLOT_LAYER ||
-          idx == VARYING_SLOT_PRIMITIVE_ID || idx == VARYING_SLOT_VIEWPORT ||
-          ((idx == VARYING_SLOT_CLIP_DIST0 || idx == VARYING_SLOT_CLIP_DIST1) &&
-           export_clip_dists)) {
-         if (outinfo->vs_output_param_offset[idx] == AC_EXP_PARAM_UNDEFINED)
-            outinfo->vs_output_param_offset[idx] = outinfo->param_exports++;
-      }
-   }
-   if (outinfo->writes_layer &&
-       outinfo->vs_output_param_offset[VARYING_SLOT_LAYER] == AC_EXP_PARAM_UNDEFINED) {
-      /* when ctx->options->key.has_multiview_view_index = true, the layer
-       * variable isn't declared in NIR and it's isel's job to get the layer */
-      outinfo->vs_output_param_offset[VARYING_SLOT_LAYER] = outinfo->param_exports++;
-   }
-
-   if (export_prim_id) {
-      assert(outinfo->vs_output_param_offset[VARYING_SLOT_PRIMITIVE_ID] == AC_EXP_PARAM_UNDEFINED);
-      outinfo->vs_output_param_offset[VARYING_SLOT_PRIMITIVE_ID] = outinfo->param_exports++;
-   }
-
    ctx->export_clip_dists = export_clip_dists;
    ctx->num_clip_distances = util_bitcount(outinfo->clip_dist_mask);
    ctx->num_cull_distances = util_bitcount(outinfo->cull_dist_mask);
 
    assert(ctx->num_clip_distances + ctx->num_cull_distances <= 8);
-
-   if (ctx->num_clip_distances + ctx->num_cull_distances > 0)
-      pos_written |= 1 << 2;
-   if (ctx->num_clip_distances + ctx->num_cull_distances > 4)
-      pos_written |= 1 << 3;
-
-   outinfo->pos_exports = util_bitcount(pos_written);
 
    /* GFX10+ early rasterization:
     * When there are no param exports in an NGG (or legacy VS) shader,
@@ -367,11 +326,6 @@ setup_gs_variables(isel_context* ctx, nir_shader* nir)
       ctx->program->config->lds_size =
          DIV_ROUND_UP(nir->info.shared_size, ctx->program->dev.lds_encoding_granule);
    }
-
-   if (ctx->stage.has(SWStage::VS))
-      ctx->program->info->gs.es_type = MESA_SHADER_VERTEX;
-   else if (ctx->stage.has(SWStage::TES))
-      ctx->program->info->gs.es_type = MESA_SHADER_TESS_EVAL;
 }
 
 void
@@ -1032,7 +986,9 @@ setup_isel_context(Program* program, unsigned shader_count, struct nir_shader* c
    unsigned scratch_size = 0;
    if (program->stage == gs_copy_vs) {
       assert(shader_count == 1);
-      setup_vs_output_info(&ctx, shaders[0], false, true, &args->shader_info->vs.outinfo);
+      setup_vs_output_info(&ctx, shaders[0], false,
+                           args->shader_info->vs.outinfo.export_clip_dists,
+                           &args->shader_info->vs.outinfo);
    } else {
       for (unsigned i = 0; i < shader_count; i++) {
          nir_shader* nir = shaders[i];

@@ -200,6 +200,7 @@ get_device_extensions(const struct anv_physical_device *device,
       .KHR_maintenance1                      = true,
       .KHR_maintenance2                      = true,
       .KHR_maintenance3                      = true,
+      .KHR_maintenance4                      = true,
       .KHR_multiview                         = true,
       .KHR_performance_query =
          device->use_softpin && device->perf &&
@@ -229,6 +230,7 @@ get_device_extensions(const struct anv_physical_device *device,
       .KHR_swapchain                         = true,
       .KHR_swapchain_mutable_format          = true,
 #endif
+      .KHR_synchronization2                  = true,
       .KHR_timeline_semaphore                = true,
       .KHR_uniform_buffer_standard_layout    = true,
       .KHR_variable_pointers                 = true,
@@ -266,6 +268,7 @@ get_device_extensions(const struct anv_physical_device *device,
       .EXT_pipeline_creation_cache_control   = true,
       .EXT_pipeline_creation_feedback        = true,
       .EXT_post_depth_coverage               = device->info.ver >= 9,
+      .EXT_primitive_topology_list_restart   = true,
       .EXT_private_data                      = true,
       .EXT_provoking_vertex                  = true,
       .EXT_queue_family_foreign              = true,
@@ -926,7 +929,7 @@ anv_physical_device_try_create(struct anv_instance *instance,
    device->has_reg_timestamp = anv_gem_reg_read(fd, TIMESTAMP | I915_REG_READ_8B_WA,
                                                 &u64_ignore) == 0;
 
-   device->always_flush_cache =
+   device->always_flush_cache = (INTEL_DEBUG & DEBUG_SYNC) ||
       driQueryOptionb(&instance->dri_options, "always_flush_cache");
 
    device->has_mmap_offset =
@@ -1252,6 +1255,11 @@ void anv_GetPhysicalDeviceFeatures(
 {
    ANV_FROM_HANDLE(anv_physical_device, pdevice, physicalDevice);
 
+   /* Just pick one; they're all the same */
+   const bool has_astc_ldr =
+      isl_format_supports_sampling(&pdevice->info,
+                                   ISL_FORMAT_ASTC_LDR_2D_4X4_FLT16);
+
    *pFeatures = (VkPhysicalDeviceFeatures) {
       .robustBufferAccess                       = true,
       .fullDrawIndexUint32                      = true,
@@ -1275,7 +1283,7 @@ void anv_GetPhysicalDeviceFeatures(
       .samplerAnisotropy                        = true,
       .textureCompressionETC2                   = pdevice->info.ver >= 8 ||
                                                   pdevice->info.is_baytrail,
-      .textureCompressionASTC_LDR               = pdevice->info.ver >= 9, /* FINISHME CHV */
+      .textureCompressionASTC_LDR               = has_astc_ldr,
       .textureCompressionBC                     = true,
       .occlusionQueryPrecise                    = true,
       .pipelineStatisticsQuery                  = true,
@@ -1359,14 +1367,14 @@ anv_get_physical_device_features_1_2(struct anv_physical_device *pdevice,
    f->shaderInputAttachmentArrayDynamicIndexing          = false;
    f->shaderUniformTexelBufferArrayDynamicIndexing       = descIndexing;
    f->shaderStorageTexelBufferArrayDynamicIndexing       = descIndexing;
-   f->shaderUniformBufferArrayNonUniformIndexing         = false;
+   f->shaderUniformBufferArrayNonUniformIndexing         = descIndexing;
    f->shaderSampledImageArrayNonUniformIndexing          = descIndexing;
    f->shaderStorageBufferArrayNonUniformIndexing         = descIndexing;
    f->shaderStorageImageArrayNonUniformIndexing          = descIndexing;
    f->shaderInputAttachmentArrayNonUniformIndexing       = false;
    f->shaderUniformTexelBufferArrayNonUniformIndexing    = descIndexing;
    f->shaderStorageTexelBufferArrayNonUniformIndexing    = descIndexing;
-   f->descriptorBindingUniformBufferUpdateAfterBind      = false;
+   f->descriptorBindingUniformBufferUpdateAfterBind      = descIndexing;
    f->descriptorBindingSampledImageUpdateAfterBind       = descIndexing;
    f->descriptorBindingStorageImageUpdateAfterBind       = descIndexing;
    f->descriptorBindingStorageBufferUpdateAfterBind      = descIndexing;
@@ -1546,6 +1554,13 @@ void anv_GetPhysicalDeviceFeatures2(
          break;
       }
 
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_FEATURES_KHR: {
+         VkPhysicalDeviceMaintenance4FeaturesKHR *features =
+            (VkPhysicalDeviceMaintenance4FeaturesKHR *)ext;
+         features->maintenance4 = true;
+         break;
+      }
+
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PERFORMANCE_QUERY_FEATURES_KHR: {
          VkPhysicalDevicePerformanceQueryFeaturesKHR *feature =
             (VkPhysicalDevicePerformanceQueryFeaturesKHR *)ext;
@@ -1675,6 +1690,13 @@ void anv_GetPhysicalDeviceFeatures2(
          break;
       }
 
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR: {
+         VkPhysicalDeviceSynchronization2FeaturesKHR *features =
+            (VkPhysicalDeviceSynchronization2FeaturesKHR *)ext;
+         features->synchronization2 = true;
+         break;
+      }
+
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TEXEL_BUFFER_ALIGNMENT_FEATURES_EXT: {
          VkPhysicalDeviceTexelBufferAlignmentFeaturesEXT *features =
             (VkPhysicalDeviceTexelBufferAlignmentFeaturesEXT *)ext;
@@ -1744,6 +1766,14 @@ void anv_GetPhysicalDeviceFeatures2(
          break;
       }
 
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIMITIVE_TOPOLOGY_LIST_RESTART_FEATURES_EXT: {
+         VkPhysicalDevicePrimitiveTopologyListRestartFeaturesEXT *features =
+            (VkPhysicalDevicePrimitiveTopologyListRestartFeaturesEXT *)ext;
+         features->primitiveTopologyListRestart = true;
+         features->primitiveTopologyPatchListRestart = true;
+         break;
+      }
+
       default:
          anv_debug_ignored_stype(ext->sType);
          break;
@@ -1765,10 +1795,6 @@ void anv_GetPhysicalDeviceProperties(
 {
    ANV_FROM_HANDLE(anv_physical_device, pdevice, physicalDevice);
    const struct intel_device_info *devinfo = &pdevice->info;
-
-   /* See assertions made when programming the buffer surface state. */
-   const uint32_t max_raw_buffer_sz = devinfo->ver >= 7 ?
-                                      (1ul << 30) : (1ul << 27);
 
    const uint32_t max_ssbos = pdevice->has_a64_buffer_access ? UINT16_MAX : 64;
    const uint32_t max_textures =
@@ -1800,7 +1826,7 @@ void anv_GetPhysicalDeviceProperties(
       .maxImageArrayLayers                      = (1 << 11),
       .maxTexelBufferElements                   = 128 * 1024 * 1024,
       .maxUniformBufferRange                    = (1ul << 27),
-      .maxStorageBufferRange                    = max_raw_buffer_sz,
+      .maxStorageBufferRange                    = pdevice->isl_dev.max_buffer_size,
       .maxPushConstantsSize                     = MAX_PUSH_CONSTANTS_SIZE,
       .maxMemoryAllocationCount                 = UINT32_MAX,
       .maxSamplerAllocationCount                = 64 * 1024,
@@ -2256,6 +2282,13 @@ void anv_GetPhysicalDeviceProperties2(
           * types.
           */
          props->lineSubPixelPrecisionBits = 4;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES_KHR: {
+         VkPhysicalDeviceMaintenance4PropertiesKHR *properties =
+            (VkPhysicalDeviceMaintenance4PropertiesKHR *)ext;
+         properties->maxBufferSize = pdevice->isl_dev.max_buffer_size;
          break;
       }
 
@@ -2845,23 +2878,6 @@ static struct intel_mapped_pinned_buffer_alloc aux_map_allocator = {
    .free = intel_aux_map_buffer_free,
 };
 
-static VkResult
-check_physical_device_features(VkPhysicalDevice physicalDevice,
-                               const VkPhysicalDeviceFeatures *features)
-{
-   VkPhysicalDeviceFeatures supported_features;
-   anv_GetPhysicalDeviceFeatures(physicalDevice, &supported_features);
-   VkBool32 *supported_feature = (VkBool32 *)&supported_features;
-   VkBool32 *enabled_feature = (VkBool32 *)features;
-   unsigned num_features = sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32);
-   for (uint32_t i = 0; i < num_features; i++) {
-      if (enabled_feature[i] && !supported_feature[i])
-         return vk_error(VK_ERROR_FEATURE_NOT_PRESENT);
-   }
-
-   return VK_SUCCESS;
-}
-
 VkResult anv_CreateDevice(
     VkPhysicalDevice                            physicalDevice,
     const VkDeviceCreateInfo*                   pCreateInfo,
@@ -2877,11 +2893,6 @@ VkResult anv_CreateDevice(
    /* Check enabled features */
    bool robust_buffer_access = false;
    if (pCreateInfo->pEnabledFeatures) {
-      result = check_physical_device_features(physicalDevice,
-                                              pCreateInfo->pEnabledFeatures);
-      if (result != VK_SUCCESS)
-         return result;
-
       if (pCreateInfo->pEnabledFeatures->robustBufferAccess)
          robust_buffer_access = true;
    }
@@ -2890,11 +2901,6 @@ VkResult anv_CreateDevice(
       switch (ext->sType) {
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2: {
          const VkPhysicalDeviceFeatures2 *features = (const void *)ext;
-         result = check_physical_device_features(physicalDevice,
-                                                 &features->features);
-         if (result != VK_SUCCESS)
-            return result;
-
          if (features->features.robustBufferAccess)
             robust_buffer_access = true;
          break;
@@ -2924,7 +2930,7 @@ VkResult anv_CreateDevice(
       queue_priority ? queue_priority->globalPriority :
          VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_EXT;
 
-   device = vk_alloc2(&physical_device->instance->vk.alloc, pAllocator,
+   device = vk_zalloc2(&physical_device->instance->vk.alloc, pAllocator,
                        sizeof(*device), 8,
                        VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
    if (!device)
@@ -4094,60 +4100,6 @@ VkResult anv_InvalidateMappedMemoryRanges(
    return VK_SUCCESS;
 }
 
-void anv_GetBufferMemoryRequirements2(
-    VkDevice                                    _device,
-    const VkBufferMemoryRequirementsInfo2*      pInfo,
-    VkMemoryRequirements2*                      pMemoryRequirements)
-{
-   ANV_FROM_HANDLE(anv_device, device, _device);
-   ANV_FROM_HANDLE(anv_buffer, buffer, pInfo->buffer);
-
-   /* The Vulkan spec (git aaed022) says:
-    *
-    *    memoryTypeBits is a bitfield and contains one bit set for every
-    *    supported memory type for the resource. The bit `1<<i` is set if and
-    *    only if the memory type `i` in the VkPhysicalDeviceMemoryProperties
-    *    structure for the physical device is supported.
-    */
-   uint32_t memory_types = (1ull << device->physical->memory.type_count) - 1;
-
-   /* Base alignment requirement of a cache line */
-   uint32_t alignment = 16;
-
-   if (buffer->usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)
-      alignment = MAX2(alignment, ANV_UBO_ALIGNMENT);
-
-   pMemoryRequirements->memoryRequirements.size = buffer->size;
-   pMemoryRequirements->memoryRequirements.alignment = alignment;
-
-   /* Storage and Uniform buffers should have their size aligned to
-    * 32-bits to avoid boundary checks when last DWord is not complete.
-    * This would ensure that not internal padding would be needed for
-    * 16-bit types.
-    */
-   if (device->robust_buffer_access &&
-       (buffer->usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT ||
-        buffer->usage & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT))
-      pMemoryRequirements->memoryRequirements.size = align_u64(buffer->size, 4);
-
-   pMemoryRequirements->memoryRequirements.memoryTypeBits = memory_types;
-
-   vk_foreach_struct(ext, pMemoryRequirements->pNext) {
-      switch (ext->sType) {
-      case VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS: {
-         VkMemoryDedicatedRequirements *requirements = (void *)ext;
-         requirements->prefersDedicatedAllocation = false;
-         requirements->requiresDedicatedAllocation = false;
-         break;
-      }
-
-      default:
-         anv_debug_ignored_stype(ext->sType);
-         break;
-      }
-   }
-}
-
 void anv_GetDeviceMemoryCommitment(
     VkDevice                                    device,
     VkDeviceMemory                              memory,
@@ -4279,6 +4231,85 @@ VkResult anv_ResetEvent(
 }
 
 // Buffer functions
+
+static void
+anv_get_buffer_memory_requirements(struct anv_device *device,
+                                   VkDeviceSize size,
+                                   VkBufferUsageFlags usage,
+                                   VkMemoryRequirements2* pMemoryRequirements)
+{
+   /* The Vulkan spec (git aaed022) says:
+    *
+    *    memoryTypeBits is a bitfield and contains one bit set for every
+    *    supported memory type for the resource. The bit `1<<i` is set if and
+    *    only if the memory type `i` in the VkPhysicalDeviceMemoryProperties
+    *    structure for the physical device is supported.
+    */
+   uint32_t memory_types = (1ull << device->physical->memory.type_count) - 1;
+
+   /* Base alignment requirement of a cache line */
+   uint32_t alignment = 16;
+
+   if (usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)
+      alignment = MAX2(alignment, ANV_UBO_ALIGNMENT);
+
+   pMemoryRequirements->memoryRequirements.size = size;
+   pMemoryRequirements->memoryRequirements.alignment = alignment;
+
+   /* Storage and Uniform buffers should have their size aligned to
+    * 32-bits to avoid boundary checks when last DWord is not complete.
+    * This would ensure that not internal padding would be needed for
+    * 16-bit types.
+    */
+   if (device->robust_buffer_access &&
+       (usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT ||
+        usage & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT))
+      pMemoryRequirements->memoryRequirements.size = align_u64(size, 4);
+
+   pMemoryRequirements->memoryRequirements.memoryTypeBits = memory_types;
+
+   vk_foreach_struct(ext, pMemoryRequirements->pNext) {
+      switch (ext->sType) {
+      case VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS: {
+         VkMemoryDedicatedRequirements *requirements = (void *)ext;
+         requirements->prefersDedicatedAllocation = false;
+         requirements->requiresDedicatedAllocation = false;
+         break;
+      }
+
+      default:
+         anv_debug_ignored_stype(ext->sType);
+         break;
+      }
+   }
+}
+
+void anv_GetBufferMemoryRequirements2(
+    VkDevice                                    _device,
+    const VkBufferMemoryRequirementsInfo2*      pInfo,
+    VkMemoryRequirements2*                      pMemoryRequirements)
+{
+   ANV_FROM_HANDLE(anv_device, device, _device);
+   ANV_FROM_HANDLE(anv_buffer, buffer, pInfo->buffer);
+
+   anv_get_buffer_memory_requirements(device,
+                                      buffer->size,
+                                      buffer->usage,
+                                      pMemoryRequirements);
+}
+
+void anv_GetDeviceBufferMemoryRequirementsKHR(
+    VkDevice                                    _device,
+    const VkDeviceBufferMemoryRequirementsKHR* pInfo,
+    VkMemoryRequirements2*                      pMemoryRequirements)
+{
+   ANV_FROM_HANDLE(anv_device, device, _device);
+
+   anv_get_buffer_memory_requirements(device,
+                                      pInfo->pCreateInfo->size,
+                                      pInfo->pCreateInfo->usage,
+                                      pMemoryRequirements);
+}
 
 VkResult anv_CreateBuffer(
     VkDevice                                    _device,

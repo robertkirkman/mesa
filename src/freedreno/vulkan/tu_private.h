@@ -100,6 +100,7 @@ typedef uint32_t xcb_window_t;
 #define MAX_RTS 8
 #define MAX_VSC_PIPES 32
 #define MAX_VIEWPORTS 16
+#define MAX_VIEWPORT_SIZE (1 << 14)
 #define MAX_SCISSORS 16
 #define MAX_DISCARD_RECTANGLES 4
 #define MAX_PUSH_CONSTANTS_SIZE 128
@@ -1364,22 +1365,18 @@ tu_store_gmem_attachment(struct tu_cmd_buffer *cmd,
                          uint32_t a,
                          uint32_t gmem_a);
 
-enum tu_supported_formats {
-   FMT_VERTEX = 1,
-   FMT_TEXTURE = 2,
-   FMT_COLOR = 4,
-};
-
 struct tu_native_format
 {
    enum a6xx_format fmt : 8;
    enum a3xx_color_swap swap : 8;
    enum a6xx_tile_mode tile_mode : 8;
-   enum tu_supported_formats supported : 8;
 };
 
+bool tu6_format_vtx_supported(VkFormat format);
 struct tu_native_format tu6_format_vtx(VkFormat format);
+bool tu6_format_color_supported(VkFormat format);
 struct tu_native_format tu6_format_color(VkFormat format, enum a6xx_tile_mode tile_mode);
+bool tu6_format_texture_supported(VkFormat format);
 struct tu_native_format tu6_format_texture(VkFormat format, enum a6xx_tile_mode tile_mode);
 
 static inline enum a6xx_format

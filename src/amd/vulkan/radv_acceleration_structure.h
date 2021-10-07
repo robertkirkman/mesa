@@ -25,13 +25,28 @@
 #define RADV_ACCELERATION_STRUCTURE_H
 
 #include <stdint.h>
+#include <vulkan/vulkan.h>
+
+struct radv_accel_struct_serialization_header {
+   uint8_t driver_uuid[VK_UUID_SIZE];
+   uint8_t accel_struct_compat[VK_UUID_SIZE];
+   uint64_t serialization_size;
+   uint64_t compacted_size;
+   uint64_t instance_count;
+   uint64_t instances[];
+};
 
 struct radv_accel_struct_header {
    uint32_t root_node_offset;
    uint32_t reserved;
    float aabb[2][3];
+
+   /* Everything after this gets updated/copied from the CPU. */
    uint64_t compacted_size;
    uint64_t serialization_size;
+   uint32_t copy_dispatch_size[3];
+   uint64_t instance_offset;
+   uint64_t instance_count;
 };
 
 struct radv_bvh_triangle_node {

@@ -1254,35 +1254,15 @@ add_deferred_attribute_culling(nir_builder *b, nir_cf_list *original_extracted_c
       unreachable("Should be VS or TES.");
 }
 
-static bool
-can_use_deferred_attribute_culling(nir_shader *shader)
-{
-   /* When the shader writes memory, it is difficult to guarantee correctness.
-    * Future work:
-    * - if only write-only SSBOs are used
-    * - if we can prove that non-position outputs don't rely on memory stores
-    * then may be okay to keep the memory stores in the 1st shader part, and delete them from the 2nd.
-    */
-   if (shader->info.writes_memory)
-      return false;
-
-   /* When the shader relies on the subgroup invocation ID, we'd break it, because the ID changes after the culling.
-    * Future work: try to save this to LDS and reload, but it can still be broken in subtle ways.
-    */
-   if (BITSET_TEST(shader->info.system_values_read, SYSTEM_VALUE_SUBGROUP_INVOCATION))
-      return false;
-
-   return true;
-}
-
-ac_nir_ngg_config
+void
 ac_nir_lower_ngg_nogs(nir_shader *shader,
                       unsigned max_num_es_vertices,
                       unsigned num_vertices_per_primitives,
                       unsigned max_workgroup_size,
                       unsigned wave_size,
-                      bool consider_culling,
-                      bool consider_passthrough,
+                      bool can_cull,
+                      bool early_prim_export,
+                      bool passthrough,
                       bool export_prim_id,
                       bool provoking_vtx_last,
                       bool use_edgeflags,
@@ -1291,11 +1271,7 @@ ac_nir_lower_ngg_nogs(nir_shader *shader,
    nir_function_impl *impl = nir_shader_get_entrypoint(shader);
    assert(impl);
    assert(max_num_es_vertices && max_workgroup_size && wave_size);
-
-   bool can_cull = consider_culling && (num_vertices_per_primitives == 3) &&
-                   can_use_deferred_attribute_culling(shader);
-   bool passthrough = consider_passthrough && !can_cull &&
-                      !(shader->info.stage == MESA_SHADER_VERTEX && export_prim_id);
+   assert(!(can_cull && passthrough));
 
    nir_variable *position_value_var = nir_local_variable_create(impl, glsl_vec4_type(), "position_value");
    nir_variable *prim_exp_arg_var = nir_local_variable_create(impl, glsl_uint_type(), "prim_exp_arg");
@@ -1305,7 +1281,7 @@ ac_nir_lower_ngg_nogs(nir_shader *shader,
    lower_ngg_nogs_state state = {
       .passthrough = passthrough,
       .export_prim_id = export_prim_id,
-      .early_prim_export = exec_list_is_singular(&impl->body),
+      .early_prim_export = early_prim_export,
       .use_edgeflags = use_edgeflags,
       .num_vertices_per_primitives = num_vertices_per_primitives,
       .provoking_vtx_idx = provoking_vtx_last ? (num_vertices_per_primitives - 1) : 0,
@@ -1322,9 +1298,6 @@ ac_nir_lower_ngg_nogs(nir_shader *shader,
    /* We need LDS space when VS needs to export the primitive ID. */
    if (shader->info.stage == MESA_SHADER_VERTEX && export_prim_id)
       state.total_lds_bytes = max_num_es_vertices * 4u;
-
-   /* The shader only needs this much LDS when culling is turned off. */
-   unsigned lds_bytes_if_culling_off = state.total_lds_bytes;
 
    nir_builder builder;
    nir_builder *b = &builder; /* This is to avoid the & */
@@ -1438,17 +1411,6 @@ ac_nir_lower_ngg_nogs(nir_shader *shader,
    } while (progress);
 
    shader->info.shared_size = state.total_lds_bytes;
-
-   ac_nir_ngg_config ret = {
-      .lds_bytes_if_culling_off = lds_bytes_if_culling_off,
-      .can_cull = can_cull,
-      .passthrough = passthrough,
-      .early_prim_export = state.early_prim_export,
-      .nggc_inputs_read_by_pos = state.inputs_needed_by_pos,
-      .nggc_inputs_read_by_others = state.inputs_needed_by_others,
-   };
-
-   return ret;
 }
 
 static nir_ssa_def *

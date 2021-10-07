@@ -605,20 +605,11 @@ x11_surface_get_capabilities(VkIcdSurfaceBase *icd_surface,
       caps->currentExtent = extent;
       caps->minImageExtent = extent;
       caps->maxImageExtent = extent;
-   } else {
-      /* This can happen if the client didn't wait for the configure event
-       * to come back from the compositor.  In that case, we don't know the
-       * size of the window so we just return valid "I don't know" stuff.
-       */
-      caps->currentExtent = (VkExtent2D) { UINT32_MAX, UINT32_MAX };
-      caps->minImageExtent = (VkExtent2D) { 1, 1 };
-      caps->maxImageExtent = (VkExtent2D) {
-         wsi_device->maxImageDimension2D,
-         wsi_device->maxImageDimension2D,
-      };
    }
    free(err);
    free(geom);
+   if (!geom)
+       return VK_ERROR_SURFACE_LOST_KHR;
 
    if (visual_has_alpha(visual, visual_depth)) {
       caps->supportedCompositeAlpha = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR |
@@ -656,6 +647,9 @@ x11_surface_get_capabilities2(VkIcdSurfaceBase *icd_surface,
    VkResult result =
       x11_surface_get_capabilities(icd_surface, wsi_device,
                                    &caps->surfaceCapabilities);
+
+   if (result != VK_SUCCESS)
+      return result;
 
    vk_foreach_struct(ext, caps->pNext) {
       switch (ext->sType) {
@@ -772,17 +766,10 @@ x11_surface_get_present_rectangles(VkIcdSurfaceBase *icd_surface,
             .offset = { 0, 0 },
             .extent = { geom->width, geom->height },
          };
-      } else {
-         /* This can happen if the client didn't wait for the configure event
-          * to come back from the compositor.  In that case, we don't know the
-          * size of the window so we just return valid "I don't know" stuff.
-          */
-         *rect = (VkRect2D) {
-            .offset = { 0, 0 },
-            .extent = { UINT32_MAX, UINT32_MAX },
-         };
       }
       free(geom);
+      if (!geom)
+          return VK_ERROR_SURFACE_LOST_KHR;
    }
 
    return vk_outarray_status(&out);
@@ -1525,7 +1512,7 @@ x11_image_finish(struct x11_swapchain *chain,
 {
    xcb_void_cookie_t cookie;
 
-   if (!chain->base.wsi->sw) {
+   if (!chain->base.wsi->sw || chain->has_mit_shm) {
       cookie = xcb_sync_destroy_fence(chain->conn, image->sync_fence);
       xcb_discard_reply(chain->conn, cookie.sequence);
       xshmfence_unmap_shm(image->shm_fence);
@@ -1720,7 +1707,7 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
    free(geometry);
 
    size_t size = sizeof(*chain) + num_images * sizeof(chain->images[0]);
-   chain = vk_alloc(pAllocator, size, 8,
+   chain = vk_zalloc(pAllocator, size, 8,
                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (chain == NULL)
       return VK_ERROR_OUT_OF_HOST_MEMORY;

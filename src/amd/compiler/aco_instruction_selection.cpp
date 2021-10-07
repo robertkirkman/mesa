@@ -9065,7 +9065,7 @@ visit_intrinsic(isel_context* ctx, nir_intrinsic_instr* instr)
    case nir_intrinsic_load_cull_any_enabled_amd: {
       Builder::Result cull_any_enabled =
          bld.sop2(aco_opcode::s_and_b32, bld.def(s1), bld.def(s1, scc),
-                  get_arg(ctx, ctx->args->ngg_culling_settings), Operand::c32(0x00ffffffu));
+                  get_arg(ctx, ctx->args->ngg_culling_settings), Operand::c32(0xbu));
       cull_any_enabled.instr->definitions[1].setNoCSE(true);
       bld.copy(Definition(get_ssa_temp(ctx, &instr->dest.ssa)),
                bool_to_vector_condition(ctx, cull_any_enabled.def(1).getTemp()));
@@ -9074,7 +9074,7 @@ visit_intrinsic(isel_context* ctx, nir_intrinsic_instr* instr)
    case nir_intrinsic_load_cull_small_prim_precision_amd: {
       /* Exponent is 8-bit signed int, move that into a signed 32-bit int. */
       Temp exponent = bld.sop2(aco_opcode::s_ashr_i32, bld.def(s1), bld.def(s1, scc),
-                               get_arg(ctx, ctx->args->ngg_gs_state), Operand::c32(24u));
+                               get_arg(ctx, ctx->args->ngg_culling_settings), Operand::c32(24u));
       /* small_prim_precision = 1.0 * 2^X */
       bld.vop3(aco_opcode::v_ldexp_f32, Definition(get_ssa_temp(ctx, &instr->dest.ssa)),
                Operand::c32(0x3f800000u), Operand(exponent));
@@ -11811,7 +11811,7 @@ select_gs_copy_shader(Program* program, struct nir_shader* gs_shader, ac_shader_
    Temp vtx_offset = bld.vop2(aco_opcode::v_lshlrev_b32, bld.def(v1), Operand::c32(2u),
                               get_arg(&ctx, ctx.args->ac.vertex_id));
 
-   std::stack<if_context> if_contexts;
+   std::stack<if_context, std::vector<if_context>> if_contexts;
 
    for (unsigned stream = 0; stream < 4; stream++) {
       if (stream_id.isConstant() && stream != stream_id.constantValue())

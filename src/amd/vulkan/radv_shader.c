@@ -35,17 +35,19 @@
 #include "radv_debug.h"
 #include "radv_private.h"
 #include "radv_shader_args.h"
-#include "radv_shader_helper.h"
 
 #include "util/debug.h"
 #include "ac_binary.h"
 #include "ac_exp_param.h"
-#include "ac_llvm_util.h"
 #include "ac_nir.h"
 #include "ac_rtld.h"
 #include "aco_interface.h"
 #include "sid.h"
 #include "vk_format.h"
+
+#ifdef LLVM_AVAILABLE
+#include "ac_llvm_util.h"
+#endif
 
 void
 radv_get_nir_options(struct radv_physical_device *device)
@@ -589,13 +591,11 @@ radv_shader_compile_to_nir(struct radv_device *device, struct vk_shader_module *
       NIR_PASS_V(nir, nir_lower_global_vars_to_local);
       NIR_PASS_V(nir, nir_lower_vars_to_ssa);
 
-      NIR_PASS_V(nir, nir_propagate_invariant,
-                 device->instance->debug_flags & RADV_DEBUG_INVARIANT_GEOM);
+      NIR_PASS_V(nir, nir_propagate_invariant, key->invariant_geom);
 
       NIR_PASS_V(nir, nir_lower_clip_cull_distance_arrays);
 
-      NIR_PASS_V(nir, nir_lower_discard_or_demote,
-                 device->instance->debug_flags & RADV_DEBUG_DISCARD_TO_DEMOTE);
+      NIR_PASS_V(nir, nir_lower_discard_or_demote, key->ps.lower_discard_to_demote);
 
       nir_lower_doubles_options lower_doubles = nir->options->lower_doubles_options;
 
@@ -621,7 +621,7 @@ radv_shader_compile_to_nir(struct radv_device *device, struct vk_shader_module *
    if (nir->info.stage == MESA_SHADER_GEOMETRY) {
       unsigned nir_gs_flags = nir_lower_gs_intrinsics_per_stream;
 
-      if (device->physical_device->use_ngg && !radv_use_llvm_for_stage(device, stage)) {
+      if (key->use_ngg && !radv_use_llvm_for_stage(device, stage)) {
          /* ACO needs NIR to do some of the hard lifting */
          nir_gs_flags |= nir_lower_gs_intrinsics_count_primitives |
                          nir_lower_gs_intrinsics_count_vertices_per_primitive |
@@ -838,7 +838,7 @@ radv_lower_io(struct radv_device *device, nir_shader *nir)
 
 bool
 radv_lower_io_to_mem(struct radv_device *device, struct nir_shader *nir,
-                     struct radv_shader_info *info, const struct radv_pipeline_key *pl_key)
+                     const struct radv_shader_info *info, const struct radv_pipeline_key *pl_key)
 {
    if (nir->info.stage == MESA_SHADER_VERTEX) {
       if (info->vs.as_ls) {
@@ -884,7 +884,7 @@ radv_lower_io_to_mem(struct radv_device *device, struct nir_shader *nir,
 
 bool
 radv_consider_culling(struct radv_device *device, struct nir_shader *nir,
-                      uint64_t ps_inputs_read)
+                      uint64_t ps_inputs_read, unsigned num_vertices_per_primitive)
 {
    /* Culling doesn't make sense for meta shaders. */
    if (!!nir->info.name)
@@ -915,14 +915,34 @@ radv_consider_culling(struct radv_device *device, struct nir_shader *nir,
       max_ps_params = 4; /* Navi 1x. */
 
    /* TODO: consider other heuristics here, such as PS execution time */
+   if (util_bitcount64(ps_inputs_read & ~VARYING_BIT_POS) > max_ps_params)
+      return false;
 
-   return util_bitcount64(ps_inputs_read & ~VARYING_BIT_POS) <= max_ps_params;
+   /* Only triangle culling is supported. */
+   if (num_vertices_per_primitive != 3)
+      return false;
+
+   /* When the shader writes memory, it is difficult to guarantee correctness.
+    * Future work:
+    * - if only write-only SSBOs are used
+    * - if we can prove that non-position outputs don't rely on memory stores
+    * then may be okay to keep the memory stores in the 1st shader part, and delete them from the 2nd.
+    */
+   if (nir->info.writes_memory)
+      return false;
+
+   /* When the shader relies on the subgroup invocation ID, we'd break it, because the ID changes after the culling.
+    * Future work: try to save this to LDS and reload, but it can still be broken in subtle ways.
+    */
+   if (BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_SUBGROUP_INVOCATION))
+      return false;
+
+   return true;
 }
 
 void radv_lower_ngg(struct radv_device *device, struct nir_shader *nir,
-                    struct radv_shader_info *info,
-                    const struct radv_pipeline_key *pl_key,
-                    bool consider_culling)
+                    const struct radv_shader_info *info,
+                    const struct radv_pipeline_key *pl_key)
 {
    /* TODO: support the LLVM backend with the NIR lowering */
    assert(!radv_use_llvm_for_stage(device, nir->info.stage));
@@ -931,7 +951,6 @@ void radv_lower_ngg(struct radv_device *device, struct nir_shader *nir,
           nir->info.stage == MESA_SHADER_TESS_EVAL ||
           nir->info.stage == MESA_SHADER_GEOMETRY);
 
-   ac_nir_ngg_config out_conf = {0};
    const struct gfx10_ngg_info *ngg_info = &info->ngg_info;
    unsigned num_vertices_per_prim = 3;
 
@@ -969,7 +988,7 @@ void radv_lower_ngg(struct radv_device *device, struct nir_shader *nir,
 
       assert(info->is_ngg);
 
-      if (consider_culling)
+      if (info->has_ngg_culling)
          radv_optimize_nir_algebraic(nir, false);
 
       if (nir->info.stage == MESA_SHADER_VERTEX) {
@@ -978,24 +997,19 @@ void radv_lower_ngg(struct radv_device *device, struct nir_shader *nir,
          export_prim_id = info->tes.outinfo.export_prim_id;
       }
 
-      out_conf =
-         ac_nir_lower_ngg_nogs(
-            nir,
-            max_vtx_in,
-            num_vertices_per_prim,
-            info->workgroup_size,
-            info->wave_size,
-            consider_culling,
-            info->is_ngg_passthrough,
-            export_prim_id,
-            pl_key->vs.provoking_vtx_last,
-            false,
-            pl_key->vs.instance_rate_inputs);
-
-      info->has_ngg_culling = out_conf.can_cull;
-      info->has_ngg_early_prim_export = out_conf.early_prim_export;
-      info->num_lds_blocks_when_not_culling = DIV_ROUND_UP(out_conf.lds_bytes_if_culling_off, device->physical_device->rad_info.lds_encode_granularity);
-      info->is_ngg_passthrough = out_conf.passthrough;
+      ac_nir_lower_ngg_nogs(
+         nir,
+         max_vtx_in,
+         num_vertices_per_prim,
+         info->workgroup_size,
+         info->wave_size,
+         info->has_ngg_culling,
+         info->has_ngg_early_prim_export,
+         info->is_ngg_passthrough,
+         export_prim_id,
+         pl_key->vs.provoking_vtx_last,
+         false,
+         pl_key->vs.instance_rate_inputs);
    } else if (nir->info.stage == MESA_SHADER_GEOMETRY) {
       assert(info->is_ngg);
       ac_nir_lower_ngg_gs(
@@ -1303,7 +1317,8 @@ radv_postprocess_config(const struct radv_device *device, const struct ac_shader
          stage == MESA_SHADER_TESS_EVAL && info->tes.primitive_mode >= 4; /* GL_TRIANGLES */
       if (info->uses_invocation_id) {
          gs_vgpr_comp_cnt = 3; /* VGPR3 contains InvocationID. */
-      } else if (info->uses_prim_id) {
+      } else if (info->uses_prim_id || (es_stage == MESA_SHADER_VERTEX &&
+                                        info->vs.outinfo.export_prim_id)) {
          gs_vgpr_comp_cnt = 2; /* VGPR2 contains PrimitiveID. */
       } else if (info->gs.vertices_in >= 3 || tes_triangles || nggc) {
          gs_vgpr_comp_cnt = 1; /* VGPR1 contains offsets 2, 3 */
@@ -1555,13 +1570,13 @@ shader_variant_compile(struct radv_device *device, struct vk_shader_module *modu
    options->address32_hi = device->physical_device->rad_info.address32_hi;
    options->has_ls_vgpr_init_bug = device->physical_device->rad_info.has_ls_vgpr_init_bug;
    options->enable_mrt_output_nan_fixup =
-      module && !module->nir && device->instance->enable_mrt_output_nan_fixup;
+      module && !module->nir && options->key.ps.enable_mrt_output_nan_fixup;
    options->adjust_frag_coord_z = device->adjust_frag_coord_z;
    options->has_image_load_dcc_bug = device->physical_device->rad_info.has_image_load_dcc_bug;
    options->debug.func = radv_compiler_debug;
    options->debug.private_data = &debug_data;
 
-   switch (device->force_vrs) {
+   switch (options->key.ps.force_vrs) {
    case RADV_FORCE_VRS_2x2:
       options->force_vrs_rates = (1u << 2) | (1u << 4);
       break;
@@ -1586,11 +1601,15 @@ shader_variant_compile(struct radv_device *device, struct vk_shader_module *modu
       shader_count >= 2,
       shader_count >= 2 ? shaders[shader_count - 2]->info.stage : MESA_SHADER_VERTEX);
 
+#ifdef LLVM_AVAILABLE
    if (radv_use_llvm_for_stage(device, stage) || options->dump_shader || options->record_ir)
       ac_init_llvm_once();
 
    if (radv_use_llvm_for_stage(device, stage)) {
       llvm_compile_shader(device, shader_count, shaders, &binary, &args);
+#else
+   if (false) {
+#endif
    } else {
       aco_compile_shader(shader_count, shaders, &binary, &args);
    }
@@ -1869,7 +1888,9 @@ radv_GetShaderInfoAMD(VkDevice _device, VkPipeline _pipeline, VkShaderStageFlagB
 
       fprintf(memf, "%s:\n", radv_get_shader_name(&variant->info, stage));
       fprintf(memf, "%s\n\n", variant->ir_string);
-      fprintf(memf, "%s\n\n", variant->disasm_string);
+      if (variant->disasm_string) {
+         fprintf(memf, "%s\n\n", variant->disasm_string);
+      }
       radv_dump_shader_stats(device, pipeline, stage, memf);
       u_memstream_close(&mem);
 

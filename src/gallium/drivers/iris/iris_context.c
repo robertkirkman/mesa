@@ -212,7 +212,7 @@ iris_flush_dirty_dmabufs(struct iris_context *ice)
 /**
  * Destroy a context, freeing any associated memory.
  */
-static void
+void
 iris_destroy_context(struct pipe_context *ctx)
 {
    struct iris_context *ice = (struct iris_context *)ctx;
@@ -380,6 +380,7 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
                                   iris_replace_buffer_storage,
                                   NULL, /* TODO: asynchronous flushes? */
                                   NULL,
+                                  false,
                                   false,
                                   &ice->thrctx);
 }

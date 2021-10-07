@@ -405,8 +405,12 @@ radv_destroy_cmd_buffer(struct radv_cmd_buffer *cmd_buffer)
    if (cmd_buffer->cs)
       cmd_buffer->device->ws->cs_destroy(cmd_buffer->cs);
 
-   for (unsigned i = 0; i < MAX_BIND_POINTS; i++)
+   for (unsigned i = 0; i < MAX_BIND_POINTS; i++) {
       free(cmd_buffer->descriptors[i].push_set.set.mapped_ptr);
+      vk_object_base_finish(&cmd_buffer->descriptors[i].push_set.set.base);
+   }
+
+   vk_object_base_finish(&cmd_buffer->meta_push_descriptors.base);
 
    vk_command_buffer_finish(&cmd_buffer->vk);
    vk_free(&cmd_buffer->pool->alloc, cmd_buffer);
@@ -443,6 +447,13 @@ radv_create_cmd_buffer(struct radv_device *device, struct radv_cmd_pool *pool,
       radv_destroy_cmd_buffer(cmd_buffer);
       return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
+
+   vk_object_base_init(&device->vk, &cmd_buffer->meta_push_descriptors.base,
+                       VK_OBJECT_TYPE_DESCRIPTOR_SET);
+
+   for (unsigned i = 0; i < MAX_BIND_POINTS; i++)
+      vk_object_base_init(&device->vk, &cmd_buffer->descriptors[i].push_set.set.base,
+                          VK_OBJECT_TYPE_DESCRIPTOR_SET);
 
    *pCommandBuffer = radv_cmd_buffer_to_handle(cmd_buffer);
 
@@ -2519,6 +2530,8 @@ radv_emit_framebuffer_state(struct radv_cmd_buffer *cmd_buffer)
       radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, htile_buffer->bo);
 
       radv_emit_fb_ds_state(cmd_buffer, &ds, &iview, layout, false);
+
+      radv_image_view_finish(&iview);
    } else {
       if (cmd_buffer->device->physical_device->rad_info.chip_class == GFX9)
          radeon_set_context_reg_seq(cmd_buffer->cs, R_028038_DB_Z_INFO, 2);
@@ -2863,7 +2876,6 @@ radv_flush_constants(struct radv_cmd_buffer *cmd_buffer, VkShaderStageFlags stag
          continue;
 
       need_push_constants |= shader->info.loads_push_constants;
-      need_push_constants |= shader->info.loads_dynamic_offsets;
 
       uint8_t base = shader->info.base_inline_push_consts;
       uint8_t count = shader->info.num_inline_push_consts;
@@ -5176,12 +5188,14 @@ radv_cmd_buffer_begin_subpass(struct radv_cmd_buffer *cmd_buffer, uint32_t subpa
          /* HTILE buffer */
          uint64_t htile_offset = ds_image->offset + ds_image->planes[0].surface.meta_offset;
          uint64_t htile_size = ds_image->planes[0].surface.meta_slice_size;
-         struct radv_buffer htile_buffer = {.bo = ds_image->bo,
-                                            .offset = htile_offset,
-                                            .size = htile_size};
+         struct radv_buffer htile_buffer;
+
+         radv_buffer_init(&htile_buffer, cmd_buffer->device, ds_image->bo, htile_size, htile_offset);
 
          /* Copy the VRS rates to the HTILE buffer. */
          radv_copy_vrs_htile(cmd_buffer, vrs_iview->image, &extent, ds_image, &htile_buffer, true);
+
+         radv_buffer_finish(&htile_buffer);
       } else {
          /* When a subpass uses a VRS attachment without binding a depth/stencil attachment, we have
           * to copy the VRS rates to our internal HTILE buffer.
@@ -6256,8 +6270,8 @@ struct radv_dispatch_info {
    /**
     * Indirect compute parameters resource.
     */
-   struct radv_buffer *indirect;
-   uint64_t indirect_offset;
+   struct radeon_winsys_bo *indirect;
+   uint64_t va;
 };
 
 static void
@@ -6283,19 +6297,15 @@ radv_emit_dispatch_packets(struct radv_cmd_buffer *cmd_buffer, struct radv_pipel
    }
 
    if (info->indirect) {
-      uint64_t va = radv_buffer_get_va(info->indirect->bo);
-
-      va += info->indirect->offset + info->indirect_offset;
-
-      radv_cs_add_buffer(ws, cs, info->indirect->bo);
+      radv_cs_add_buffer(ws, cs, info->indirect);
 
       if (loc->sgpr_idx != -1) {
          for (unsigned i = 0; i < 3; ++i) {
             radeon_emit(cs, PKT3(PKT3_COPY_DATA, 4, 0));
             radeon_emit(cs,
                         COPY_DATA_SRC_SEL(COPY_DATA_SRC_MEM) | COPY_DATA_DST_SEL(COPY_DATA_REG));
-            radeon_emit(cs, (va + 4 * i));
-            radeon_emit(cs, (va + 4 * i) >> 32);
+            radeon_emit(cs, (info->va + 4 * i));
+            radeon_emit(cs, (info->va + 4 * i) >> 32);
             radeon_emit(cs, ((R_00B900_COMPUTE_USER_DATA_0 + loc->sgpr_idx * 4) >> 2) + i);
             radeon_emit(cs, 0);
          }
@@ -6303,14 +6313,14 @@ radv_emit_dispatch_packets(struct radv_cmd_buffer *cmd_buffer, struct radv_pipel
 
       if (radv_cmd_buffer_uses_mec(cmd_buffer)) {
          radeon_emit(cs, PKT3(PKT3_DISPATCH_INDIRECT, 2, predicating) | PKT3_SHADER_TYPE_S(1));
-         radeon_emit(cs, va);
-         radeon_emit(cs, va >> 32);
+         radeon_emit(cs, info->va);
+         radeon_emit(cs, info->va >> 32);
          radeon_emit(cs, dispatch_initiator);
       } else {
          radeon_emit(cs, PKT3(PKT3_SET_BASE, 2, 0) | PKT3_SHADER_TYPE_S(1));
          radeon_emit(cs, 1);
-         radeon_emit(cs, va);
-         radeon_emit(cs, va >> 32);
+         radeon_emit(cs, info->va);
+         radeon_emit(cs, info->va >> 32);
 
          radeon_emit(cs, PKT3(PKT3_DISPATCH_INDIRECT, 1, predicating) | PKT3_SHADER_TYPE_S(1));
          radeon_emit(cs, 0);
@@ -6507,8 +6517,8 @@ radv_CmdDispatchIndirect(VkCommandBuffer commandBuffer, VkBuffer _buffer, VkDevi
    RADV_FROM_HANDLE(radv_buffer, buffer, _buffer);
    struct radv_dispatch_info info = {0};
 
-   info.indirect = buffer;
-   info.indirect_offset = offset;
+   info.indirect = buffer->bo;
+   info.va = radv_buffer_get_va(buffer->bo) + buffer->offset + offset;
 
    radv_compute_dispatch(cmd_buffer, &info);
 }
@@ -6522,6 +6532,17 @@ radv_unaligned_dispatch(struct radv_cmd_buffer *cmd_buffer, uint32_t x, uint32_t
    info.blocks[1] = y;
    info.blocks[2] = z;
    info.unaligned = 1;
+
+   radv_compute_dispatch(cmd_buffer, &info);
+}
+
+void
+radv_indirect_dispatch(struct radv_cmd_buffer *cmd_buffer, struct radeon_winsys_bo *bo, uint64_t va)
+{
+   struct radv_dispatch_info info = {0};
+
+   info.indirect = bo;
+   info.va = va;
 
    radv_compute_dispatch(cmd_buffer, &info);
 }
@@ -6545,9 +6566,6 @@ radv_rt_bind_tables(struct radv_cmd_buffer *cmd_buffer,
 
    if (!radv_cmd_buffer_upload_alloc(cmd_buffer, 64, &offset, &ptr))
       return false;
-
-   /* For the descriptor format. */
-   assert(cmd_buffer->device->physical_device->rad_info.chip_class >= GFX10);
 
    desc_ptr = ptr;
    for (unsigned i = 0; i < 4; ++i, desc_ptr += 4) {

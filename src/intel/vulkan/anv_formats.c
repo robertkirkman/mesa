@@ -23,6 +23,7 @@
 
 #include "anv_private.h"
 #include "drm-uapi/drm_fourcc.h"
+#include "vk_enum_defines.h"
 #include "vk_enum_to_str.h"
 #include "vk_format.h"
 #include "vk_util.h"
@@ -600,14 +601,6 @@ anv_get_image_format_features(const struct intel_device_info *devinfo,
     * with modifiers.
     */
    if (vk_tiling != VK_IMAGE_TILING_OPTIMAL &&
-       isl_format_get_layout(plane_format.isl_format)->txc == ISL_TXC_ASTC)
-      return 0;
-
-   /* ASTC requires nasty workarounds on BSW so we just disable it for now.
-    *
-    * TODO: Figure out the ASTC workarounds and re-enable on BSW.
-    */
-   if (devinfo->ver < 9 &&
        isl_format_get_layout(plane_format.isl_format)->txc == ISL_TXC_ASTC)
       return 0;
 

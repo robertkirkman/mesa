@@ -194,7 +194,7 @@ v3dv_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
 
    if (result != VK_SUCCESS) {
       vk_free(pAllocator, instance);
-      return vk_error(instance, result);
+      return vk_error(NULL, result);
    }
 
    v3d_process_debug_variable();
@@ -1732,19 +1732,6 @@ v3dv_CreateDevice(VkPhysicalDevice physicalDevice,
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO);
 
-   /* Check enabled features */
-   if (pCreateInfo->pEnabledFeatures) {
-      VkPhysicalDeviceFeatures supported_features;
-      v3dv_GetPhysicalDeviceFeatures(physicalDevice, &supported_features);
-      VkBool32 *supported_feature = (VkBool32 *)&supported_features;
-      VkBool32 *enabled_feature = (VkBool32 *)pCreateInfo->pEnabledFeatures;
-      unsigned num_features = sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32);
-      for (uint32_t i = 0; i < num_features; i++) {
-         if (enabled_feature[i] && !supported_feature[i])
-            return vk_error(instance, VK_ERROR_FEATURE_NOT_PRESENT);
-      }
-   }
-
    /* Check requested queues (we only expose one queue ) */
    assert(pCreateInfo->queueCreateInfoCount == 1);
    for (uint32_t i = 0; i < pCreateInfo->queueCreateInfoCount; i++) {
@@ -1767,7 +1754,7 @@ v3dv_CreateDevice(VkPhysicalDevice physicalDevice,
                            &dispatch_table, pCreateInfo, pAllocator);
    if (result != VK_SUCCESS) {
       vk_free(&device->vk.alloc, device);
-      return vk_error(instance, result);
+      return vk_error(NULL, result);
    }
 
    device->instance = instance;

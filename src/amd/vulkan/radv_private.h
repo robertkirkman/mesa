@@ -648,6 +648,8 @@ struct radv_meta_state {
       VkPipeline leaf_pipeline;
       VkPipelineLayout internal_p_layout;
       VkPipeline internal_pipeline;
+      VkPipelineLayout copy_p_layout;
+      VkPipeline copy_pipeline;
    } accel_struct_build;
 };
 
@@ -865,6 +867,10 @@ struct radv_device_memory {
 #endif
 };
 
+void radv_device_memory_init(struct radv_device_memory *mem, struct radv_device *device,
+                             struct radeon_winsys_bo *bo);
+void radv_device_memory_finish(struct radv_device_memory *mem);
+
 struct radv_descriptor_range {
    uint64_t va;
    uint32_t size;
@@ -962,6 +968,10 @@ struct radv_buffer {
 
    bool shareable;
 };
+
+void radv_buffer_init(struct radv_buffer *buffer, struct radv_device *device,
+                      struct radeon_winsys_bo *bo, uint64_t size, uint64_t offset);
+void radv_buffer_finish(struct radv_buffer *buffer);
 
 enum radv_dynamic_state_bits {
    RADV_DYNAMIC_VIEWPORT = 1ull << 0,
@@ -1639,27 +1649,24 @@ radv_get_viewport_xform(const VkViewport *viewport, float scale[3], float transl
 void radv_unaligned_dispatch(struct radv_cmd_buffer *cmd_buffer, uint32_t x, uint32_t y,
                              uint32_t z);
 
+void radv_indirect_dispatch(struct radv_cmd_buffer *cmd_buffer, struct radeon_winsys_bo *bo,
+                            uint64_t va);
+
 struct radv_event {
    struct vk_object_base base;
    struct radeon_winsys_bo *bo;
    uint64_t *map;
 };
 
-#define RADV_HASH_SHADER_NO_NGG            (1 << 0)
 #define RADV_HASH_SHADER_CS_WAVE32         (1 << 1)
 #define RADV_HASH_SHADER_PS_WAVE32         (1 << 2)
 #define RADV_HASH_SHADER_GE_WAVE32         (1 << 3)
 #define RADV_HASH_SHADER_LLVM              (1 << 4)
-#define RADV_HASH_SHADER_DISCARD_TO_DEMOTE (1 << 5)
-#define RADV_HASH_SHADER_MRT_NAN_FIXUP     (1 << 6)
-#define RADV_HASH_SHADER_INVARIANT_GEOM    (1 << 7)
 #define RADV_HASH_SHADER_KEEP_STATISTICS   (1 << 8)
-#define RADV_HASH_SHADER_FORCE_VRS_2x2     (1 << 9)
-#define RADV_HASH_SHADER_FORCE_VRS_2x1     (1 << 10)
-#define RADV_HASH_SHADER_FORCE_VRS_1x2     (1 << 11)
 #define RADV_HASH_SHADER_FORCE_NGG_CULLING (1 << 13)
 #define RADV_HASH_SHADER_ROBUST_BUFFER_ACCESS (1 << 14)
 #define RADV_HASH_SHADER_ROBUST_BUFFER_ACCESS2 (1 << 15)
+#define RADV_HASH_SHADER_FORCE_EMULATE_RT (1 << 16)
 
 struct radv_pipeline_key;
 
@@ -2298,6 +2305,7 @@ struct radv_image_view_extra_create_info {
 void radv_image_view_init(struct radv_image_view *view, struct radv_device *device,
                           const VkImageViewCreateInfo *pCreateInfo,
                           const struct radv_image_view_extra_create_info *extra_create_info);
+void radv_image_view_finish(struct radv_image_view *iview);
 
 VkFormat radv_get_aspect_format(struct radv_image *image, VkImageAspectFlags mask);
 
@@ -2320,6 +2328,7 @@ struct radv_buffer_view {
 };
 void radv_buffer_view_init(struct radv_buffer_view *view, struct radv_device *device,
                            const VkBufferViewCreateInfo *pCreateInfo);
+void radv_buffer_view_finish(struct radv_buffer_view *view);
 
 static inline struct VkExtent3D
 radv_sanitize_image_extent(const VkImageType imageType, const struct VkExtent3D imageExtent)
@@ -2846,61 +2855,60 @@ radv_accel_struct_get_va(const struct radv_acceleration_structure *accel)
    return radv_buffer_get_va(accel->bo) + accel->mem_offset;
 }
 
-#define RADV_DEFINE_HANDLE_CASTS(__radv_type, __VkType)                                            \
-                                                                                                   \
-   static inline struct __radv_type *__radv_type##_from_handle(__VkType _handle)                   \
-   {                                                                                               \
-      return (struct __radv_type *)_handle;                                                        \
-   }                                                                                               \
-                                                                                                   \
-   static inline __VkType __radv_type##_to_handle(struct __radv_type *_obj)                        \
-   {                                                                                               \
-      return (__VkType)_obj;                                                                       \
-   }
+#define RADV_FROM_HANDLE(__radv_type, __name, __handle) \
+   VK_FROM_HANDLE(__radv_type, __name, __handle)
 
-#define RADV_DEFINE_NONDISP_HANDLE_CASTS(__radv_type, __VkType)                                    \
-                                                                                                   \
-   static inline struct __radv_type *__radv_type##_from_handle(__VkType _handle)                   \
-   {                                                                                               \
-      return (struct __radv_type *)(uintptr_t)_handle;                                             \
-   }                                                                                               \
-                                                                                                   \
-   static inline __VkType __radv_type##_to_handle(struct __radv_type *_obj)                        \
-   {                                                                                               \
-      return (__VkType)(uintptr_t)_obj;                                                            \
-   }
-
-#define RADV_FROM_HANDLE(__radv_type, __name, __handle)                                            \
-   struct __radv_type *__name = __radv_type##_from_handle(__handle)
-
-RADV_DEFINE_HANDLE_CASTS(radv_cmd_buffer, VkCommandBuffer)
-RADV_DEFINE_HANDLE_CASTS(radv_device, VkDevice)
-RADV_DEFINE_HANDLE_CASTS(radv_instance, VkInstance)
-RADV_DEFINE_HANDLE_CASTS(radv_physical_device, VkPhysicalDevice)
-RADV_DEFINE_HANDLE_CASTS(radv_queue, VkQueue)
-
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_acceleration_structure, VkAccelerationStructureKHR)
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_cmd_pool, VkCommandPool)
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_buffer, VkBuffer)
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_buffer_view, VkBufferView)
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_descriptor_pool, VkDescriptorPool)
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_descriptor_set, VkDescriptorSet)
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_descriptor_set_layout, VkDescriptorSetLayout)
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_descriptor_update_template, VkDescriptorUpdateTemplate)
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_device_memory, VkDeviceMemory)
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_fence, VkFence)
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_event, VkEvent)
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_framebuffer, VkFramebuffer)
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_image, VkImage)
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_image_view, VkImageView);
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_pipeline_cache, VkPipelineCache)
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_pipeline, VkPipeline)
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_pipeline_layout, VkPipelineLayout)
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_query_pool, VkQueryPool)
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_render_pass, VkRenderPass)
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_sampler, VkSampler)
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_sampler_ycbcr_conversion, VkSamplerYcbcrConversion)
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_semaphore, VkSemaphore)
+VK_DEFINE_HANDLE_CASTS(radv_cmd_buffer, vk.base, VkCommandBuffer,
+                       VK_OBJECT_TYPE_COMMAND_BUFFER)
+VK_DEFINE_HANDLE_CASTS(radv_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)
+VK_DEFINE_HANDLE_CASTS(radv_instance, vk.base, VkInstance, VK_OBJECT_TYPE_INSTANCE)
+VK_DEFINE_HANDLE_CASTS(radv_physical_device, vk.base, VkPhysicalDevice,
+                       VK_OBJECT_TYPE_PHYSICAL_DEVICE)
+VK_DEFINE_HANDLE_CASTS(radv_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
+VK_DEFINE_NONDISP_HANDLE_CASTS(radv_acceleration_structure, base,
+                               VkAccelerationStructureKHR,
+                               VK_OBJECT_TYPE_ACCELERATION_STRUCTURE_KHR)
+VK_DEFINE_NONDISP_HANDLE_CASTS(radv_cmd_pool, base, VkCommandPool,
+                               VK_OBJECT_TYPE_COMMAND_POOL)
+VK_DEFINE_NONDISP_HANDLE_CASTS(radv_buffer, base, VkBuffer, VK_OBJECT_TYPE_BUFFER)
+VK_DEFINE_NONDISP_HANDLE_CASTS(radv_buffer_view, base, VkBufferView,
+                               VK_OBJECT_TYPE_BUFFER_VIEW)
+VK_DEFINE_NONDISP_HANDLE_CASTS(radv_descriptor_pool, base, VkDescriptorPool,
+                               VK_OBJECT_TYPE_DESCRIPTOR_POOL)
+VK_DEFINE_NONDISP_HANDLE_CASTS(radv_descriptor_set, header.base, VkDescriptorSet,
+                               VK_OBJECT_TYPE_DESCRIPTOR_SET)
+VK_DEFINE_NONDISP_HANDLE_CASTS(radv_descriptor_set_layout, base,
+                               VkDescriptorSetLayout,
+                               VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT)
+VK_DEFINE_NONDISP_HANDLE_CASTS(radv_descriptor_update_template, base,
+                               VkDescriptorUpdateTemplate,
+                               VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE)
+VK_DEFINE_NONDISP_HANDLE_CASTS(radv_device_memory, base, VkDeviceMemory,
+                               VK_OBJECT_TYPE_DEVICE_MEMORY)
+VK_DEFINE_NONDISP_HANDLE_CASTS(radv_fence, base, VkFence, VK_OBJECT_TYPE_FENCE)
+VK_DEFINE_NONDISP_HANDLE_CASTS(radv_event, base, VkEvent, VK_OBJECT_TYPE_EVENT)
+VK_DEFINE_NONDISP_HANDLE_CASTS(radv_framebuffer, base, VkFramebuffer,
+                               VK_OBJECT_TYPE_FRAMEBUFFER)
+VK_DEFINE_NONDISP_HANDLE_CASTS(radv_image, base, VkImage, VK_OBJECT_TYPE_IMAGE)
+VK_DEFINE_NONDISP_HANDLE_CASTS(radv_image_view, base, VkImageView,
+                               VK_OBJECT_TYPE_IMAGE_VIEW);
+VK_DEFINE_NONDISP_HANDLE_CASTS(radv_pipeline_cache, base, VkPipelineCache,
+                               VK_OBJECT_TYPE_PIPELINE_CACHE)
+VK_DEFINE_NONDISP_HANDLE_CASTS(radv_pipeline, base, VkPipeline,
+                               VK_OBJECT_TYPE_PIPELINE)
+VK_DEFINE_NONDISP_HANDLE_CASTS(radv_pipeline_layout, base, VkPipelineLayout,
+                               VK_OBJECT_TYPE_PIPELINE_LAYOUT)
+VK_DEFINE_NONDISP_HANDLE_CASTS(radv_query_pool, base, VkQueryPool,
+                               VK_OBJECT_TYPE_QUERY_POOL)
+VK_DEFINE_NONDISP_HANDLE_CASTS(radv_render_pass, base, VkRenderPass,
+                               VK_OBJECT_TYPE_RENDER_PASS)
+VK_DEFINE_NONDISP_HANDLE_CASTS(radv_sampler, base, VkSampler,
+                               VK_OBJECT_TYPE_SAMPLER)
+VK_DEFINE_NONDISP_HANDLE_CASTS(radv_sampler_ycbcr_conversion, base,
+                               VkSamplerYcbcrConversion,
+                               VK_OBJECT_TYPE_SAMPLER_YCBCR_CONVERSION)
+VK_DEFINE_NONDISP_HANDLE_CASTS(radv_semaphore, base, VkSemaphore,
+                               VK_OBJECT_TYPE_SEMAPHORE)
 
 #ifdef __cplusplus
 }

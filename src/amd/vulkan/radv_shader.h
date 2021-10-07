@@ -50,6 +50,8 @@ struct radv_pipeline_key;
 struct radv_pipeline_key {
    uint32_t has_multiview_view_index : 1;
    uint32_t optimisations_disabled : 1;
+   uint32_t invariant_geom : 1;
+   uint32_t use_ngg : 1;
 
    struct {
       uint32_t instance_rate_inputs;
@@ -75,6 +77,10 @@ struct radv_pipeline_key {
       uint32_t is_int10;
       uint8_t log2_ps_iter_samples;
       uint8_t num_samples;
+
+      bool lower_discard_to_demote;
+      bool enable_mrt_output_nan_fixup;
+      uint8_t force_vrs;
    } ps;
 
    struct {
@@ -225,7 +231,6 @@ struct radv_shader_info {
    unsigned num_user_sgprs;
    unsigned num_input_sgprs;
    unsigned num_input_vgprs;
-   unsigned private_mem_vgprs;
    bool need_indirect_descriptor_sets;
    bool is_ngg;
    bool is_ngg_passthrough;
@@ -329,8 +334,6 @@ struct radv_shader_info {
 
    struct gfx9_gs_info gs_ring_info;
    struct gfx10_ngg_info ngg_info;
-
-   unsigned float_controls_mode;
 };
 
 enum radv_shader_binary_type { RADV_BINARY_TYPE_LEGACY, RADV_BINARY_TYPE_RTLD };
@@ -529,15 +532,14 @@ get_tcs_num_patches(unsigned tcs_num_input_vertices, unsigned tcs_num_output_ver
 void radv_lower_io(struct radv_device *device, nir_shader *nir);
 
 bool radv_lower_io_to_mem(struct radv_device *device, struct nir_shader *nir,
-                          struct radv_shader_info *info, const struct radv_pipeline_key *pl_key);
+                          const struct radv_shader_info *info, const struct radv_pipeline_key *pl_key);
 
 void radv_lower_ngg(struct radv_device *device, struct nir_shader *nir,
-                    struct radv_shader_info *info,
-                    const struct radv_pipeline_key *pl_key,
-                    bool consider_culling);
+                    const struct radv_shader_info *info,
+                    const struct radv_pipeline_key *pl_key);
 
 bool radv_consider_culling(struct radv_device *device, struct nir_shader *nir,
-                           uint64_t ps_inputs_read);
+                           uint64_t ps_inputs_read, unsigned num_vertices_per_primitive);
 
 void radv_get_nir_options(struct radv_physical_device *device);
 

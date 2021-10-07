@@ -1371,20 +1371,22 @@ anv_pipeline_init_from_cached_graphics(struct anv_graphics_pipeline *pipeline)
 {
    /* TODO: Cache this pipeline-wide information. */
 
-   /* Primitive replication depends on information from all the shaders.
-    * Recover this bit from the fact that we have more than one position slot
-    * in the vertex shader when using it.
-    */
-   assert(pipeline->active_stages & VK_SHADER_STAGE_VERTEX_BIT);
-   int pos_slots = 0;
-   const struct brw_vue_prog_data *vue_prog_data =
-      (const void *) pipeline->shaders[MESA_SHADER_VERTEX]->prog_data;
-   const struct brw_vue_map *vue_map = &vue_prog_data->vue_map;
-   for (int i = 0; i < vue_map->num_slots; i++) {
-      if (vue_map->slot_to_varying[i] == VARYING_SLOT_POS)
-         pos_slots++;
+   if (anv_pipeline_is_primitive(pipeline)) {
+      /* Primitive replication depends on information from all the shaders.
+       * Recover this bit from the fact that we have more than one position slot
+       * in the vertex shader when using it.
+       */
+      assert(pipeline->active_stages & VK_SHADER_STAGE_VERTEX_BIT);
+      int pos_slots = 0;
+      const struct brw_vue_prog_data *vue_prog_data =
+         (const void *) pipeline->shaders[MESA_SHADER_VERTEX]->prog_data;
+      const struct brw_vue_map *vue_map = &vue_prog_data->vue_map;
+      for (int i = 0; i < vue_map->num_slots; i++) {
+         if (vue_map->slot_to_varying[i] == VARYING_SLOT_POS)
+            pos_slots++;
+      }
+      pipeline->use_primitive_replication = pos_slots > 1;
    }
-   pipeline->use_primitive_replication = pos_slots > 1;
 }
 
 static VkResult
@@ -1400,8 +1402,6 @@ anv_pipeline_compile_graphics(struct anv_graphics_pipeline *pipeline,
    const struct brw_compiler *compiler = pipeline->base.device->physical->compiler;
    struct anv_pipeline_stage stages[MESA_SHADER_STAGES] = {};
 
-   pipeline->active_stages = 0;
-
    /* Information on which states are considered dynamic. */
    const VkPipelineDynamicStateCreateInfo *dyn_info =
       info->pDynamicState;
@@ -1416,8 +1416,6 @@ anv_pipeline_compile_graphics(struct anv_graphics_pipeline *pipeline,
    for (uint32_t i = 0; i < info->stageCount; i++) {
       const VkPipelineShaderStageCreateInfo *sinfo = &info->pStages[i];
       gl_shader_stage stage = vk_to_mesa_shader_stage(sinfo->stage);
-
-      pipeline->active_stages |= sinfo->stage;
 
       int64_t stage_start = os_time_get_nano();
 
@@ -1477,9 +1475,6 @@ anv_pipeline_compile_graphics(struct anv_graphics_pipeline *pipeline,
       stages[stage].feedback.duration += os_time_get_nano() - stage_start;
       stages[stage].feedback.flags |= VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT_EXT;
    }
-
-   if (pipeline->active_stages & VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)
-      pipeline->active_stages |= VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
 
    assert(pipeline->active_stages & VK_SHADER_STAGE_VERTEX_BIT);
 
@@ -2043,7 +2038,8 @@ copy_non_dynamic_state(struct anv_graphics_pipeline *pipeline,
          pCreateInfo->pRasterizationState->frontFace;
    }
 
-   if (states & ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_TOPOLOGY) {
+   if ((states & ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_TOPOLOGY) &&
+         (pipeline->active_stages & VK_SHADER_STAGE_VERTEX_BIT)) {
       assert(pCreateInfo->pInputAssemblyState);
       dynamic->primitive_topology = pCreateInfo->pInputAssemblyState->topology;
    }
@@ -2060,7 +2056,8 @@ copy_non_dynamic_state(struct anv_graphics_pipeline *pipeline,
          pCreateInfo->pRasterizationState->depthBiasEnable;
    }
 
-   if (states & ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_RESTART_ENABLE) {
+   if ((states & ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_RESTART_ENABLE) &&
+         (pipeline->active_stages & VK_SHADER_STAGE_VERTEX_BIT)) {
       assert(pCreateInfo->pInputAssemblyState);
       dynamic->primitive_restart_enable =
          pCreateInfo->pInputAssemblyState->primitiveRestartEnable;
@@ -2265,8 +2262,6 @@ anv_pipeline_validate_create_info(const VkGraphicsPipelineCreateInfo *info)
    subpass = &renderpass->subpasses[info->subpass];
 
    assert(info->stageCount >= 1);
-   assert(info->pVertexInputState);
-   assert(info->pInputAssemblyState);
    assert(info->pRasterizationState);
    if (!info->pRasterizationState->rasterizerDiscardEnable) {
       assert(info->pViewportState);
@@ -2291,6 +2286,10 @@ anv_pipeline_validate_create_info(const VkGraphicsPipelineCreateInfo *info)
 
    for (uint32_t i = 0; i < info->stageCount; ++i) {
       switch (info->pStages[i].stage) {
+      case VK_SHADER_STAGE_VERTEX_BIT:
+         assert(info->pVertexInputState);
+         assert(info->pInputAssemblyState);
+         break;
       case VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT:
       case VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT:
          assert(info->pTessellationState);
@@ -2373,6 +2372,14 @@ anv_graphics_pipeline_init(struct anv_graphics_pipeline *pipeline,
             pCreateInfo->pDynamicState->pDynamicStates[s]);
       }
    }
+
+   pipeline->active_stages = 0;
+   for (uint32_t i = 0; i < pCreateInfo->stageCount; i++)
+      pipeline->active_stages |= pCreateInfo->pStages[i].stage;
+
+   if (pipeline->active_stages & VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)
+      pipeline->active_stages |= VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+
    copy_non_dynamic_state(pipeline, pCreateInfo);
 
    pipeline->depth_clamp_enable = pCreateInfo->pRasterizationState->depthClampEnable;
@@ -2398,79 +2405,79 @@ anv_graphics_pipeline_init(struct anv_graphics_pipeline *pipeline,
       return result;
    }
 
-   assert(pipeline->shaders[MESA_SHADER_VERTEX]);
-
    anv_pipeline_setup_l3_config(&pipeline->base, false);
 
-   const VkPipelineVertexInputStateCreateInfo *vi_info =
-      pCreateInfo->pVertexInputState;
+   if (anv_pipeline_is_primitive(pipeline)) {
+      const VkPipelineVertexInputStateCreateInfo *vi_info =
+         pCreateInfo->pVertexInputState;
 
-   const uint64_t inputs_read = get_vs_prog_data(pipeline)->inputs_read;
+      const uint64_t inputs_read = get_vs_prog_data(pipeline)->inputs_read;
 
-   for (uint32_t i = 0; i < vi_info->vertexAttributeDescriptionCount; i++) {
-      const VkVertexInputAttributeDescription *desc =
-         &vi_info->pVertexAttributeDescriptions[i];
+      for (uint32_t i = 0; i < vi_info->vertexAttributeDescriptionCount; i++) {
+         const VkVertexInputAttributeDescription *desc =
+            &vi_info->pVertexAttributeDescriptions[i];
 
-      if (inputs_read & (1ull << (VERT_ATTRIB_GENERIC0 + desc->location)))
-         pipeline->vb_used |= 1 << desc->binding;
-   }
-
-   for (uint32_t i = 0; i < vi_info->vertexBindingDescriptionCount; i++) {
-      const VkVertexInputBindingDescription *desc =
-         &vi_info->pVertexBindingDescriptions[i];
-
-      pipeline->vb[desc->binding].stride = desc->stride;
-
-      /* Step rate is programmed per vertex element (attribute), not
-       * binding. Set up a map of which bindings step per instance, for
-       * reference by vertex element setup. */
-      switch (desc->inputRate) {
-      default:
-      case VK_VERTEX_INPUT_RATE_VERTEX:
-         pipeline->vb[desc->binding].instanced = false;
-         break;
-      case VK_VERTEX_INPUT_RATE_INSTANCE:
-         pipeline->vb[desc->binding].instanced = true;
-         break;
+         if (inputs_read & (1ull << (VERT_ATTRIB_GENERIC0 + desc->location)))
+            pipeline->vb_used |= 1 << desc->binding;
       }
 
-      pipeline->vb[desc->binding].instance_divisor = 1;
-   }
+      for (uint32_t i = 0; i < vi_info->vertexBindingDescriptionCount; i++) {
+         const VkVertexInputBindingDescription *desc =
+            &vi_info->pVertexBindingDescriptions[i];
 
-   const VkPipelineVertexInputDivisorStateCreateInfoEXT *vi_div_state =
-      vk_find_struct_const(vi_info->pNext,
-                           PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO_EXT);
-   if (vi_div_state) {
-      for (uint32_t i = 0; i < vi_div_state->vertexBindingDivisorCount; i++) {
-         const VkVertexInputBindingDivisorDescriptionEXT *desc =
-            &vi_div_state->pVertexBindingDivisors[i];
+         pipeline->vb[desc->binding].stride = desc->stride;
 
-         pipeline->vb[desc->binding].instance_divisor = desc->divisor;
+         /* Step rate is programmed per vertex element (attribute), not
+          * binding. Set up a map of which bindings step per instance, for
+          * reference by vertex element setup. */
+         switch (desc->inputRate) {
+         default:
+         case VK_VERTEX_INPUT_RATE_VERTEX:
+            pipeline->vb[desc->binding].instanced = false;
+            break;
+         case VK_VERTEX_INPUT_RATE_INSTANCE:
+            pipeline->vb[desc->binding].instanced = true;
+            break;
+         }
+
+         pipeline->vb[desc->binding].instance_divisor = 1;
       }
-   }
 
-   /* Our implementation of VK_KHR_multiview uses instancing to draw the
-    * different views.  If the client asks for instancing, we need to multiply
-    * the instance divisor by the number of views ensure that we repeat the
-    * client's per-instance data once for each view.
-    */
-   if (pipeline->subpass->view_mask && !pipeline->use_primitive_replication) {
-      const uint32_t view_count = anv_subpass_view_count(pipeline->subpass);
-      for (uint32_t vb = 0; vb < MAX_VBS; vb++) {
-         if (pipeline->vb[vb].instanced)
-            pipeline->vb[vb].instance_divisor *= view_count;
+      const VkPipelineVertexInputDivisorStateCreateInfoEXT *vi_div_state =
+         vk_find_struct_const(vi_info->pNext,
+                              PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO_EXT);
+      if (vi_div_state) {
+         for (uint32_t i = 0; i < vi_div_state->vertexBindingDivisorCount; i++) {
+            const VkVertexInputBindingDivisorDescriptionEXT *desc =
+               &vi_div_state->pVertexBindingDivisors[i];
+
+            pipeline->vb[desc->binding].instance_divisor = desc->divisor;
+         }
       }
+
+      /* Our implementation of VK_KHR_multiview uses instancing to draw the
+       * different views.  If the client asks for instancing, we need to multiply
+       * the instance divisor by the number of views ensure that we repeat the
+       * client's per-instance data once for each view.
+       */
+      if (pipeline->subpass->view_mask && !pipeline->use_primitive_replication) {
+         const uint32_t view_count = anv_subpass_view_count(pipeline->subpass);
+         for (uint32_t vb = 0; vb < MAX_VBS; vb++) {
+            if (pipeline->vb[vb].instanced)
+               pipeline->vb[vb].instance_divisor *= view_count;
+         }
+      }
+
+      const VkPipelineInputAssemblyStateCreateInfo *ia_info =
+         pCreateInfo->pInputAssemblyState;
+      const VkPipelineTessellationStateCreateInfo *tess_info =
+         pCreateInfo->pTessellationState;
+
+      if (anv_pipeline_has_stage(pipeline, MESA_SHADER_TESS_EVAL))
+         pipeline->topology = _3DPRIM_PATCHLIST(tess_info->patchControlPoints);
+      else
+         pipeline->topology = vk_to_intel_primitive_type[ia_info->topology];
    }
-
-   const VkPipelineInputAssemblyStateCreateInfo *ia_info =
-      pCreateInfo->pInputAssemblyState;
-   const VkPipelineTessellationStateCreateInfo *tess_info =
-      pCreateInfo->pTessellationState;
-
-   if (anv_pipeline_has_stage(pipeline, MESA_SHADER_TESS_EVAL))
-      pipeline->topology = _3DPRIM_PATCHLIST(tess_info->patchControlPoints);
-   else
-      pipeline->topology = vk_to_intel_primitive_type[ia_info->topology];
 
    /* If rasterization is not enabled, ms_info must be ignored. */
    const bool raster_enabled =

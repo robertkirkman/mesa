@@ -134,6 +134,22 @@ blorp_alloc_dynamic_state(struct blorp_batch *batch,
    return state.map;
 }
 
+UNUSED static void *
+blorp_alloc_general_state(struct blorp_batch *batch,
+                          uint32_t size,
+                          uint32_t alignment,
+                          uint32_t *offset)
+{
+   struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
+
+   struct anv_state state =
+      anv_state_stream_alloc(&cmd_buffer->general_state_stream, size,
+                             alignment);
+
+   *offset = state.offset;
+   return state.map;
+}
+
 static void
 blorp_alloc_binding_table(struct blorp_batch *batch, unsigned num_entries,
                           unsigned state_size, unsigned state_alignment,
@@ -238,6 +254,10 @@ genX(blorp_exec)(struct blorp_batch *batch,
                  const struct blorp_params *params)
 {
    struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
+   if (batch->flags & BLORP_BATCH_USE_COMPUTE)
+      assert(cmd_buffer->pool->queue_family->queueFlags & VK_QUEUE_COMPUTE_BIT);
+   else
+      assert(cmd_buffer->pool->queue_family->queueFlags & VK_QUEUE_GRAPHICS_BIT);
 
    if (!cmd_buffer->state.current_l3_config) {
       const struct intel_l3_config *cfg =
@@ -283,7 +303,10 @@ genX(blorp_exec)(struct blorp_batch *batch,
 
    genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
 
-   genX(flush_pipeline_select_3d)(cmd_buffer);
+   if (batch->flags & BLORP_BATCH_USE_COMPUTE)
+      genX(flush_pipeline_select_gpgpu)(cmd_buffer);
+   else
+      genX(flush_pipeline_select_3d)(cmd_buffer);
 
    genX(cmd_buffer_emit_gfx7_depth_flush)(cmd_buffer);
 
