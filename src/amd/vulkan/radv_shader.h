@@ -112,6 +112,7 @@ struct radv_nir_compiler_options {
    bool has_image_load_dcc_bug;
    bool enable_mrt_output_nan_fixup;
    bool wgp_mode;
+   bool remap_spi_ps_input;
    enum radeon_family family;
    enum chip_class chip_class;
    const struct radeon_info *info;
@@ -219,10 +220,8 @@ struct radv_shader_info {
    uint8_t max_push_constant_used;
    bool has_only_32bit_push_constants;
    bool has_indirect_push_constants;
-   uint8_t num_inline_push_consts;
-   uint8_t base_inline_push_consts;
    uint32_t desc_set_used_mask;
-   bool needs_multiview_view_index;
+   bool uses_view_index;
    bool uses_invocation_id;
    bool uses_prim_id;
    uint8_t wave_size;
@@ -231,7 +230,6 @@ struct radv_shader_info {
    unsigned num_user_sgprs;
    unsigned num_input_sgprs;
    unsigned num_input_vgprs;
-   bool need_indirect_descriptor_sets;
    bool is_ngg;
    bool is_ngg_passthrough;
    bool has_ngg_culling;
@@ -303,9 +301,21 @@ struct radv_shader_info {
       bool early_fragment_test;
       bool post_depth_coverage;
       bool reads_sample_mask_in;
+      bool reads_front_face;
+      bool reads_sample_id;
+      bool reads_frag_shading_rate;
+      bool reads_barycentric_model;
+      bool reads_persp_sample;
+      bool reads_persp_center;
+      bool reads_persp_centroid;
+      bool reads_linear_sample;
+      bool reads_linear_center;
+      bool reads_linear_centroid;
+      uint8_t reads_frag_coord_mask;
+      uint8_t reads_sample_pos_mask;
       uint8_t depth_layout;
-      bool uses_persp_or_linear_interp;
       bool allow_flat_shading;
+      unsigned spi_ps_input;
    } ps;
    struct {
       bool uses_grid_size;
@@ -343,6 +353,7 @@ struct radv_shader_binary {
    gl_shader_stage stage;
    bool is_gs_copy_shader;
 
+   struct ac_shader_config config;
    struct radv_shader_info info;
 
    /* Self-referential size so we avoid consistency issues. */
@@ -351,7 +362,6 @@ struct radv_shader_binary {
 
 struct radv_shader_binary_legacy {
    struct radv_shader_binary base;
-   struct ac_shader_config config;
    unsigned code_size;
    unsigned exec_size;
    unsigned ir_size;
@@ -413,8 +423,10 @@ nir_shader *radv_shader_compile_to_nir(struct radv_device *device, struct vk_sha
 
 void radv_destroy_shader_slabs(struct radv_device *device);
 
-VkResult radv_create_shaders(struct radv_pipeline *pipeline, struct radv_device *device,
-                             struct radv_pipeline_cache *cache, const struct radv_pipeline_key *key,
+VkResult radv_create_shaders(struct radv_pipeline *pipeline,
+                             struct radv_pipeline_layout *pipeline_layout,
+                             struct radv_device *device, struct radv_pipeline_cache *cache,
+                             const struct radv_pipeline_key *key,
                              const VkPipelineShaderStageCreateInfo **pStages,
                              const VkPipelineCreateFlags flags, const uint8_t *custom_hash,
                              VkPipelineCreationFeedbackEXT *pipeline_feedback,
@@ -422,7 +434,7 @@ VkResult radv_create_shaders(struct radv_pipeline *pipeline, struct radv_device 
 
 struct radv_shader_variant *radv_shader_variant_create(struct radv_device *device,
                                                        const struct radv_shader_binary *binary,
-                                                       bool keep_shader_info);
+                                                       bool keep_shader_info, bool from_cache);
 struct radv_shader_variant *radv_shader_variant_compile(
    struct radv_device *device, struct vk_shader_module *module, struct nir_shader *const *shaders,
    int shader_count, struct radv_pipeline_layout *layout, const struct radv_pipeline_key *key,
@@ -443,6 +455,9 @@ unsigned radv_get_max_waves(const struct radv_device *device, struct radv_shader
                             gl_shader_stage stage);
 
 const char *radv_get_shader_name(struct radv_shader_info *info, gl_shader_stage stage);
+
+unsigned radv_compute_spi_ps_input(const struct radv_device *device,
+                                   const struct radv_shader_info *info);
 
 bool radv_can_dump_shader(struct radv_device *device, struct vk_shader_module *module,
                           bool meta_shader);

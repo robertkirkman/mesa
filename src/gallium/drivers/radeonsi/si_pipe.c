@@ -93,7 +93,6 @@ static const struct debug_named_value radeonsi_debug_options[] = {
    /* 3D engine options: */
    {"nogfx", DBG(NO_GFX), "Disable graphics. Only multimedia compute paths can be used."},
    {"nongg", DBG(NO_NGG), "Disable NGG and use the legacy pipeline."},
-   {"nofastlaunch", DBG(NO_FAST_LAUNCH), "Disable NGG GS fast launch."},
    {"nggc", DBG(ALWAYS_NGG_CULLING_ALL), "Always use NGG culling even when it can hurt."},
    {"nggctess", DBG(ALWAYS_NGG_CULLING_TESS), "Always use NGG culling for tessellation."},
    {"nonggc", DBG(NO_NGG_CULLING), "Disable NGG culling."},
@@ -862,10 +861,12 @@ static struct pipe_context *si_pipe_create_context(struct pipe_screen *screen, v
    struct pipe_context *tc =
       threaded_context_create(ctx, &sscreen->pool_transfers,
                               si_replace_buffer_storage,
-                              sscreen->info.is_amdgpu ? si_create_fence : NULL,
-                              si_is_resource_busy,
-                              true,
-                              false,
+                              &(struct threaded_context_options){
+                                 .create_fence = sscreen->info.is_amdgpu ?
+                                       si_create_fence : NULL,
+                                 .is_resource_busy = si_is_resource_busy,
+                                 .driver_calls_flush_notify = true,
+                              },
                               &((struct si_context *)ctx)->tc);
 
    if (tc && tc != ctx)

@@ -22,7 +22,9 @@
 """Create enum to string functions for vulkan using vk.xml."""
 
 import argparse
+import functools
 import os
+import re
 import textwrap
 import xml.etree.ElementTree as et
 
@@ -179,12 +181,28 @@ H_DEFINE_TEMPLATE = Template(textwrap.dedent(u"""\
     % endfor
 
     % for enum in bitmasks:
+      % if enum.bitwidth > 32:
+        <% continue %>
+      % endif
+      % if enum.guard:
+#ifdef ${enum.guard}
+      % endif
+    #define ${enum.all_bits_name()} ${hex(enum.all_bits_value())}u
+      % if enum.guard:
+#endif
+      % endif
+    % endfor
+
+    % for enum in bitmasks:
+      % if enum.bitwidth < 64:
+        <% continue %>
+      % endif
     /* Redefine bitmask values of ${enum.name} */
       % if enum.guard:
 #ifdef ${enum.guard}
       % endif
-      % for v in enum.values.keys():
-    #define ${enum.values[v]} (${hex(v)}ULL)
+      % for n, v in enum.name_to_value.items():
+    #define ${n} (${hex(v)}ULL)
       % endfor
       % if enum.guard:
 #endif
@@ -225,17 +243,31 @@ class VkExtension(object):
         self.define = define
 
 
+def CamelCase_to_SHOUT_CASE(s):
+   return (s[:1] + re.sub(r'(?<![A-Z])([A-Z])', r'_\1', s[1:])).upper()
+
+
 class VkEnum(object):
     """Simple struct-like class representing a single Vulkan Enum."""
 
-    def __init__(self, name, values=None):
+    def __init__(self, name, bitwidth=32, values=None):
         self.name = name
+        self.bitwidth = bitwidth
         self.extension = None
         # Maps numbers to names
         self.values = values or dict()
         self.name_to_value = dict()
         self.guard = None
         self.name_to_alias_list = {}
+
+    def all_bits_name(self):
+        assert self.name.startswith('Vk')
+        assert re.search(r'FlagBits[A-Z]*$', self.name)
+
+        return 'VK_ALL_' + CamelCase_to_SHOUT_CASE(self.name[2:])
+
+    def all_bits_value(self):
+        return functools.reduce(lambda a,b: a | b, self.values.keys(), 0)
 
     def add_value(self, name, value=None,
                   extnum=None, offset=None, alias=None,
@@ -245,7 +277,7 @@ class VkEnum(object):
             if alias not in self.name_to_value:
                 # We don't have this alias yet.  Just record the alias and
                 # we'll deal with it later.
-                alias_list = self.name_to_alias_list.get(alias, [])
+                alias_list = self.name_to_alias_list.setdefault(alias, [])
                 alias_list.append(name);
                 return
 
@@ -267,7 +299,7 @@ class VkEnum(object):
         # Now that the value has been fully added, resolve aliases, if any.
         if name in self.name_to_alias_list:
             for alias in self.name_to_alias_list[name]:
-                add_value(alias, value)
+                self.add_value(alias, value)
             del self.name_to_alias_list[name]
 
     def add_value_from_xml(self, elem, extension=None):
@@ -334,10 +366,10 @@ def parse_xml(enum_factory, ext_factory, struct_factory, bitmask_factory,
 
     # For bitmask we only add the Enum selected for convenience.
     for enum_type in xml.findall('./enums[@type="bitmask"]'):
-        enum = bitmask_factory.get(enum_type.attrib['name'])
-        if enum is not None:
-            for value in enum_type.findall('./enum'):
-                enum.add_value_from_xml(value)
+        bitwidth = int(enum_type.attrib.get('bitwidth', 32))
+        enum = bitmask_factory(enum_type.attrib['name'], bitwidth=bitwidth)
+        for value in enum_type.findall('./enum'):
+            enum.add_value_from_xml(value)
 
     for value in xml.findall('./feature/require/enum[@extends]'):
         extends = value.attrib['extends']
@@ -412,11 +444,7 @@ def main():
     ext_factory = NamedFactory(VkExtension)
     struct_factory = NamedFactory(VkChainStruct)
     obj_type_factory = NamedFactory(VkObjectType)
-
-    # Only treat this bitmask for now
     bitmask_factory = NamedFactory(VkEnum)
-    bitmask_factory('VkAccessFlagBits2KHR')
-    bitmask_factory('VkPipelineStageFlagBits2KHR')
 
     for filename in args.xml_files:
         parse_xml(enum_factory, ext_factory, struct_factory, bitmask_factory,

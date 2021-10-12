@@ -44,6 +44,9 @@ struct vk_object_base {
 
    struct vk_device *device;
 
+   /* True if this object is fully constructed and visible to the client */
+   bool client_visible;
+
    /* For VK_EXT_private_data */
    struct util_sparse_array private_data;
 
@@ -55,7 +58,6 @@ void vk_object_base_init(UNUSED struct vk_device *device,
                          struct vk_object_base *base,
                          UNUSED VkObjectType obj_type);
 void vk_object_base_finish(UNUSED struct vk_object_base *base);
-void vk_object_base_reset(struct vk_object_base *base);
 
 static inline void
 vk_object_base_assert_valid(ASSERTED struct vk_object_base *base,
@@ -86,6 +88,8 @@ vk_object_base_from_u64_handle(uint64_t handle, VkObjectType obj_type)
    __driver_type ## _to_handle(struct __driver_type *_obj)                 \
    {                                                                       \
       vk_object_base_assert_valid(&_obj->__base, __VK_TYPE);               \
+      if (_obj != NULL)                                                    \
+         _obj->__base.client_visible = true;                               \
       return (__VkType) _obj;                                              \
    }
 
@@ -104,6 +108,8 @@ vk_object_base_from_u64_handle(uint64_t handle, VkObjectType obj_type)
    __driver_type ## _to_handle(struct __driver_type *_obj)                 \
    {                                                                       \
       vk_object_base_assert_valid(&_obj->__base, __VK_TYPE);               \
+      if (_obj != NULL)                                                    \
+         _obj->__base.client_visible = true;                               \
       return (__VkType)(uintptr_t) _obj;                                   \
    }
 

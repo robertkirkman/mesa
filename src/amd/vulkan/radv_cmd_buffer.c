@@ -424,7 +424,7 @@ radv_create_cmd_buffer(struct radv_device *device, struct radv_cmd_pool *pool,
    unsigned ring;
    cmd_buffer = vk_zalloc(&pool->alloc, sizeof(*cmd_buffer), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (cmd_buffer == NULL)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    VkResult result =
       vk_command_buffer_init(&cmd_buffer->vk, &device->vk);
@@ -445,7 +445,7 @@ radv_create_cmd_buffer(struct radv_device *device, struct radv_cmd_pool *pool,
    cmd_buffer->cs = device->ws->cs_create(device->ws, ring);
    if (!cmd_buffer->cs) {
       radv_destroy_cmd_buffer(cmd_buffer);
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
    vk_object_base_init(&device->vk, &cmd_buffer->meta_push_descriptors.base,
@@ -993,19 +993,17 @@ radv_emit_sample_locations(struct radv_cmd_buffer *cmd_buffer)
 
 static void
 radv_emit_inline_push_consts(struct radv_cmd_buffer *cmd_buffer, struct radv_pipeline *pipeline,
-                             gl_shader_stage stage, int idx, int count, uint32_t *values)
+                             gl_shader_stage stage, int idx, uint32_t *values)
 {
    struct radv_userdata_info *loc = radv_lookup_user_sgpr(pipeline, stage, idx);
    uint32_t base_reg = pipeline->user_data_0[stage];
    if (loc->sgpr_idx == -1)
       return;
 
-   assert(loc->num_sgprs == count);
+   radeon_check_space(cmd_buffer->device->ws, cmd_buffer->cs, 2 + loc->num_sgprs);
 
-   radeon_check_space(cmd_buffer->device->ws, cmd_buffer->cs, 2 + count);
-
-   radeon_set_sh_reg_seq(cmd_buffer->cs, base_reg + loc->sgpr_idx * 4, count);
-   radeon_emit_array(cmd_buffer->cs, values, count);
+   radeon_set_sh_reg_seq(cmd_buffer->cs, base_reg + loc->sgpr_idx * 4, loc->num_sgprs);
+   radeon_emit_array(cmd_buffer->cs, values, loc->num_sgprs);
 }
 
 static void
@@ -2835,13 +2833,20 @@ radv_flush_descriptors(struct radv_cmd_buffer *cmd_buffer, VkShaderStageFlags st
       radv_save_descriptors(cmd_buffer, bind_point);
 }
 
+static bool
+radv_shader_loads_push_constants(struct radv_pipeline *pipeline, gl_shader_stage stage)
+{
+   struct radv_userdata_info *loc =
+      radv_lookup_user_sgpr(pipeline, stage, AC_UD_PUSH_CONSTANTS);
+   return loc->sgpr_idx != -1;
+}
+
 static void
 radv_flush_constants(struct radv_cmd_buffer *cmd_buffer, VkShaderStageFlags stages,
                      struct radv_pipeline *pipeline, VkPipelineBindPoint bind_point)
 {
    struct radv_descriptor_state *descriptors_state =
       radv_get_descriptors_state(cmd_buffer, bind_point);
-   struct radv_pipeline_layout *layout = pipeline->layout;
    struct radv_shader_variant *shader, *prev_shader;
    bool need_push_constants = false;
    unsigned offset;
@@ -2851,7 +2856,7 @@ radv_flush_constants(struct radv_cmd_buffer *cmd_buffer, VkShaderStageFlags stag
    uint32_t dirty_stages = 0;
 
    stages &= cmd_buffer->push_constant_stages;
-   if (!stages || (!layout->push_constant_size && !layout->dynamic_offset_count))
+   if (!stages || (!pipeline->push_constant_size && !pipeline->dynamic_offset_count))
       return;
 
    internal_stages = stages;
@@ -2875,24 +2880,23 @@ radv_flush_constants(struct radv_cmd_buffer *cmd_buffer, VkShaderStageFlags stag
       if (!shader)
          continue;
 
-      need_push_constants |= shader->info.loads_push_constants;
+      need_push_constants |= radv_shader_loads_push_constants(pipeline, stage);
 
-      uint8_t base = shader->info.base_inline_push_consts;
-      uint8_t count = shader->info.num_inline_push_consts;
+      uint8_t base = shader->info.min_push_constant_used / 4;
 
-      radv_emit_inline_push_consts(cmd_buffer, pipeline, stage, AC_UD_INLINE_PUSH_CONSTANTS, count,
+      radv_emit_inline_push_consts(cmd_buffer, pipeline, stage, AC_UD_INLINE_PUSH_CONSTANTS,
                                    (uint32_t *)&cmd_buffer->push_constants[base * 4]);
    }
 
    if (need_push_constants) {
       if (!radv_cmd_buffer_upload_alloc(
-             cmd_buffer, layout->push_constant_size + 16 * layout->dynamic_offset_count, &offset,
+             cmd_buffer, pipeline->push_constant_size + 16 * pipeline->dynamic_offset_count, &offset,
              &ptr))
          return;
 
-      memcpy(ptr, cmd_buffer->push_constants, layout->push_constant_size);
-      memcpy((char *)ptr + layout->push_constant_size, descriptors_state->dynamic_buffers,
-             16 * layout->dynamic_offset_count);
+      memcpy(ptr, cmd_buffer->push_constants, pipeline->push_constant_size);
+      memcpy((char *)ptr + pipeline->push_constant_size, descriptors_state->dynamic_buffers,
+             16 * pipeline->dynamic_offset_count);
 
       va = radv_buffer_get_va(cmd_buffer->upload.upload_bo);
       va += offset;
@@ -4311,7 +4315,7 @@ radv_EndCommandBuffer(VkCommandBuffer commandBuffer)
 
    VkResult result = cmd_buffer->device->ws->cs_finalize(cmd_buffer->cs);
    if (result != VK_SUCCESS)
-      return vk_error(cmd_buffer->device->instance, result);
+      return vk_error(cmd_buffer, result);
 
    cmd_buffer->status = RADV_CMD_BUFFER_STATUS_EXECUTABLE;
 
@@ -5073,7 +5077,7 @@ radv_CreateCommandPool(VkDevice _device, const VkCommandPoolCreateInfo *pCreateI
    pool =
       vk_alloc2(&device->vk.alloc, pAllocator, sizeof(*pool), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (pool == NULL)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    vk_object_base_init(&device->vk, &pool->base, VK_OBJECT_TYPE_COMMAND_POOL);
 
@@ -5922,7 +5926,7 @@ radv_emit_all_graphics_states(struct radv_cmd_buffer *cmd_buffer, const struct r
        cmd_buffer->state.emitted_pipeline != cmd_buffer->state.pipeline)
       radv_emit_rbplus_state(cmd_buffer);
 
-   if ((cmd_buffer->device->instance->perftest_flags & RADV_PERFTEST_NGGC) &&
+   if (cmd_buffer->device->physical_device->use_ngg_culling &&
        cmd_buffer->state.pipeline->graphics.is_ngg)
       radv_emit_ngg_culling_state(cmd_buffer, info);
 

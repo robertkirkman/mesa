@@ -353,6 +353,19 @@ bool ac_get_supported_modifiers(const struct radeon_info *info,
               AMD_FMT_MOD_SET(DCC_INDEPENDENT_128B, 1) |
               AMD_FMT_MOD_SET(DCC_MAX_COMPRESSED_BLOCK, AMD_FMT_MOD_DCC_BLOCK_128B))
 
+      if (info->chip_class >= GFX10_3) {
+         if (info->max_render_backends == 1) {
+            ADD_MOD(AMD_FMT_MOD | common_dcc |
+                    AMD_FMT_MOD_SET(DCC_INDEPENDENT_128B, 1) |
+                    AMD_FMT_MOD_SET(DCC_MAX_COMPRESSED_BLOCK, AMD_FMT_MOD_DCC_BLOCK_128B))
+         }
+
+         ADD_MOD(AMD_FMT_MOD | common_dcc |
+                 AMD_FMT_MOD_SET(DCC_RETILE, 1) |
+                 AMD_FMT_MOD_SET(DCC_INDEPENDENT_128B, 1) |
+                 AMD_FMT_MOD_SET(DCC_MAX_COMPRESSED_BLOCK, AMD_FMT_MOD_DCC_BLOCK_128B))
+      }
+
       if (info->family == CHIP_NAVI12 || info->family == CHIP_NAVI14 || info->chip_class >= GFX10_3) {
          bool independent_128b = info->chip_class >= GFX10_3;
 
@@ -361,12 +374,6 @@ bool ac_get_supported_modifiers(const struct radeon_info *info,
                     AMD_FMT_MOD_SET(DCC_INDEPENDENT_64B, 1) |
                     AMD_FMT_MOD_SET(DCC_INDEPENDENT_128B, independent_128b) |
                     AMD_FMT_MOD_SET(DCC_MAX_COMPRESSED_BLOCK, AMD_FMT_MOD_DCC_BLOCK_64B))
-
-            if (info->chip_class >= GFX10_3) {
-               ADD_MOD(AMD_FMT_MOD | common_dcc |
-                       AMD_FMT_MOD_SET(DCC_INDEPENDENT_128B, 1) |
-                       AMD_FMT_MOD_SET(DCC_MAX_COMPRESSED_BLOCK, AMD_FMT_MOD_DCC_BLOCK_128B))
-            }
          }
 
          ADD_MOD(AMD_FMT_MOD | common_dcc |
@@ -374,13 +381,6 @@ bool ac_get_supported_modifiers(const struct radeon_info *info,
                  AMD_FMT_MOD_SET(DCC_INDEPENDENT_64B, 1) |
                  AMD_FMT_MOD_SET(DCC_INDEPENDENT_128B, independent_128b) |
                  AMD_FMT_MOD_SET(DCC_MAX_COMPRESSED_BLOCK, AMD_FMT_MOD_DCC_BLOCK_64B))
-
-         if (info->chip_class >= GFX10_3) {
-            ADD_MOD(AMD_FMT_MOD | common_dcc |
-                    AMD_FMT_MOD_SET(DCC_RETILE, 1) |
-                    AMD_FMT_MOD_SET(DCC_INDEPENDENT_128B, 1) |
-                    AMD_FMT_MOD_SET(DCC_MAX_COMPRESSED_BLOCK, AMD_FMT_MOD_DCC_BLOCK_128B))
-         }
       }
 
       ADD_MOD(AMD_FMT_MOD |
@@ -1479,6 +1479,28 @@ static bool gfx10_DCN_requires_independent_64B_blocks(const struct radeon_info *
 
    /* For 4K, DCN requires INDEPENDENT_64B_BLOCKS = 1 and MAX_COMPRESSED_BLOCK_SIZE = 64B. */
    return config->info.width > 2560 || config->info.height > 2560;
+}
+
+void ac_modifier_max_extent(const struct radeon_info *info,
+                            uint64_t modifier, uint32_t *width, uint32_t *height)
+{
+   if (ac_modifier_has_dcc(modifier)) {
+      bool independent_64B_blocks = AMD_FMT_MOD_GET(DCC_INDEPENDENT_64B, modifier);
+
+      if (info->chip_class >= GFX10 && !independent_64B_blocks) {
+         /* For 4K, DCN requires INDEPENDENT_64B_BLOCKS = 1 and MAX_COMPRESSED_BLOCK_SIZE = 64B. */
+         *width = 2560;
+         *height = 2560;
+      } else {
+         /* DCC is not supported on surfaces above resolutions af 5760. */
+         *width = 5760;
+         *height = 5760;
+      }
+   } else {
+      /* Non-dcc modifiers */
+      *width = 16384;
+      *height = 16384;
+   }
 }
 
 static bool is_dcc_supported_by_DCN(const struct radeon_info *info,

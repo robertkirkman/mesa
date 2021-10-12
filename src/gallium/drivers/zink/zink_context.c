@@ -83,6 +83,8 @@ zink_context_destroy(struct pipe_context *pctx)
    struct zink_context *ctx = zink_context(pctx);
    struct zink_screen *screen = zink_screen(pctx->screen);
 
+   if (util_queue_is_initialized(&screen->flush_queue))
+      util_queue_finish(&screen->flush_queue);
    if (screen->queue && !screen->device_lost && VKSCR(QueueWaitIdle)(screen->queue) != VK_SUCCESS)
       debug_printf("vkQueueWaitIdle failed\n");
 
@@ -103,8 +105,7 @@ zink_context_destroy(struct pipe_context *pctx)
    simple_mtx_destroy(&ctx->batch_mtx);
    zink_clear_batch_state(ctx, ctx->batch.state);
    zink_batch_state_destroy(screen, ctx->batch.state);
-   hash_table_foreach(&ctx->batch_states, entry) {
-      struct zink_batch_state *bs = entry->data;
+   for (struct zink_batch_state *bs = ctx->batch_states; bs; bs = bs->next) {
       zink_clear_batch_state(ctx, bs);
       zink_batch_state_destroy(screen, bs);
    }
@@ -2075,6 +2076,40 @@ prep_fb_attachments(struct zink_context *ctx, VkImageView *att)
    }
 }
 
+static void
+update_framebuffer_state(struct zink_context *ctx, int old_w, int old_h)
+{
+   if (ctx->fb_state.width != old_w || ctx->fb_state.height != old_h)
+      ctx->scissor_changed = true;
+   /* get_framebuffer adds a ref if the fb is reused or created;
+    * always do get_framebuffer first to avoid deleting the same fb
+    * we're about to use
+    */
+   struct zink_framebuffer *fb = ctx->get_framebuffer(ctx);
+   struct zink_screen *screen = zink_screen(ctx->base.screen);
+   if (ctx->framebuffer && !screen->info.have_KHR_imageless_framebuffer) {
+      simple_mtx_lock(&screen->framebuffer_mtx);
+      struct hash_entry *he = _mesa_hash_table_search(&screen->framebuffer_cache, &ctx->framebuffer->state);
+      if (ctx->framebuffer && !ctx->framebuffer->state.num_attachments) {
+         /* if this has no attachments then its lifetime has ended */
+         _mesa_hash_table_remove(&screen->framebuffer_cache, he);
+         he = NULL;
+         /* ensure an unflushed fb doesn't get destroyed by deferring it */
+         util_dynarray_append(&ctx->batch.state->dead_framebuffers, struct zink_framebuffer*, ctx->framebuffer);
+         ctx->framebuffer = NULL;
+      }
+      /* a framebuffer loses 1 ref every time we unset it;
+       * we do NOT add refs here, as the ref has already been added in
+       * get_framebuffer()
+       */
+      if (zink_framebuffer_reference(screen, &ctx->framebuffer, NULL) && he)
+         _mesa_hash_table_remove(&screen->framebuffer_cache, he);
+      simple_mtx_unlock(&screen->framebuffer_mtx);
+   }
+   ctx->fb_changed |= ctx->framebuffer != fb;
+   ctx->framebuffer = fb;
+}
+
 static unsigned
 begin_render_pass(struct zink_context *ctx)
 {
@@ -2522,37 +2557,9 @@ zink_set_framebuffer_state(struct pipe_context *pctx,
          samples = MAX3(transient ? transient->base.nr_samples : 1, surf->texture->nr_samples, 1);
       zink_resource(surf->texture)->fb_binds++;
    }
-   if (ctx->fb_state.width != w || ctx->fb_state.height != h)
-      ctx->scissor_changed = true;
    rebind_fb_state(ctx, NULL, true);
    ctx->fb_state.samples = MAX2(samples, 1);
-   /* get_framebuffer adds a ref if the fb is reused or created;
-    * always do get_framebuffer first to avoid deleting the same fb
-    * we're about to use
-    */
-   struct zink_framebuffer *fb = ctx->get_framebuffer(ctx);
-   struct zink_screen *screen = zink_screen(ctx->base.screen);
-   if (ctx->framebuffer && !screen->info.have_KHR_imageless_framebuffer) {
-      simple_mtx_lock(&screen->framebuffer_mtx);
-      struct hash_entry *he = _mesa_hash_table_search(&screen->framebuffer_cache, &ctx->framebuffer->state);
-      if (ctx->framebuffer && !ctx->framebuffer->state.num_attachments) {
-         /* if this has no attachments then its lifetime has ended */
-         _mesa_hash_table_remove(&screen->framebuffer_cache, he);
-         he = NULL;
-         /* ensure an unflushed fb doesn't get destroyed by deferring it */
-         util_dynarray_append(&ctx->batch.state->dead_framebuffers, struct zink_framebuffer*, ctx->framebuffer);
-         ctx->framebuffer = NULL;
-      }
-      /* a framebuffer loses 1 ref every time we unset it;
-       * we do NOT add refs here, as the ref has already been added in
-       * get_framebuffer()
-       */
-      if (zink_framebuffer_reference(screen, &ctx->framebuffer, NULL) && he)
-         _mesa_hash_table_remove(&screen->framebuffer_cache, he);
-      simple_mtx_unlock(&screen->framebuffer_mtx);
-   }
-   ctx->fb_changed |= ctx->framebuffer != fb;
-   ctx->framebuffer = fb;
+   update_framebuffer_state(ctx, w, h);
 
    uint8_t rast_samples = ctx->fb_state.samples - 1;
    /* update the shader key if applicable:
@@ -3120,8 +3127,13 @@ zink_wait_on_batch(struct zink_context *ctx, uint32_t batch_id)
    if (ctx->last_fence && (!batch_id || batch_id == zink_batch_state(ctx->last_fence)->fence.batch_id))
       fence = ctx->last_fence;
    else {
-      struct hash_entry *he = _mesa_hash_table_search_pre_hashed(&ctx->batch_states, batch_id, (void*)(uintptr_t)batch_id);
-      if (!he) {
+      for (bs = ctx->batch_states; bs; bs = bs->next) {
+         if (bs->fence.batch_id < batch_id)
+            continue;
+         if (!bs->fence.batch_id || bs->fence.batch_id > batch_id)
+            break;
+      }
+      if (!bs || bs->fence.batch_id != batch_id) {
          simple_mtx_unlock(&ctx->batch_mtx);
          /* if we can't find it, it either must have finished already or is on a different context */
          if (!zink_screen_check_last_finished(zink_screen(ctx->base.screen), batch_id)) {
@@ -3131,7 +3143,7 @@ zink_wait_on_batch(struct zink_context *ctx, uint32_t batch_id)
          }
          return;
       }
-      fence = he->data;
+      fence = &bs->fence;
    }
    simple_mtx_unlock(&ctx->batch_mtx);
    assert(fence);
@@ -3164,15 +3176,20 @@ zink_check_batch_completion(struct zink_context *ctx, uint32_t batch_id, bool ha
    if (ctx->last_fence && batch_id == zink_batch_state(ctx->last_fence)->fence.batch_id)
       fence = ctx->last_fence;
    else {
-      struct hash_entry *he = _mesa_hash_table_search_pre_hashed(&ctx->batch_states, batch_id, (void*)(uintptr_t)batch_id);
-      /* if we can't find it, it either must have finished already or is on a different context */
-      if (!he) {
+      struct zink_batch_state *bs;
+      for (bs = ctx->batch_states; bs; bs = bs->next) {
+         if (bs->fence.batch_id < batch_id)
+            continue;
+         if (!bs->fence.batch_id || bs->fence.batch_id > batch_id)
+            break;
+      }
+      if (!bs || bs->fence.batch_id != batch_id) {
          if (!have_lock)
             simple_mtx_unlock(&ctx->batch_mtx);
          /* return compare against last_finished, since this has info from all contexts */
          return zink_screen_check_last_finished(zink_screen(ctx->base.screen), batch_id);
       }
-      fence = he->data;
+      fence = &bs->fence;
    }
    if (!have_lock)
       simple_mtx_unlock(&ctx->batch_mtx);
@@ -3950,13 +3967,11 @@ zink_context_replace_buffer_storage(struct pipe_context *pctx, struct pipe_resou
    assert(d->obj);
    assert(s->obj);
    util_idalloc_mt_free(&screen->buffer_ids, delete_buffer_id);
-   zink_resource_object_reference(screen, NULL, s->obj);
-   if (zink_resource_has_unflushed_usage(d) ||
-       (zink_resource_has_usage(d) && zink_resource_has_binds(d)))
-      zink_batch_reference_resource_move(&ctx->batch, d);
-   else
-      zink_resource_object_reference(screen, &d->obj, NULL);
-   d->obj = s->obj;
+   /* add a ref just like check_resource_for_batch_ref() would've */
+   if (zink_resource_has_binds(d) && zink_resource_has_usage(d))
+      zink_batch_reference_resource(&ctx->batch, d);
+   /* don't be too creative */
+   zink_resource_object_reference(screen, &d->obj, s->obj);
    /* force counter buffer reset */
    d->so_valid = false;
    if (num_rebinds && rebind_buffer(ctx, d, rebind_mask, num_rebinds) < num_rebinds)
@@ -4100,7 +4115,6 @@ zink_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    ctx->need_barriers[1] = &ctx->update_barriers[1][0];
 
    util_dynarray_init(&ctx->free_batch_states, ctx);
-   _mesa_hash_table_init(&ctx->batch_states, ctx, NULL, _mesa_key_pointer_equal);
 
    ctx->gfx_pipeline_state.have_EXT_extended_dynamic_state = screen->info.have_EXT_extended_dynamic_state;
    ctx->gfx_pipeline_state.have_EXT_extended_dynamic_state2 = screen->info.have_EXT_extended_dynamic_state2;
@@ -4214,8 +4228,13 @@ zink_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
 
    struct threaded_context *tc = (struct threaded_context*)threaded_context_create(&ctx->base, &screen->transfer_pool,
                                                      zink_context_replace_buffer_storage,
-                                                     zink_create_tc_fence_for_tc,
-                                                     zink_context_is_resource_busy, true, true, &ctx->tc);
+                                                     &(struct threaded_context_options){
+                                                        .create_fence = zink_create_tc_fence_for_tc,
+                                                        .is_resource_busy = zink_context_is_resource_busy,
+                                                        .driver_calls_flush_notify = true,
+                                                        .unsynchronized_get_device_reset_status = true,
+                                                     },
+                                                     &ctx->tc);
 
    if (tc && (struct zink_context*)tc != ctx) {
       threaded_context_init_bytes_mapped_limit(tc, 4);

@@ -2181,8 +2181,8 @@ typedef enum {
                                   * identical.
                                   */
    nir_texop_tex_prefetch,       /**< Regular texture look-up, eligible for pre-dispatch */
-   nir_texop_fragment_fetch,     /**< Multisample fragment color texture fetch */
-   nir_texop_fragment_mask_fetch,/**< Multisample fragment mask texture fetch */
+   nir_texop_fragment_fetch_amd,      /**< Multisample fragment color texture fetch */
+   nir_texop_fragment_mask_fetch_amd, /**< Multisample fragment mask texture fetch */
 } nir_texop;
 
 /** Represents a texture instruction */
@@ -2359,7 +2359,7 @@ nir_tex_instr_result_size(const nir_tex_instr *instr)
    case nir_texop_texture_samples:
    case nir_texop_query_levels:
    case nir_texop_samples_identical:
-   case nir_texop_fragment_mask_fetch:
+   case nir_texop_fragment_mask_fetch_amd:
       return 1;
 
    default:
@@ -5048,6 +5048,16 @@ typedef struct nir_lower_compute_system_values_options {
 bool nir_lower_compute_system_values(nir_shader *shader,
                                      const nir_lower_compute_system_values_options *options);
 
+struct nir_lower_sysvals_to_varyings_options {
+   bool frag_coord:1;
+   bool front_face:1;
+   bool point_coord:1;
+};
+
+bool
+nir_lower_sysvals_to_varyings(nir_shader *shader,
+                              const struct nir_lower_sysvals_to_varyings_options *options);
+
 enum PACKED nir_lower_tex_packing {
    /** No packing */
    nir_lower_tex_packing_none = 0,
@@ -5221,6 +5231,12 @@ typedef struct nir_lower_tex_options {
     * If true, lowers tg4 with 4 constant offsets to 4 tg4 calls
     */
    bool lower_tg4_offsets;
+
+   /**
+    * Lower txf_ms to fragment_mask_fetch and fragment_fetch and samples_identical to
+    * fragment_mask_fetch.
+    */
+   bool lower_to_fragment_fetch_amd;
 
    /**
     * To lower packed sampler return formats.

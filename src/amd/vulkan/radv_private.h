@@ -59,6 +59,7 @@
 #include "vk_device.h"
 #include "vk_format.h"
 #include "vk_instance.h"
+#include "vk_log.h"
 #include "vk_physical_device.h"
 #include "vk_shader_module.h"
 #include "vk_command_buffer.h"
@@ -208,21 +209,6 @@ radv_clear_mask(uint32_t *inout_mask, uint32_t clear_mask)
 struct radv_image_view;
 struct radv_instance;
 
-VkResult __vk_errorv(struct radv_instance *instance, const void *object,
-                     VkDebugReportObjectTypeEXT type, VkResult error, const char *file, int line,
-                     const char *format, va_list args);
-
-VkResult __vk_errorf(struct radv_instance *instance, const void *object,
-                     VkDebugReportObjectTypeEXT type, VkResult error, const char *file, int line,
-                     const char *format, ...) radv_printflike(7, 8);
-
-#define vk_error(instance, error)                                                                  \
-   __vk_errorf(instance, NULL, VK_DEBUG_REPORT_OBJECT_TYPE_UNKNOWN_EXT, error, __FILE__, __LINE__, \
-               NULL);
-#define vk_errorf(instance, error, format, ...)                                                    \
-   __vk_errorf(instance, NULL, VK_DEBUG_REPORT_OBJECT_TYPE_UNKNOWN_EXT, error, __FILE__, __LINE__, \
-               format, ##__VA_ARGS__);
-
 void radv_loge(const char *format, ...) radv_printflike(1, 2);
 void radv_loge_v(const char *format, va_list va);
 void radv_logi(const char *format, ...) radv_printflike(1, 2);
@@ -275,6 +261,9 @@ struct radv_physical_device {
 
    /* Whether to enable NGG. */
    bool use_ngg;
+
+   /* Whether to enable NGG culling. */
+   bool use_ngg_culling;
 
    /* Whether to enable NGG streamout. */
    bool use_ngg_streamout;
@@ -1663,7 +1652,7 @@ struct radv_event {
 #define RADV_HASH_SHADER_GE_WAVE32         (1 << 3)
 #define RADV_HASH_SHADER_LLVM              (1 << 4)
 #define RADV_HASH_SHADER_KEEP_STATISTICS   (1 << 8)
-#define RADV_HASH_SHADER_FORCE_NGG_CULLING (1 << 13)
+#define RADV_HASH_SHADER_USE_NGG_CULLING   (1 << 13)
 #define RADV_HASH_SHADER_ROBUST_BUFFER_ACCESS (1 << 14)
 #define RADV_HASH_SHADER_ROBUST_BUFFER_ACCESS2 (1 << 15)
 #define RADV_HASH_SHADER_FORCE_EMULATE_RT (1 << 16)
@@ -1747,8 +1736,6 @@ struct radv_pipeline {
    struct radv_device *device;
    struct radv_dynamic_state dynamic_state;
 
-   struct radv_pipeline_layout *layout;
-
    bool need_indirect_descriptor_sets;
    struct radv_shader_variant *shaders[MESA_SHADER_STAGES];
    struct radv_shader_variant *gs_copy_shader;
@@ -1826,6 +1813,10 @@ struct radv_pipeline {
 
    /* Unique pipeline hash identifier. */
    uint64_t pipeline_hash;
+
+   /* Pipeline layout info. */
+   uint32_t push_constant_size;
+   uint32_t dynamic_offset_count;
 };
 
 static inline bool

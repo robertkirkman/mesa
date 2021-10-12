@@ -514,7 +514,6 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
       .phys_ssbo_addr_format = nir_address_format_64bit_global,
       .push_const_addr_format = nir_address_format_logical,
       .shared_addr_format = nir_address_format_32bit_offset,
-      .frag_coord_is_sysval = false,
    };
 
    nir = spirv_to_nir(spirv, module->size / 4,
@@ -528,6 +527,12 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
    nir_validate_shader(nir, NULL);
 
    free(spec_entries);
+
+   const struct nir_lower_sysvals_to_varyings_options sysvals_to_varyings = {
+      .frag_coord = true,
+      .point_coord = true,
+   };
+   NIR_PASS_V(nir, nir_lower_sysvals_to_varyings, &sysvals_to_varyings);
 
    NIR_PASS_V(nir, nir_lower_variable_initializers, nir_var_function_temp);
    NIR_PASS_V(nir, nir_lower_returns);
@@ -923,7 +928,7 @@ lvp_graphics_pipeline_create(
    pipeline = vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*pipeline), 8,
                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (pipeline == NULL)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    vk_object_base_init(&device->vk, &pipeline->base,
                        VK_OBJECT_TYPE_PIPELINE);
@@ -1013,7 +1018,7 @@ lvp_compute_pipeline_create(
    pipeline = vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*pipeline), 8,
                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (pipeline == NULL)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    vk_object_base_init(&device->vk, &pipeline->base,
                        VK_OBJECT_TYPE_PIPELINE);

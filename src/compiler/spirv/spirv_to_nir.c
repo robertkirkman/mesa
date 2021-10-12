@@ -225,7 +225,7 @@ vtn_undef_ssa_value(struct vtn_builder *b, const struct glsl_type *type)
    return val;
 }
 
-static struct vtn_ssa_value *
+struct vtn_ssa_value *
 vtn_const_ssa_value(struct vtn_builder *b, nir_constant *constant,
                     const struct glsl_type *type)
 {
@@ -2720,11 +2720,11 @@ vtn_handle_texture(struct vtn_builder *b, SpvOp opcode,
       break;
 
    case SpvOpFragmentFetchAMD:
-      texop = nir_texop_fragment_fetch;
+      texop = nir_texop_fragment_fetch_amd;
       break;
 
    case SpvOpFragmentMaskFetchAMD:
-      texop = nir_texop_fragment_mask_fetch;
+      texop = nir_texop_fragment_mask_fetch_amd;
       dest_type = nir_type_uint32;
       break;
 
@@ -2759,8 +2759,8 @@ vtn_handle_texture(struct vtn_builder *b, SpvOp opcode,
    case nir_texop_query_levels:
    case nir_texop_texture_samples:
    case nir_texop_samples_identical:
-   case nir_texop_fragment_fetch:
-   case nir_texop_fragment_mask_fetch:
+   case nir_texop_fragment_fetch_amd:
+   case nir_texop_fragment_mask_fetch_amd:
       /* These don't */
       break;
    case nir_texop_txf_ms_fb:
@@ -3622,13 +3622,13 @@ vtn_handle_atomics(struct vtn_builder *b, SpvOp opcode,
    case SpvOpAtomicFMinEXT:
    case SpvOpAtomicFMaxEXT:
    case SpvOpAtomicFlagTestAndSet:
-      ptr = vtn_value(b, w[3], vtn_value_type_pointer)->pointer;
+      ptr = vtn_pointer(b, w[3]);
       scope = vtn_constant_uint(b, w[4]);
       semantics = vtn_constant_uint(b, w[5]);
       break;
    case SpvOpAtomicFlagClear:
    case SpvOpAtomicStore:
-      ptr = vtn_value(b, w[1], vtn_value_type_pointer)->pointer;
+      ptr = vtn_pointer(b, w[1]);
       scope = vtn_constant_uint(b, w[2]);
       semantics = vtn_constant_uint(b, w[3]);
       break;

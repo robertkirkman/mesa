@@ -521,7 +521,6 @@ radv_shader_compile_to_nir(struct radv_device *device, struct vk_shader_module *
          .push_const_addr_format = nir_address_format_logical,
          .shared_addr_format = nir_address_format_32bit_offset,
          .constant_addr_format = nir_address_format_64bit_global,
-         .frag_coord_is_sysval = true,
          .use_deref_buffer_array_length = true,
          .debug =
             {
@@ -535,6 +534,11 @@ radv_shader_compile_to_nir(struct radv_device *device, struct vk_shader_module *
       nir_validate_shader(nir, "after spirv_to_nir");
 
       free(spec_entries);
+
+      const struct nir_lower_sysvals_to_varyings_options sysvals_to_varyings = {
+         .point_coord = true,
+      };
+      NIR_PASS_V(nir, nir_lower_sysvals_to_varyings, &sysvals_to_varyings);
 
       /* We have to lower away local constant initializers right before we
        * inline functions.  That way they get properly initialized at the top
@@ -635,6 +639,7 @@ radv_shader_compile_to_nir(struct radv_device *device, struct vk_shader_module *
       .lower_txp = ~0,
       .lower_tg4_offsets = true,
       .lower_txs_cube_array = true,
+      .lower_to_fragment_fetch_amd = true,
    };
 
    nir_lower_tex(nir, &tex_options);
@@ -894,10 +899,7 @@ radv_consider_culling(struct radv_device *device, struct nir_shader *nir,
    if (nir->info.outputs_written & (VARYING_BIT_VIEWPORT | VARYING_BIT_VIEWPORT_MASK))
       return false;
 
-   /* TODO: enable by default on GFX10.3 when we're confident about performance. */
-   bool culling_enabled = device->instance->perftest_flags & RADV_PERFTEST_NGGC;
-
-   if (!culling_enabled)
+   if (!device->physical_device->use_ngg_culling)
       return false;
 
    /* Shader based culling efficiency can depend on PS throughput.
@@ -907,9 +909,7 @@ radv_consider_culling(struct radv_device *device, struct nir_shader *nir,
    unsigned max_render_backends = device->physical_device->rad_info.max_render_backends;
    unsigned max_se = device->physical_device->rad_info.max_se;
 
-   if (max_render_backends < 2)
-      return false; /* Don't use NGG culling on 1 RB chips. */
-   else if (max_render_backends / max_se == 4)
+   if (max_render_backends / max_se == 4)
       max_ps_params = 6; /* Sienna Cichlid and other GFX10.3 dGPUs. */
    else
       max_ps_params = 4; /* Navi 1x. */
@@ -1269,7 +1269,7 @@ radv_postprocess_config(const struct radv_device *device, const struct ac_shader
    case MESA_SHADER_FRAGMENT:
       config_out->rsrc1 |= S_00B028_MEM_ORDERED(pdevice->rad_info.chip_class >= GFX10);
       config_out->rsrc2 |= S_00B02C_SHARED_VGPR_CNT(num_shared_vgpr_blocks) |
-                           S_00B02C_TRAP_PRESENT(1) | S_00B02C_EXCP_EN(excp_en);
+                           S_00B02C_EXCP_EN(excp_en);
       break;
    case MESA_SHADER_GEOMETRY:
       config_out->rsrc1 |= S_00B228_MEM_ORDERED(pdevice->rad_info.chip_class >= GFX10);
@@ -1378,7 +1378,7 @@ radv_postprocess_config(const struct radv_device *device, const struct ac_shader
 
 struct radv_shader_variant *
 radv_shader_variant_create(struct radv_device *device, const struct radv_shader_binary *binary,
-                           bool keep_shader_info)
+                           bool keep_shader_info, bool from_cache)
 {
    struct ac_shader_config config = {0};
    struct ac_rtld_binary rtld_binary = {0};
@@ -1445,14 +1445,20 @@ radv_shader_variant_create(struct radv_device *device, const struct radv_shader_
       variant->exec_size = rtld_binary.exec_size;
    } else {
       assert(binary->type == RADV_BINARY_TYPE_LEGACY);
-      config = ((struct radv_shader_binary_legacy *)binary)->config;
+      config = ((struct radv_shader_binary_legacy *)binary)->base.config;
       variant->code_size =
          radv_get_shader_binary_size(((struct radv_shader_binary_legacy *)binary)->code_size);
       variant->exec_size = ((struct radv_shader_binary_legacy *)binary)->exec_size;
    }
 
    variant->info = binary->info;
-   radv_postprocess_config(device, &config, &binary->info, binary->stage, &variant->config);
+
+   if (from_cache) {
+      /* Copy the shader binary configuration from the cache. */
+      memcpy(&variant->config, &binary->config, sizeof(variant->config));
+   } else {
+      radv_postprocess_config(device, &config, &binary->info, binary->stage, &variant->config);
+   }
 
    void *dest_ptr = radv_alloc_shader_memory(device, variant);
    if (!dest_ptr) {
@@ -1617,7 +1623,7 @@ shader_variant_compile(struct radv_device *device, struct vk_shader_module *modu
    binary->info = *info;
 
    struct radv_shader_variant *variant =
-      radv_shader_variant_create(device, binary, keep_shader_info);
+      radv_shader_variant_create(device, binary, keep_shader_info, false);
    if (!variant) {
       free(binary);
       return NULL;
@@ -1646,6 +1652,9 @@ shader_variant_compile(struct radv_device *device, struct vk_shader_module *modu
       }
    }
 
+   /* Copy the shader binary configuration to store it in the cache. */
+   memcpy(&binary->config, &variant->config, sizeof(binary->config));
+
    if (binary_out)
       *binary_out = binary;
    else
@@ -1671,6 +1680,7 @@ radv_shader_variant_compile(struct radv_device *device, struct vk_shader_module 
       options.key = *key;
 
    options.explicit_scratch_args = !radv_use_llvm_for_stage(device, stage);
+   options.remap_spi_ps_input = !radv_use_llvm_for_stage(device, stage);
    options.robust_buffer_access = device->robust_buffer_access;
    options.wgp_mode = radv_should_use_wgp_mode(device, stage, info);
 
@@ -1688,6 +1698,7 @@ radv_create_gs_copy_shader(struct radv_device *device, struct nir_shader *shader
    gl_shader_stage stage = MESA_SHADER_VERTEX;
 
    options.explicit_scratch_args = !radv_use_llvm_for_stage(device, stage);
+   options.remap_spi_ps_input = !radv_use_llvm_for_stage(device, stage);
    options.key.has_multiview_view_index = multiview;
    options.key.optimisations_disabled = disable_optimizations;
 
@@ -1817,6 +1828,56 @@ radv_get_max_waves(const struct radv_device *device, struct radv_shader_variant 
    return chip_class >= GFX10 ? max_simd_waves * (wave_size / 32) : max_simd_waves;
 }
 
+unsigned
+radv_compute_spi_ps_input(const struct radv_device *device,
+                          const struct radv_shader_info *info)
+{
+   unsigned spi_ps_input;
+
+   spi_ps_input = S_0286CC_PERSP_CENTER_ENA(info->ps.reads_persp_center) |
+                  S_0286CC_PERSP_CENTROID_ENA(info->ps.reads_persp_centroid) |
+                  S_0286CC_PERSP_SAMPLE_ENA(info->ps.reads_persp_sample) |
+                  S_0286CC_LINEAR_CENTER_ENA(info->ps.reads_linear_center) |
+                  S_0286CC_LINEAR_CENTROID_ENA(info->ps.reads_linear_centroid) |
+                  S_0286CC_LINEAR_SAMPLE_ENA(info->ps.reads_linear_sample)|
+                  S_0286CC_PERSP_PULL_MODEL_ENA(info->ps.reads_barycentric_model) |
+                  S_0286CC_FRONT_FACE_ENA(info->ps.reads_front_face);
+
+   if (info->ps.reads_frag_coord_mask ||
+       info->ps.reads_sample_pos_mask) {
+      uint8_t mask = info->ps.reads_frag_coord_mask | info->ps.reads_sample_pos_mask;
+
+      for (unsigned i = 0; i < 4; i++) {
+         if (mask & (1 << i))
+            spi_ps_input |= S_0286CC_POS_X_FLOAT_ENA(1) << i;
+      }
+
+      if (device->adjust_frag_coord_z && info->ps.reads_frag_coord_mask & (1 << 2)) {
+         spi_ps_input |= S_0286CC_ANCILLARY_ENA(1);
+      }
+   }
+
+   if (info->ps.reads_sample_id || info->ps.reads_frag_shading_rate || info->ps.reads_sample_mask_in) {
+      spi_ps_input |= S_0286CC_ANCILLARY_ENA(1);
+   }
+
+   if (info->ps.reads_sample_mask_in) {
+      spi_ps_input |= S_0286CC_SAMPLE_COVERAGE_ENA(1);
+   }
+
+   if (G_0286CC_POS_W_FLOAT_ENA(spi_ps_input)) {
+      /* If POS_W_FLOAT (11) is enabled, at least one of PERSP_* must be enabled too */
+      spi_ps_input |= S_0286CC_PERSP_CENTER_ENA(1);
+   }
+
+   if (!(spi_ps_input & 0x7F)) {
+      /* At least one of PERSP_* (0xF) or LINEAR_* (0x70) must be enabled */
+      spi_ps_input |= S_0286CC_PERSP_CENTER_ENA(1);
+   }
+
+   return spi_ps_input;
+}
+
 VkResult
 radv_GetShaderInfoAMD(VkDevice _device, VkPipeline _pipeline, VkShaderStageFlagBits shaderStage,
                       VkShaderInfoTypeAMD infoType, size_t *pInfoSize, void *pInfo)
@@ -1830,7 +1891,7 @@ radv_GetShaderInfoAMD(VkDevice _device, VkPipeline _pipeline, VkShaderStageFlagB
    /* Spec doesn't indicate what to do if the stage is invalid, so just
     * return no info for this. */
    if (!variant)
-      return vk_error(device->instance, VK_ERROR_FEATURE_NOT_PRESENT);
+      return vk_error(device, VK_ERROR_FEATURE_NOT_PRESENT);
 
    switch (infoType) {
    case VK_SHADER_INFO_TYPE_STATISTICS_AMD:

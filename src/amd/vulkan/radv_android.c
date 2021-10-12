@@ -121,7 +121,7 @@ radv_image_from_gralloc(VkDevice device_h, const VkImageCreateInfo *base_info,
    VkResult result;
 
    if (gralloc_info->handle->numFds != 1) {
-      return vk_errorf(device->instance, VK_ERROR_INVALID_EXTERNAL_HANDLE,
+      return vk_errorf(device, VK_ERROR_INVALID_EXTERNAL_HANDLE,
                        "VkNativeBufferANDROID::handle::numFds is %d, "
                        "expected 1",
                        gralloc_info->handle->numFds);
@@ -255,7 +255,7 @@ radv_GetSwapchainGrallocUsageANDROID(VkDevice device_h, VkFormat format,
    result = radv_GetPhysicalDeviceImageFormatProperties2(phys_dev_h, &image_format_info,
                                                          &image_format_props);
    if (result != VK_SUCCESS) {
-      return vk_errorf(device->instance, result,
+      return vk_errorf(device, result,
                        "radv_GetPhysicalDeviceImageFormatProperties2 failed "
                        "inside %s",
                        __func__);
@@ -272,7 +272,7 @@ radv_GetSwapchainGrallocUsageANDROID(VkDevice device_h, VkFormat format,
     * gralloc swapchains.
     */
    if (imageUsage != 0) {
-      return vk_errorf(device->instance, VK_ERROR_FORMAT_NOT_SUPPORTED,
+      return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
                        "unsupported VkImageUsageFlags(0x%x) for gralloc "
                        "swapchain",
                        imageUsage);
@@ -313,7 +313,7 @@ radv_GetSwapchainGrallocUsage2ANDROID(VkDevice device_h, VkFormat format,
    *grallocProducerUsage = 0;
 
    if (swapchainImageUsage & VK_SWAPCHAIN_IMAGE_USAGE_SHARED_BIT_ANDROID)
-      return vk_errorf(device->instance, VK_ERROR_FORMAT_NOT_SUPPORTED,
+      return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
                        "The Vulkan loader tried to query shared presentable image support");
 
    const VkPhysicalDeviceImageFormatInfo2 image_format_info = {
@@ -332,7 +332,7 @@ radv_GetSwapchainGrallocUsage2ANDROID(VkDevice device_h, VkFormat format,
    result = radv_GetPhysicalDeviceImageFormatProperties2(phys_dev_h, &image_format_info,
                                                          &image_format_props);
    if (result != VK_SUCCESS) {
-      return vk_errorf(device->instance, result,
+      return vk_errorf(device, result,
                        "radv_GetPhysicalDeviceImageFormatProperties2 failed "
                        "inside %s",
                        __func__);
@@ -350,7 +350,7 @@ radv_GetSwapchainGrallocUsage2ANDROID(VkDevice device_h, VkFormat format,
    }
 
    if (imageUsage != 0) {
-      return vk_errorf(device->instance, VK_ERROR_FORMAT_NOT_SUPPORTED,
+      return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
                        "unsupported VkImageUsageFlags(0x%x) for gralloc "
                        "swapchain",
                        imageUsage);
@@ -406,7 +406,7 @@ radv_AcquireImageANDROID(VkDevice device_h, VkImage image_h, int nativeFenceFd, 
             VkResult err = (errno == EMFILE) ? VK_ERROR_TOO_MANY_OBJECTS :
                                                VK_ERROR_OUT_OF_HOST_MEMORY;
             close(nativeFenceFd);
-            return vk_error(device->instance, err);
+            return vk_error(device, err);
          }
       } else if (semaphore != VK_NULL_HANDLE) {
          semaphore_fd = nativeFenceFd;
@@ -507,7 +507,7 @@ radv_QueueSignalReleaseImageANDROID(VkQueue _queue, uint32_t waitSemaphoreCount,
 
 enum {
    /* Usage bit equal to GRALLOC_USAGE_HW_CAMERA_MASK */
-   AHARDWAREBUFFER_USAGE_CAMERA_MASK = 0x00060000U,
+   BUFFER_USAGE_CAMERA_MASK = 0x00060000U,
 };
 
 static inline VkFormat
@@ -528,7 +528,7 @@ vk_format_from_android(unsigned android_format, unsigned android_usage)
    case AHARDWAREBUFFER_FORMAT_Y8Cb8Cr8_420:
       return VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
    case AHARDWAREBUFFER_FORMAT_IMPLEMENTATION_DEFINED:
-      if (android_usage & AHARDWAREBUFFER_USAGE_CAMERA_MASK)
+      if (android_usage & BUFFER_USAGE_CAMERA_MASK)
          return VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
       else
          return VK_FORMAT_R8G8B8_UNORM;

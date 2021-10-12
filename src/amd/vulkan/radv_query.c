@@ -149,13 +149,7 @@ build_occlusion_query_shader(struct radv_device *device)
    nir_ssa_def *dst_buf = radv_meta_load_descriptor(&b, 0, 0);
    nir_ssa_def *src_buf = radv_meta_load_descriptor(&b, 0, 1);
 
-   nir_ssa_def *invoc_id = nir_load_local_invocation_id(&b);
-   nir_ssa_def *wg_id = nir_load_workgroup_id(&b, 32);
-   nir_ssa_def *block_size =
-      nir_imm_ivec4(&b, b.shader->info.workgroup_size[0], b.shader->info.workgroup_size[1],
-                    b.shader->info.workgroup_size[2], 0);
-   nir_ssa_def *global_id = nir_iadd(&b, nir_imul(&b, wg_id, block_size), invoc_id);
-   global_id = nir_channel(&b, global_id, 0); // We only care about x here.
+   nir_ssa_def *global_id = get_global_ids(&b, 1);
 
    nir_ssa_def *input_stride = nir_imm_int(&b, db_count * 16);
    nir_ssa_def *input_base = nir_imul(&b, input_stride, global_id);
@@ -290,13 +284,7 @@ build_pipeline_statistics_query_shader(struct radv_device *device)
    nir_ssa_def *dst_buf = radv_meta_load_descriptor(&b, 0, 0);
    nir_ssa_def *src_buf = radv_meta_load_descriptor(&b, 0, 1);
 
-   nir_ssa_def *invoc_id = nir_load_local_invocation_id(&b);
-   nir_ssa_def *wg_id = nir_load_workgroup_id(&b, 32);
-   nir_ssa_def *block_size =
-      nir_imm_ivec4(&b, b.shader->info.workgroup_size[0], b.shader->info.workgroup_size[1],
-                    b.shader->info.workgroup_size[2], 0);
-   nir_ssa_def *global_id = nir_iadd(&b, nir_imul(&b, wg_id, block_size), invoc_id);
-   global_id = nir_channel(&b, global_id, 0); // We only care about x here.
+   nir_ssa_def *global_id = get_global_ids(&b, 1);
 
    nir_ssa_def *input_stride = nir_imm_int(&b, pipelinestat_block_size * 2);
    nir_ssa_def *input_base = nir_imul(&b, input_stride, global_id);
@@ -441,13 +429,7 @@ build_tfb_query_shader(struct radv_device *device)
    nir_ssa_def *src_buf = radv_meta_load_descriptor(&b, 0, 1);
 
    /* Compute global ID. */
-   nir_ssa_def *invoc_id = nir_load_local_invocation_id(&b);
-   nir_ssa_def *wg_id = nir_load_workgroup_id(&b, 32);
-   nir_ssa_def *block_size =
-      nir_imm_ivec4(&b, b.shader->info.workgroup_size[0], b.shader->info.workgroup_size[1],
-                    b.shader->info.workgroup_size[2], 0);
-   nir_ssa_def *global_id = nir_iadd(&b, nir_imul(&b, wg_id, block_size), invoc_id);
-   global_id = nir_channel(&b, global_id, 0); // We only care about x here.
+   nir_ssa_def *global_id = get_global_ids(&b, 1);
 
    /* Compute src/dst strides. */
    nir_ssa_def *input_stride = nir_imm_int(&b, 32);
@@ -571,13 +553,7 @@ build_timestamp_query_shader(struct radv_device *device)
    nir_ssa_def *src_buf = radv_meta_load_descriptor(&b, 0, 1);
 
    /* Compute global ID. */
-   nir_ssa_def *invoc_id = nir_load_local_invocation_id(&b);
-   nir_ssa_def *wg_id = nir_load_workgroup_id(&b, 32);
-   nir_ssa_def *block_size =
-      nir_imm_ivec4(&b, b.shader->info.workgroup_size[0], b.shader->info.workgroup_size[1],
-                    b.shader->info.workgroup_size[2], 0);
-   nir_ssa_def *global_id = nir_iadd(&b, nir_imul(&b, wg_id, block_size), invoc_id);
-   global_id = nir_channel(&b, global_id, 0); // We only care about x here.
+   nir_ssa_def *global_id = get_global_ids(&b, 1);
 
    /* Compute src/dst strides. */
    nir_ssa_def *input_stride = nir_imm_int(&b, 8);
@@ -952,7 +928,7 @@ radv_CreateQueryPool(VkDevice _device, const VkQueryPoolCreateInfo *pCreateInfo,
       vk_alloc2(&device->vk.alloc, pAllocator, sizeof(*pool), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 
    if (!pool)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    vk_object_base_init(&device->vk, &pool->base, VK_OBJECT_TYPE_QUERY_POOL);
 
@@ -987,13 +963,13 @@ radv_CreateQueryPool(VkDevice _device, const VkQueryPoolCreateInfo *pCreateInfo,
                                                RADV_BO_PRIORITY_QUERY_POOL, 0, &pool->bo);
    if (result != VK_SUCCESS) {
       radv_destroy_query_pool(device, pAllocator, pool);
-      return vk_error(device->instance, result);
+      return vk_error(device, result);
    }
 
    pool->ptr = device->ws->buffer_map(pool->bo);
    if (!pool->ptr) {
       radv_destroy_query_pool(device, pAllocator, pool);
-      return vk_error(device->instance, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    }
 
    *pQueryPool = radv_query_pool_to_handle(pool);
@@ -1220,6 +1196,9 @@ radv_CmdCopyQueryPoolResults(VkCommandBuffer commandBuffer, VkQueryPool queryPoo
    uint64_t va = radv_buffer_get_va(pool->bo);
    uint64_t dest_va = radv_buffer_get_va(dst_buffer->bo);
    dest_va += dst_buffer->offset + dstOffset;
+
+   if (!queryCount)
+      return;
 
    radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, pool->bo);
    radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, dst_buffer->bo);

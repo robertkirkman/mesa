@@ -75,7 +75,7 @@ validate(aco::Program* program)
 
 void
 aco_compile_shader(unsigned shader_count, struct nir_shader* const* shaders,
-                   struct radv_shader_binary** binary, struct radv_shader_args* args)
+                   struct radv_shader_binary** binary, const struct radv_shader_args* args)
 {
    aco::init();
 
@@ -247,7 +247,7 @@ aco_compile_shader(unsigned shader_count, struct nir_shader* const* shaders,
    legacy_binary->exec_size = exec_size;
    legacy_binary->code_size = code.size() * sizeof(uint32_t);
 
-   legacy_binary->config = config;
+   legacy_binary->base.config = config;
    legacy_binary->disasm_size = 0;
    legacy_binary->ir_size = llvm_ir.size();
 

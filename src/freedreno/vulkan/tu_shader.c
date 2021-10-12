@@ -38,8 +38,6 @@ tu_spirv_to_nir(struct tu_device *dev,
 {
    /* TODO these are made-up */
    const struct spirv_to_nir_options spirv_options = {
-      .frag_coord_is_sysval = true,
-
       .ubo_addr_format = nir_address_format_vec2_index_32bit_offset,
       .ssbo_addr_format = nir_address_format_vec2_index_32bit_offset,
 
@@ -111,6 +109,11 @@ tu_spirv_to_nir(struct tu_device *dev,
 
    assert(nir->info.stage == stage);
    nir_validate_shader(nir, "after spirv_to_nir");
+
+   const struct nir_lower_sysvals_to_varyings_options sysvals_to_varyings = {
+      .point_coord = true,
+   };
+   NIR_PASS_V(nir, nir_lower_sysvals_to_varyings, &sysvals_to_varyings);
 
    if (unlikely(dev->physical_device->instance->debug_flags & TU_DEBUG_NIR)) {
       fprintf(stderr, "translated nir:\n");

@@ -1218,6 +1218,8 @@ radv_check_modifier_support(struct radv_physical_device *dev,
                             const VkPhysicalDeviceImageFormatInfo2 *info,
                             VkImageFormatProperties *props, VkFormat format, uint64_t modifier)
 {
+   uint32_t max_width, max_height;
+
    if (info->type != VK_IMAGE_TYPE_2D)
       return VK_ERROR_FORMAT_NOT_SUPPORTED;
 
@@ -1278,6 +1280,11 @@ radv_check_modifier_support(struct radv_physical_device *dev,
       props->maxMipLevels = 1;
       props->maxArrayLayers = 1;
    }
+
+   ac_modifier_max_extent(&dev->rad_info, modifier, &max_width, &max_height);
+   props->maxExtent.width = MIN2(props->maxExtent.width, max_width);
+   props->maxExtent.height = MIN2(props->maxExtent.width, max_height);
+
    /* We don't support MSAA for modifiers */
    props->sampleCounts &= VK_SAMPLE_COUNT_1_BIT;
    return VK_SUCCESS;
@@ -1649,7 +1656,7 @@ radv_GetPhysicalDeviceImageFormatProperties2(VkPhysicalDevice physicalDevice,
           *    vkGetPhysicalDeviceImageFormatProperties2 returns
           *    VK_ERROR_FORMAT_NOT_SUPPORTED.
           */
-         result = vk_errorf(physical_device->instance, VK_ERROR_FORMAT_NOT_SUPPORTED,
+         result = vk_errorf(physical_device, VK_ERROR_FORMAT_NOT_SUPPORTED,
                             "unsupported VkExternalMemoryTypeFlagBitsKHR 0x%x",
                             external_info->handleType);
          goto fail;
@@ -1790,6 +1797,33 @@ radv_GetImageSparseMemoryRequirements2(VkDevice _device,
          req->memoryRequirements.imageMipTailStride = 0;
       }
    };
+}
+
+void
+radv_GetDeviceImageSparseMemoryRequirementsKHR(VkDevice device,
+                                               const VkDeviceImageMemoryRequirementsKHR* pInfo,
+                                               uint32_t *pSparseMemoryRequirementCount,
+                                               VkSparseImageMemoryRequirements2 *pSparseMemoryRequirements)
+{
+   UNUSED VkResult result;
+   VkImage image;
+
+   /* Determining the image size/alignment require to create a surface, which is complicated without
+    * creating an image.
+    * TODO: Avoid creating an image.
+    */
+   result = radv_CreateImage(device, pInfo->pCreateInfo, NULL, &image);
+   assert(result == VK_SUCCESS);
+
+   VkImageSparseMemoryRequirementsInfo2 info2 = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_SPARSE_MEMORY_REQUIREMENTS_INFO_2,
+      .image = image,
+   };
+
+   radv_GetImageSparseMemoryRequirements2(device, &info2, pSparseMemoryRequirementCount,
+                                          pSparseMemoryRequirements);
+
+   radv_DestroyImage(device, image, NULL);
 }
 
 void

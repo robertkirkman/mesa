@@ -132,7 +132,7 @@ image_binding_grow(const struct anv_device *device,
        * VkImageDrmFormatModifierExplicitCreateInfoEXT.
        */
       if (unlikely(!anv_is_aligned(offset, alignment))) {
-         return vk_errorf(device, &device->vk.base,
+         return vk_errorf(device,
                           VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT,
                           "VkImageDrmFormatModifierExplicitCreateInfoEXT::"
                           "pPlaneLayouts[]::offset is misaligned");
@@ -143,7 +143,7 @@ image_binding_grow(const struct anv_device *device,
        * VkImageDrmFormatModifierExplicitCreateInfoEXT,
        */
       if (unlikely(offset < container->size)) {
-         return vk_errorf(device, &device->vk.base,
+         return vk_errorf(device,
                           VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT,
                           "VkImageDrmFormatModifierExplicitCreateInfoEXT::"
                           "pPlaneLayouts[]::offset is too small");
@@ -153,11 +153,10 @@ image_binding_grow(const struct anv_device *device,
    if (__builtin_add_overflow(offset, size, &container->size)) {
       if (has_implicit_offset) {
          assert(!"overflow");
-         return vk_errorf(device, &device->vk.base,
-                          VK_ERROR_UNKNOWN,
+         return vk_errorf(device, VK_ERROR_UNKNOWN,
                           "internal error: overflow in %s", __func__);
       } else {
-         return vk_errorf(device, &device->vk.base,
+         return vk_errorf(device,
                           VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT,
                           "VkImageDrmFormatModifierExplicitCreateInfoEXT::"
                           "pPlaneLayouts[]::offset is too large");
@@ -1000,7 +999,7 @@ check_drm_format_mod(const struct anv_device *device,
           * usage, then we may enable a private aux surface.
           */
          if (plane->aux_usage != isl_mod_info->aux_usage) {
-            return vk_errorf(device, &image->vk.base, VK_ERROR_UNKNOWN,
+            return vk_errorf(device, VK_ERROR_UNKNOWN,
                              "image with modifier unexpectedly has wrong aux "
                              "usage");
          }
@@ -1132,14 +1131,14 @@ add_all_surfaces_explicit_layout(
    /* Reject special values in the app-provided plane layouts. */
    for (uint32_t i = 0; i < mod_plane_count; ++i) {
       if (drm_info->pPlaneLayouts[i].rowPitch == 0) {
-         return vk_errorf(device, &device->vk.base,
+         return vk_errorf(device,
                           VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT,
                           "VkImageDrmFormatModifierExplicitCreateInfoEXT::"
                           "pPlaneLayouts[%u]::rowPitch is 0", i);
       }
 
       if (drm_info->pPlaneLayouts[i].offset == ANV_OFFSET_IMPLICIT) {
-         return vk_errorf(device, &device->vk.base,
+         return vk_errorf(device,
                           VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT,
                           "VkImageDrmFormatModifierExplicitCreateInfoEXT::"
                           "pPlaneLayouts[%u]::offset is %" PRIu64,
@@ -1481,7 +1480,7 @@ VkResult anv_CreateImage(
       vk_object_zalloc(&device->vk, pAllocator, sizeof(*image),
                        VK_OBJECT_TYPE_IMAGE);
    if (!image)
-      return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    VkResult result = anv_image_init_from_create_info(device, image,
                                                      pCreateInfo);
@@ -2388,7 +2387,7 @@ anv_image_fill_surface_state(struct anv_device *device,
       anv_image_address(image, &surface->memory_range);
 
    if (view_usage == ISL_SURF_USAGE_STORAGE_BIT &&
-       !(flags & ANV_IMAGE_VIEW_STATE_STORAGE_WRITE_ONLY) &&
+       (flags & ANV_IMAGE_VIEW_STATE_STORAGE_LOWERED) &&
        !isl_has_matching_typed_storage_image_format(&device->info,
                                                     view.format)) {
       /* In this case, we are a writeable storage buffer which needs to be
@@ -2408,7 +2407,7 @@ anv_image_fill_surface_state(struct anv_device *device,
       state_inout->clear_address = ANV_NULL_ADDRESS;
    } else {
       if (view_usage == ISL_SURF_USAGE_STORAGE_BIT &&
-          !(flags & ANV_IMAGE_VIEW_STATE_STORAGE_WRITE_ONLY)) {
+          (flags & ANV_IMAGE_VIEW_STATE_STORAGE_LOWERED)) {
          /* Typed surface reads support a very limited subset of the shader
           * image formats.  Translate it into the closest format the hardware
           * supports.
@@ -2520,7 +2519,7 @@ anv_CreateImageView(VkDevice _device,
    iview = vk_image_view_create(&device->vk, pCreateInfo,
                                 pAllocator, sizeof(*iview));
    if (iview == NULL)
-      return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    iview->image = image;
    iview->n_planes = anv_image_aspect_get_planes(iview->vk.aspects);
@@ -2629,37 +2628,38 @@ anv_CreateImageView(VkDevice _device,
 
       /* NOTE: This one needs to go last since it may stomp isl_view.format */
       if (iview->vk.usage & VK_IMAGE_USAGE_STORAGE_BIT) {
+         iview->planes[vplane].storage_surface_state.state = alloc_surface_state(device);
+         anv_image_fill_surface_state(device, image, 1ULL << iaspect_bit,
+                                      &iview->planes[vplane].isl,
+                                      ISL_SURF_USAGE_STORAGE_BIT,
+                                      ISL_AUX_USAGE_NONE, NULL,
+                                      0,
+                                      &iview->planes[vplane].storage_surface_state,
+                                      NULL);
+
          if (isl_is_storage_image_format(format.isl_format)) {
-            iview->planes[vplane].storage_surface_state.state =
+            iview->planes[vplane].lowered_storage_surface_state.state =
                alloc_surface_state(device);
 
             anv_image_fill_surface_state(device, image, 1ULL << iaspect_bit,
                                          &iview->planes[vplane].isl,
                                          ISL_SURF_USAGE_STORAGE_BIT,
                                          ISL_AUX_USAGE_NONE, NULL,
-                                         0,
-                                         &iview->planes[vplane].storage_surface_state,
-                                         &iview->planes[vplane].storage_image_param);
+                                         ANV_IMAGE_VIEW_STATE_STORAGE_LOWERED,
+                                         &iview->planes[vplane].lowered_storage_surface_state,
+                                         &iview->planes[vplane].lowered_storage_image_param);
          } else {
             /* In this case, we support the format but, because there's no
-             * SPIR-V format specifier corresponding to it, we only support
-             * NonReadable (writeonly in GLSL) access.  Instead of hanging in
-             * these invalid cases, we give them a NULL descriptor.
+             * SPIR-V format specifier corresponding to it, we only support it
+             * if the hardware can do it natively.  This is possible for some
+             * reads but for most writes.  Instead of hanging if someone gets
+             * it wrong, we give them a NULL descriptor.
              */
             assert(isl_format_supports_typed_writes(&device->info,
                                                     format.isl_format));
             iview->planes[vplane].storage_surface_state.state =
                device->null_surface_state;
          }
-
-         iview->planes[vplane].writeonly_storage_surface_state.state = alloc_surface_state(device);
-         anv_image_fill_surface_state(device, image, 1ULL << iaspect_bit,
-                                      &iview->planes[vplane].isl,
-                                      ISL_SURF_USAGE_STORAGE_BIT,
-                                      ISL_AUX_USAGE_NONE, NULL,
-                                      ANV_IMAGE_VIEW_STATE_STORAGE_WRITE_ONLY,
-                                      &iview->planes[vplane].writeonly_storage_surface_state,
-                                      NULL);
       }
    }
 
@@ -2698,9 +2698,9 @@ anv_DestroyImageView(VkDevice _device, VkImageView _iview,
                              iview->planes[plane].storage_surface_state.state);
       }
 
-      if (iview->planes[plane].writeonly_storage_surface_state.state.offset) {
+      if (iview->planes[plane].lowered_storage_surface_state.state.offset) {
          anv_state_pool_free(&device->surface_state_pool,
-                             iview->planes[plane].writeonly_storage_surface_state.state);
+                             iview->planes[plane].lowered_storage_surface_state.state);
       }
    }
 
@@ -2721,7 +2721,7 @@ anv_CreateBufferView(VkDevice _device,
    view = vk_object_alloc(&device->vk, pAllocator, sizeof(*view),
                           VK_OBJECT_TYPE_BUFFER_VIEW);
    if (!view)
-      return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    /* TODO: Handle the format swizzle? */
 
@@ -2747,32 +2747,31 @@ anv_CreateBufferView(VkDevice _device,
 
    if (buffer->usage & VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT) {
       view->storage_surface_state = alloc_surface_state(device);
-      view->writeonly_storage_surface_state = alloc_surface_state(device);
+      view->lowered_storage_surface_state = alloc_surface_state(device);
 
-      enum isl_format storage_format =
+      anv_fill_buffer_surface_state(device, view->storage_surface_state,
+                                    view->format, ISL_SURF_USAGE_STORAGE_BIT,
+                                    view->address, view->range,
+                                    isl_format_get_layout(view->format)->bpb / 8);
+
+      enum isl_format lowered_format =
          isl_has_matching_typed_storage_image_format(&device->info,
                                                      view->format) ?
          isl_lower_storage_image_format(&device->info, view->format) :
          ISL_FORMAT_RAW;
 
-      anv_fill_buffer_surface_state(device, view->storage_surface_state,
-                                    storage_format, ISL_SURF_USAGE_STORAGE_BIT,
+      anv_fill_buffer_surface_state(device, view->lowered_storage_surface_state,
+                                    lowered_format, ISL_SURF_USAGE_STORAGE_BIT,
                                     view->address, view->range,
-                                    (storage_format == ISL_FORMAT_RAW ? 1 :
-                                     isl_format_get_layout(storage_format)->bpb / 8));
-
-      /* Write-only accesses should use the original format. */
-      anv_fill_buffer_surface_state(device, view->writeonly_storage_surface_state,
-                                    view->format, ISL_SURF_USAGE_STORAGE_BIT,
-                                    view->address, view->range,
-                                    isl_format_get_layout(view->format)->bpb / 8);
+                                    (lowered_format == ISL_FORMAT_RAW ? 1 :
+                                     isl_format_get_layout(lowered_format)->bpb / 8));
 
       isl_buffer_fill_image_param(&device->isl_dev,
-                                  &view->storage_image_param,
+                                  &view->lowered_storage_image_param,
                                   view->format, view->range);
    } else {
       view->storage_surface_state = (struct anv_state){ 0 };
-      view->writeonly_storage_surface_state = (struct anv_state){ 0 };
+      view->lowered_storage_surface_state = (struct anv_state){ 0 };
    }
 
    *pView = anv_buffer_view_to_handle(view);
@@ -2798,9 +2797,9 @@ anv_DestroyBufferView(VkDevice _device, VkBufferView bufferView,
       anv_state_pool_free(&device->surface_state_pool,
                           view->storage_surface_state);
 
-   if (view->writeonly_storage_surface_state.alloc_size > 0)
+   if (view->lowered_storage_surface_state.alloc_size > 0)
       anv_state_pool_free(&device->surface_state_pool,
-                          view->writeonly_storage_surface_state);
+                          view->lowered_storage_surface_state);
 
    vk_object_free(&device->vk, pAllocator, view);
 }

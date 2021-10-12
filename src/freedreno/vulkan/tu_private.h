@@ -60,6 +60,7 @@
 #include "vk_dispatch_table.h"
 #include "vk_extensions.h"
 #include "vk_instance.h"
+#include "vk_log.h"
 #include "vk_physical_device.h"
 #include "vk_shader_module.h"
 #include "wsi_common.h"
@@ -135,25 +136,21 @@ typedef uint32_t xcb_window_t;
 struct tu_instance;
 
 VkResult
-__vk_errorf(struct tu_instance *instance,
-            VkResult error,
-            bool force_print,
-            const char *file,
-            int line,
-            const char *format,
-            ...) PRINTFLIKE(6, 7);
-
-#define vk_error(instance, error)                                            \
-   __vk_errorf(instance, error, false, __FILE__, __LINE__, NULL);
-#define vk_errorf(instance, error, format, ...)                              \
-   __vk_errorf(instance, error, false, __FILE__, __LINE__, format, ##__VA_ARGS__);
+__vk_startup_errorf(struct tu_instance *instance,
+                    VkResult error,
+                    bool force_print,
+                    const char *file,
+                    int line,
+                    const char *format,
+                    ...) PRINTFLIKE(6, 7);
 
 /* Prints startup errors if TU_DEBUG=startup is set or on a debug driver
  * build.
  */
 #define vk_startup_errorf(instance, error, format, ...) \
-   __vk_errorf(instance, error, instance->debug_flags & TU_DEBUG_STARTUP, \
-               __FILE__, __LINE__, format, ##__VA_ARGS__)
+   __vk_startup_errorf(instance, error, \
+                       instance->debug_flags & TU_DEBUG_STARTUP, \
+                       __FILE__, __LINE__, format, ##__VA_ARGS__)
 
 void
 __tu_finishme(const char *file, int line, const char *format, ...)
@@ -1018,6 +1015,8 @@ struct tu_cmd_state
    const struct tu_framebuffer *framebuffer;
    VkRect2D render_area;
 
+   const struct tu_image_view **attachments;
+
    bool xfb_used;
    bool has_tess;
    bool has_subpass_predication;
@@ -1330,8 +1329,8 @@ struct tu_image_view;
 void
 tu_resolve_sysmem(struct tu_cmd_buffer *cmd,
                   struct tu_cs *cs,
-                  struct tu_image_view *src,
-                  struct tu_image_view *dst,
+                  const struct tu_image_view *src,
+                  const struct tu_image_view *dst,
                   uint32_t layer_mask,
                   uint32_t layers,
                   const VkRect2D *rect);

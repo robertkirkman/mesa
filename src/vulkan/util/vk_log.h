@@ -71,3 +71,19 @@ __vk_log_impl(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
               int line,
               const char *format,
               ...);
+
+#define vk_error(obj, error) \
+   __vk_errorf(obj, error, __FILE__, __LINE__, NULL)
+
+#define vk_errorf(obj, error, ...) \
+   __vk_errorf(obj, error, __FILE__, __LINE__, __VA_ARGS__)
+
+VkResult
+__vk_errorv(const void *_obj, VkResult error,
+            const char *file, int line,
+            const char *format, va_list va);
+
+VkResult PRINTFLIKE(5, 6)
+__vk_errorf(const void *_obj, VkResult error,
+            const char *file, int line,
+            const char *format, ...);

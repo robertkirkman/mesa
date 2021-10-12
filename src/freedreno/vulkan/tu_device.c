@@ -129,6 +129,7 @@ get_device_extensions(const struct tu_physical_device *device,
       .KHR_external_semaphore = true,
       .KHR_external_semaphore_fd = true,
       .KHR_get_memory_requirements2 = true,
+      .KHR_imageless_framebuffer = true,
       .KHR_incremental_present = TU_HAS_SURFACE,
       .KHR_image_format_list = true,
       .KHR_maintenance1 = true,
@@ -144,6 +145,7 @@ get_device_extensions(const struct tu_physical_device *device,
       .KHR_shader_draw_parameters = true,
       .KHR_shader_float_controls = true,
       .KHR_shader_float16_int8 = true,
+      .KHR_shader_subgroup_extended_types = true,
       .KHR_shader_terminate_invocation = true,
       .KHR_spirv_1_4 = true,
       .KHR_storage_buffer_storage_class = true,
@@ -513,9 +515,9 @@ tu_get_physical_device_features_1_2(struct tu_physical_device *pdevice,
 
    features->samplerFilterMinmax                 = true;
    features->scalarBlockLayout                   = true;
-   features->imagelessFramebuffer                = false;
+   features->imagelessFramebuffer                = true;
    features->uniformBufferStandardLayout         = true;
-   features->shaderSubgroupExtendedTypes         = false;
+   features->shaderSubgroupExtendedTypes         = true;
    features->separateDepthStencilLayouts         = false;
    features->hostQueryReset                      = true;
    features->timelineSemaphore                   = true;
@@ -1856,12 +1858,12 @@ tu_AllocateMemory(VkDevice _device,
    struct tu_memory_heap *mem_heap = &device->physical_device->heap;
    uint64_t mem_heap_used = p_atomic_read(&mem_heap->used);
    if (mem_heap_used > mem_heap->size)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
    mem = vk_object_alloc(&device->vk, pAllocator, sizeof(*mem),
                          VK_OBJECT_TYPE_DEVICE_MEMORY);
    if (mem == NULL)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    const VkImportMemoryFdInfoKHR *fd_info =
       vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_FD_INFO_KHR);
@@ -1897,7 +1899,7 @@ tu_AllocateMemory(VkDevice _device,
       if (mem_heap_used > mem_heap->size) {
          p_atomic_add(&mem_heap->used, -mem->bo.size);
          tu_bo_finish(device, &mem->bo);
-         result = vk_errorf(device->instance, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+         result = vk_errorf(device, VK_ERROR_OUT_OF_DEVICE_MEMORY,
                             "Out of heap memory");
       }
    }
@@ -2113,7 +2115,7 @@ tu_CreateEvent(VkDevice _device,
          vk_object_alloc(&device->vk, pAllocator, sizeof(*event),
                          VK_OBJECT_TYPE_EVENT);
    if (!event)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    VkResult result = tu_bo_init_new(device, &event->bo, 0x1000,
                                     TU_BO_ALLOC_NO_FLAGS);
@@ -2132,7 +2134,7 @@ fail_map:
    tu_bo_finish(device, &event->bo);
 fail_alloc:
    vk_object_free(&device->vk, pAllocator, event);
-   return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+   return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -2192,7 +2194,7 @@ tu_CreateBuffer(VkDevice _device,
    buffer = vk_object_alloc(&device->vk, pAllocator, sizeof(*buffer),
                             VK_OBJECT_TYPE_BUFFER);
    if (buffer == NULL)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    buffer->size = pCreateInfo->size;
    buffer->usage = pCreateInfo->usage;
@@ -2229,21 +2231,27 @@ tu_CreateFramebuffer(VkDevice _device,
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO);
 
-   size_t size = sizeof(*framebuffer) + sizeof(struct tu_attachment_info) *
-                                           pCreateInfo->attachmentCount;
+   bool imageless = pCreateInfo->flags & VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT;
+
+   size_t size = sizeof(*framebuffer);
+   if (!imageless)
+      size += sizeof(struct tu_attachment_info) * pCreateInfo->attachmentCount;
    framebuffer = vk_object_alloc(&device->vk, pAllocator, size,
                                  VK_OBJECT_TYPE_FRAMEBUFFER);
    if (framebuffer == NULL)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    framebuffer->attachment_count = pCreateInfo->attachmentCount;
    framebuffer->width = pCreateInfo->width;
    framebuffer->height = pCreateInfo->height;
    framebuffer->layers = pCreateInfo->layers;
-   for (uint32_t i = 0; i < pCreateInfo->attachmentCount; i++) {
-      VkImageView _iview = pCreateInfo->pAttachments[i];
-      struct tu_image_view *iview = tu_image_view_from_handle(_iview);
-      framebuffer->attachments[i].attachment = iview;
+
+   if (!imageless) {
+      for (uint32_t i = 0; i < pCreateInfo->attachmentCount; i++) {
+         VkImageView _iview = pCreateInfo->pAttachments[i];
+         struct tu_image_view *iview = tu_image_view_from_handle(_iview);
+         framebuffer->attachments[i].attachment = iview;
+      }
    }
 
    tu_framebuffer_tiling_config(framebuffer, device, pass);
@@ -2351,7 +2359,7 @@ tu_CreateSampler(VkDevice _device,
    sampler = vk_object_alloc(&device->vk, pAllocator, sizeof(*sampler),
                              VK_OBJECT_TYPE_SAMPLER);
    if (!sampler)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    tu_init_sampler(device, sampler, pCreateInfo);
    *pSampler = tu_sampler_to_handle(sampler);
@@ -2447,7 +2455,7 @@ tu_GetMemoryFdKHR(VkDevice _device,
 
    int prime_fd = tu_bo_export_dmabuf(device, &memory->bo);
    if (prime_fd < 0)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
    *pFd = prime_fd;
    return VK_SUCCESS;

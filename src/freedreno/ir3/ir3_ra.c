@@ -538,8 +538,6 @@ ra_file_init(struct ra_file *file)
       BITSET_SET(file->available_to_evict, i);
    }
 
-   file->start = 0;
-
    rb_tree_init(&file->reg_ctx.intervals);
    rb_tree_init(&file->physreg_intervals);
 
@@ -759,8 +757,13 @@ try_evict_regs(struct ra_ctx *ctx, struct ra_file *file,
    memcpy(available_to_evict, file->available_to_evict,
           sizeof(available_to_evict));
 
-   for (unsigned i = 0; i < reg_size(reg); i++)
+   BITSET_DECLARE(available, RA_MAX_FILE_SIZE);
+   memcpy(available, file->available, sizeof(available));
+
+   for (unsigned i = 0; i < reg_size(reg); i++) {
       BITSET_CLEAR(available_to_evict, physreg + i);
+      BITSET_CLEAR(available, physreg + i);
+   }
 
    unsigned eviction_count = 0;
    /* Iterate over each range conflicting with physreg */
@@ -801,6 +804,64 @@ try_evict_regs(struct ra_ctx *ctx, struct ra_file *file,
             evicted = true;
             break;
          }
+      }
+
+      if (evicted)
+         continue;
+
+      /* If we couldn't evict this range, we may be able to swap it with a
+       * killed range to acheive the same effect.
+       */
+      foreach_interval (killed, file) {
+         if (!killed->is_killed)
+            continue;
+
+         if (killed->physreg_end - killed->physreg_start !=
+             conflicting->physreg_end - conflicting->physreg_start)
+            continue;
+
+         /* We can't swap the killed range if it partially/fully overlaps the
+          * space we're trying to allocate or (in speculative mode) if it's
+          * already been swapped and will overlap when we actually evict.
+          */
+         bool killed_available = true;
+         for (unsigned i = killed->physreg_start; i < killed->physreg_end; i++) {
+            if (!BITSET_TEST(available, i)) {
+               killed_available = false;
+               break;
+            }
+         }
+         
+         if (!killed_available)
+            continue;
+
+         /* Check for alignment if one is a full reg */
+         if ((!(killed->interval.reg->flags & IR3_REG_HALF) ||
+              !(conflicting->interval.reg->flags & IR3_REG_HALF)) &&
+             (killed->physreg_start % 2 != 0 ||
+              conflicting->physreg_start % 2 != 0))
+            continue;
+
+         for (unsigned i = killed->physreg_start; i < killed->physreg_end; i++) {
+            BITSET_CLEAR(available, i);
+         }
+         /* Because this will generate swaps instead of moves, multiply the
+          * cost by 2.
+          */
+         eviction_count += (killed->physreg_end - killed->physreg_start) * 2;
+         if (!speculative) {
+            physreg_t killed_start = killed->physreg_start,
+                      conflicting_start = conflicting->physreg_start;
+            struct ra_removed_interval killed_removed =
+               ra_pop_interval(ctx, file, killed);
+            struct ra_removed_interval conflicting_removed =
+               ra_pop_interval(ctx, file, conflicting);
+            ra_push_interval(ctx, file, &killed_removed, conflicting_start);
+            ra_push_interval(ctx, file, &conflicting_removed, killed_start);
+         }
+
+         evicted = true;
+         break;
       }
 
       if (!evicted)
@@ -2205,6 +2266,8 @@ ir3_ra(struct ir3_shader_variant *v)
       ctx->half.size = RA_HALF_SIZE;
 
    ctx->shared.size = RA_SHARED_SIZE;
+
+   ctx->full.start = ctx->half.start = ctx->shared.start = 0;
 
    foreach_block (block, &v->ir->block_list)
       handle_block(ctx, block);

@@ -228,9 +228,6 @@ struct intel_perf_query_result;
  *    allocations with a size greater than or equal to 4GB. Such a limit is
  *    implementation-dependent, and if such a failure occurs then the error
  *    VK_ERROR_OUT_OF_DEVICE_MEMORY should be returned."
- *
- * We don't use vk_error here because it's not an error so much as an
- * indication to the application that the allocation is too large.
  */
 #define MAX_MEMORY_ALLOCATION_SIZE (1ull << 31)
 
@@ -367,41 +364,6 @@ static inline uintptr_t anv_pack_ptr(void *ptr, int bits, int flags)
    return value | (mask & flags);
 }
 
-/* Whenever we generate an error, pass it through this function. Useful for
- * debugging, where we can break on it. Only call at error site, not when
- * propagating errors. Might be useful to plug in a stack trace here.
- */
-
-VkResult __vk_errorv(struct anv_instance *instance,
-                     const struct vk_object_base *object, VkResult error,
-                     const char *file, int line, const char *format,
-                     va_list args);
-
-VkResult __vk_errorf(struct anv_instance *instance,
-                     const struct vk_object_base *object, VkResult error,
-                     const char *file, int line, const char *format, ...)
-   anv_printflike(6, 7);
-
-#ifdef DEBUG
-#define vk_error(error) __vk_errorf(NULL, NULL, error, __FILE__, __LINE__, NULL)
-#define vk_errorfi(instance, obj, error, format, ...)\
-    __vk_errorf(instance, obj, error,\
-                __FILE__, __LINE__, format, ## __VA_ARGS__)
-#define vk_errorf(device, obj, error, format, ...)\
-   vk_errorfi(anv_device_instance_or_null(device),\
-              obj, error, format, ## __VA_ARGS__)
-#else
-
-static inline VkResult __dummy_vk_error(VkResult error, UNUSED const void *ignored)
-{
-   return error;
-}
-
-#define vk_error(error) __dummy_vk_error(error, NULL)
-#define vk_errorfi(instance, obj, error, format, ...) __dummy_vk_error(error, instance)
-#define vk_errorf(device, obj, error, format, ...) __dummy_vk_error(error, device)
-#endif
-
 /**
  * Warn on ignored extension structs.
  *
@@ -424,8 +386,6 @@ void __anv_perf_warn(struct anv_device *device,
                      const struct vk_object_base *object,
                      const char *file, int line, const char *format, ...)
    anv_printflike(5, 6);
-void anv_loge(const char *format, ...) anv_printflike(1, 2);
-void anv_loge_v(const char *format, va_list va);
 
 /**
  * Print a FINISHME message, including its source location.
@@ -852,7 +812,8 @@ struct anv_bo_cache {
    pthread_mutex_t mutex;
 };
 
-VkResult anv_bo_cache_init(struct anv_bo_cache *cache);
+VkResult anv_bo_cache_init(struct anv_bo_cache *cache,
+                           struct anv_device *device);
 void anv_bo_cache_finish(struct anv_bo_cache *cache);
 
 struct anv_queue_family {
@@ -1297,12 +1258,6 @@ anv_use_softpin(const struct anv_physical_device *pdevice)
     */
    return pdevice->use_softpin;
 #endif
-}
-
-static inline struct anv_instance *
-anv_device_instance_or_null(const struct anv_device *device)
-{
-   return device ? device->physical->instance : NULL;
 }
 
 static inline struct anv_state_pool *
@@ -1870,8 +1825,8 @@ struct anv_storage_image_descriptor {
     * These are expected to already be shifted such that the 20-bit
     * SURFACE_STATE table index is in the top 20 bits.
     */
-   uint32_t read_write;
-   uint32_t write_only;
+   uint32_t vanilla;
+   uint32_t lowered;
 };
 
 /** Struct representing a address/range descriptor
@@ -2072,9 +2027,9 @@ struct anv_buffer_view {
 
    struct anv_state surface_state;
    struct anv_state storage_surface_state;
-   struct anv_state writeonly_storage_surface_state;
+   struct anv_state lowered_storage_surface_state;
 
-   struct brw_image_param storage_image_param;
+   struct brw_image_param lowered_storage_image_param;
 };
 
 struct anv_push_descriptor_set {
@@ -2271,8 +2226,8 @@ struct anv_pipeline_binding {
       uint8_t dynamic_offset_index;
    };
 
-   /** For a storage image, whether it is write-only */
-   uint8_t write_only;
+   /** For a storage image, whether it requires a lowered surface */
+   uint8_t lowered_storage_surface;
 
    /** Pad to 64 bits so that there are no holes and we can safely memcmp
     * assuming POD zero-initialization.
@@ -2544,7 +2499,7 @@ anv_pipe_flush_bits_for_access_flags(struct anv_device *device,
    enum anv_pipe_bits pipe_bits = 0;
 
    u_foreach_bit64(b, flags) {
-      switch ((VkAccessFlags2KHR)(1 << b)) {
+      switch ((VkAccessFlags2KHR)BITFIELD64_BIT(b)) {
       case VK_ACCESS_2_SHADER_WRITE_BIT_KHR:
       case VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT_KHR:
          /* We're transitioning a buffer that was previously used as write
@@ -2621,7 +2576,7 @@ anv_pipe_invalidate_bits_for_access_flags(struct anv_device *device,
    enum anv_pipe_bits pipe_bits = 0;
 
    u_foreach_bit64(b, flags) {
-      switch ((VkAccessFlags2KHR)(1 << b)) {
+      switch ((VkAccessFlags2KHR)BITFIELD64_BIT(b)) {
       case VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT_KHR:
          /* Indirect draw commands take a buffer as input that we're going to
           * read from the command streamer to load some of the HW registers
@@ -4390,18 +4345,20 @@ struct anv_image_view {
 
       /**
        * RENDER_SURFACE_STATE when using image as a storage image. Separate
-       * states for write-only and readable, using the real format for
-       * write-only and the lowered format for readable.
+       * states for vanilla (with the original format) and one which has been
+       * lowered to a format suitable for reading.  This may be a raw surface
+       * in extreme cases or simply a surface with a different format where we
+       * expect some conversion to be done in the shader.
        */
       struct anv_surface_state storage_surface_state;
-      struct anv_surface_state writeonly_storage_surface_state;
+      struct anv_surface_state lowered_storage_surface_state;
 
-      struct brw_image_param storage_image_param;
+      struct brw_image_param lowered_storage_image_param;
    } planes[3];
 };
 
 enum anv_image_view_state_flags {
-   ANV_IMAGE_VIEW_STATE_STORAGE_WRITE_ONLY   = (1 << 0),
+   ANV_IMAGE_VIEW_STATE_STORAGE_LOWERED      = (1 << 0),
    ANV_IMAGE_VIEW_STATE_TEXTURE_OPTIMAL      = (1 << 1),
 };
 
@@ -4482,12 +4439,12 @@ anv_rasterization_aa_mode(VkPolygonMode raster_mode,
    return false;
 }
 
-VkFormatFeatureFlags
-anv_get_image_format_features(const struct intel_device_info *devinfo,
-                              VkFormat vk_format,
-                              const struct anv_format *anv_format,
-                              VkImageTiling vk_tiling,
-                              const struct isl_drm_modifier_info *isl_mod_info);
+VkFormatFeatureFlags2KHR
+anv_get_image_format_features2(const struct intel_device_info *devinfo,
+                               VkFormat vk_format,
+                               const struct anv_format *anv_format,
+                               VkImageTiling vk_tiling,
+                               const struct isl_drm_modifier_info *isl_mod_info);
 
 void anv_fill_buffer_surface_state(struct anv_device *device,
                                    struct anv_state state,
