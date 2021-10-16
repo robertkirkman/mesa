@@ -123,7 +123,7 @@ static void si_emit_cb_render_state(struct si_context *sctx)
    /* RB+ register settings. */
    if (sctx->screen->info.rbplus_allowed) {
       unsigned spi_shader_col_format =
-         sctx->shader.ps.cso ? sctx->shader.ps.current->key.part.ps.epilog.spi_shader_col_format
+         sctx->shader.ps.cso ? sctx->shader.ps.current->key.ps.part.epilog.spi_shader_col_format
                              : 0;
       unsigned sx_ps_downconvert = 0;
       unsigned sx_blend_opt_epsilon = 0;
@@ -837,7 +837,6 @@ static void si_emit_clip_regs(struct si_context *sctx)
    unsigned clipdist_mask = vs_sel->clipdist_mask;
    unsigned ucp_mask = clipdist_mask ? 0 : rs->clip_plane_enable & SIX_BITS;
    unsigned culldist_mask = vs_sel->culldist_mask;
-   unsigned vs_out_mask = (clipdist_mask & ~vs->key.opt.kill_clip_distances) | culldist_mask;
 
    /* Clip distances on points have no effect, so need to be implemented
     * as cull distances. This applies for the clipvertex case as well.
@@ -848,23 +847,14 @@ static void si_emit_clip_regs(struct si_context *sctx)
    clipdist_mask &= rs->clip_plane_enable;
    culldist_mask |= clipdist_mask;
 
-   unsigned pa_cl_cntl = S_02881C_VS_OUT_CCDIST0_VEC_ENA((vs_out_mask & 0x0F) != 0) |
-                         S_02881C_VS_OUT_CCDIST1_VEC_ENA((vs_out_mask & 0xF0) != 0) |
-                         S_02881C_BYPASS_VTX_RATE_COMBINER(sctx->chip_class >= GFX10_3 &&
+   unsigned pa_cl_cntl = S_02881C_BYPASS_VTX_RATE_COMBINER(sctx->chip_class >= GFX10_3 &&
                                                            !sctx->screen->options.vrs2x2) |
                          S_02881C_BYPASS_PRIM_RATE_COMBINER(sctx->chip_class >= GFX10_3) |
                          clipdist_mask | (culldist_mask << 8);
 
    radeon_begin(&sctx->gfx_cs);
-
-   if (sctx->chip_class >= GFX10) {
-      radeon_opt_set_context_reg_rmw(sctx, R_02881C_PA_CL_VS_OUT_CNTL,
-                                     SI_TRACKED_PA_CL_VS_OUT_CNTL__CL, pa_cl_cntl,
-                                     ~SI_TRACKED_PA_CL_VS_OUT_CNTL__VS_MASK);
-   } else {
-      radeon_opt_set_context_reg(sctx, R_02881C_PA_CL_VS_OUT_CNTL, SI_TRACKED_PA_CL_VS_OUT_CNTL__CL,
-                                 vs_sel->pa_cl_vs_out_cntl | pa_cl_cntl);
-   }
+   radeon_opt_set_context_reg(sctx, R_02881C_PA_CL_VS_OUT_CNTL, SI_TRACKED_PA_CL_VS_OUT_CNTL,
+			      pa_cl_cntl | vs->pa_cl_vs_out_cntl);
    radeon_opt_set_context_reg(sctx, R_028810_PA_CL_CLIP_CNTL, SI_TRACKED_PA_CL_CLIP_CNTL,
                               rs->pa_cl_clip_cntl | ucp_mask | S_028810_CLIP_DISABLE(window_space));
    radeon_end_update_context_roll(sctx);
@@ -4321,7 +4311,7 @@ struct pipe_sampler_view *si_create_sampler_view_custom(struct pipe_context *ctx
                                                         unsigned force_level)
 {
    struct si_context *sctx = (struct si_context *)ctx;
-   struct si_sampler_view *view = CALLOC_STRUCT(si_sampler_view);
+   struct si_sampler_view *view = CALLOC_STRUCT_CL(si_sampler_view);
    struct si_texture *tex = (struct si_texture *)texture;
    unsigned base_level, first_level, last_level;
    unsigned char state_swizzle[4];
@@ -4455,7 +4445,7 @@ static void si_sampler_view_destroy(struct pipe_context *ctx, struct pipe_sample
    struct si_sampler_view *view = (struct si_sampler_view *)state;
 
    pipe_resource_reference(&state->texture, NULL);
-   FREE(view);
+   FREE_CL(view);
 }
 
 static bool wrap_mode_uses_border_color(unsigned wrap, bool linear_filter)
@@ -5052,11 +5042,11 @@ si_create_vertex_state(struct pipe_screen *screen,
    /* Initialize the vertex element state in state->element.
     * Do it by creating a vertex element state object and copying it there.
     */
-   struct pipe_context ctx = {};
-   ctx.screen = screen;
-   struct si_vertex_elements *velems = si_create_vertex_elements(&ctx, num_elements, elements);
+   struct si_context ctx = {};
+   ctx.b.screen = screen;
+   struct si_vertex_elements *velems = si_create_vertex_elements(&ctx.b, num_elements, elements);
    state->velems = *velems;
-   si_delete_vertex_element(&ctx, velems);
+   si_delete_vertex_element(&ctx.b, velems);
 
    assert(!state->velems.instance_divisor_is_one);
    assert(!state->velems.instance_divisor_is_fetched);

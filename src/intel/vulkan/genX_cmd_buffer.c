@@ -72,7 +72,7 @@ convert_pc_to_bits(struct GENX(PIPE_CONTROL) *pc) {
 }
 
 #define anv_debug_dump_pc(pc) \
-   if (INTEL_DEBUG & DEBUG_PIPE_CONTROL) { \
+   if (INTEL_DEBUG(DEBUG_PIPE_CONTROL)) { \
       fputs("pc: emit PC=( ", stderr); \
       anv_dump_pipe_bits(convert_pc_to_bits(&(pc))); \
       fprintf(stderr, ") reason: %s\n", __FUNCTION__); \
@@ -649,8 +649,7 @@ transition_depth_buffer(struct anv_cmd_buffer *cmd_buffer,
 
    /* Getting into the pass-through state for Depth is tricky and involves
     * both a resolve and an ambiguate.  We don't handle that state right now
-    * as anv_layout_to_aux_state never returns it. Resolve/ambiguate will
-    * trigger depth clears which require tile cache flushes.
+    * as anv_layout_to_aux_state never returns it.
     */
    assert(final_state != ISL_AUX_STATE_PASS_THROUGH);
 
@@ -658,16 +657,10 @@ transition_depth_buffer(struct anv_cmd_buffer *cmd_buffer,
       assert(initial_hiz_valid);
       anv_image_hiz_op(cmd_buffer, image, VK_IMAGE_ASPECT_DEPTH_BIT,
                        0, base_layer, layer_count, ISL_AUX_OP_FULL_RESOLVE);
-      anv_add_pending_pipe_bits(cmd_buffer,
-                                ANV_PIPE_TILE_CACHE_FLUSH_BIT,
-                                "after depth resolve");
    } else if (final_needs_hiz && !initial_hiz_valid) {
       assert(initial_depth_valid);
       anv_image_hiz_op(cmd_buffer, image, VK_IMAGE_ASPECT_DEPTH_BIT,
                        0, base_layer, layer_count, ISL_AUX_OP_AMBIGUATE);
-      anv_add_pending_pipe_bits(cmd_buffer,
-                                ANV_PIPE_TILE_CACHE_FLUSH_BIT,
-                                "after hiz resolve");
    }
 }
 
@@ -2063,7 +2056,7 @@ genX(cmd_buffer_config_l3)(struct anv_cmd_buffer *cmd_buffer,
     */
    assert(cfg == cmd_buffer->device->l3_config);
 #else
-   if (INTEL_DEBUG & DEBUG_L3) {
+   if (INTEL_DEBUG(DEBUG_L3)) {
       mesa_logd("L3 config transition: ");
       intel_dump_l3_config(cfg, stderr);
    }

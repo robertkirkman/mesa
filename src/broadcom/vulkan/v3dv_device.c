@@ -94,6 +94,7 @@ static const struct vk_instance_extension_table instance_extensions = {
 #ifdef V3DV_HAS_SURFACE
    .KHR_get_surface_capabilities2       = true,
    .KHR_surface                         = true,
+   .KHR_surface_protected_capabilities  = true,
 #endif
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR
    .KHR_wayland_surface                 = true,
@@ -136,12 +137,14 @@ get_device_extensions(const struct v3dv_physical_device *device,
       .KHR_uniform_buffer_standard_layout  = true,
 #ifdef V3DV_HAS_SURFACE
       .KHR_swapchain                       = true,
+      .KHR_swapchain_mutable_format        = true,
       .KHR_incremental_present             = true,
 #endif
       .KHR_variable_pointers               = true,
       .EXT_color_write_enable              = true,
       .EXT_custom_border_color             = true,
       .EXT_external_memory_dma_buf         = true,
+      .EXT_host_query_reset                = true,
       .EXT_index_type_uint8                = true,
       .EXT_physical_device_drm             = true,
       .EXT_pipeline_creation_cache_control = true,
@@ -186,6 +189,8 @@ v3dv_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    struct vk_instance_dispatch_table dispatch_table;
    vk_instance_dispatch_table_from_entrypoints(
       &dispatch_table, &v3dv_instance_entrypoints, true);
+   vk_instance_dispatch_table_from_entrypoints(
+      &dispatch_table, &wsi_instance_entrypoints, false);
 
    result = vk_instance_init(&instance->vk,
                              &instance_extensions,
@@ -691,6 +696,8 @@ physical_device_init(struct v3dv_physical_device *device,
    struct vk_physical_device_dispatch_table dispatch_table;
    vk_physical_device_dispatch_table_from_entrypoints
       (&dispatch_table, &v3dv_physical_device_entrypoints, true);
+   vk_physical_device_dispatch_table_from_entrypoints(
+      &dispatch_table, &wsi_physical_device_entrypoints, false);
 
    result = vk_physical_device_init(&device->vk, &instance->vk, NULL,
                                     &dispatch_table);
@@ -1129,6 +1136,14 @@ v3dv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
             (void *) ext;
          features->vertexAttributeInstanceRateDivisor = true;
          features->vertexAttributeInstanceRateZeroDivisor = false;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES: {
+         VkPhysicalDeviceHostQueryResetFeatures *features =
+            (void *) ext;
+
+         features->hostQueryReset = true;
          break;
       }
 
@@ -1747,6 +1762,8 @@ v3dv_CreateDevice(VkPhysicalDevice physicalDevice,
    struct vk_device_dispatch_table dispatch_table;
    vk_device_dispatch_table_from_entrypoints(&dispatch_table,
                                              &v3dv_device_entrypoints, true);
+   vk_device_dispatch_table_from_entrypoints(&dispatch_table,
+                                             &wsi_device_entrypoints, false);
    result = vk_device_init(&device->vk, &physical_device->vk,
                            &dispatch_table, pCreateInfo, pAllocator);
    if (result != VK_SUCCESS) {

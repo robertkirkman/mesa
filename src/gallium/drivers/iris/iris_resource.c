@@ -126,7 +126,7 @@ modifier_is_supported(const struct intel_device_info *devinfo,
    case I915_FORMAT_MOD_Y_TILED_GEN12_RC_CCS_CC:
    case I915_FORMAT_MOD_Y_TILED_GEN12_RC_CCS:
    case I915_FORMAT_MOD_Y_TILED_CCS: {
-      if (INTEL_DEBUG & DEBUG_NO_RBC)
+      if (INTEL_DEBUG(DEBUG_NO_RBC))
          return false;
 
       enum isl_format rt_format =
@@ -739,11 +739,11 @@ iris_resource_configure_aux(struct iris_screen *screen,
    const bool has_mcs = !res->mod_info &&
       isl_surf_get_mcs_surf(&screen->isl_dev, &res->surf, &res->aux.surf);
 
-   const bool has_hiz = !res->mod_info && !(INTEL_DEBUG & DEBUG_NO_HIZ) &&
+   const bool has_hiz = !res->mod_info && !INTEL_DEBUG(DEBUG_NO_HIZ) &&
       isl_surf_get_hiz_surf(&screen->isl_dev, &res->surf, &res->aux.surf);
 
    const bool has_ccs =
-      ((!res->mod_info && !(INTEL_DEBUG & DEBUG_NO_RBC)) ||
+      ((!res->mod_info && !INTEL_DEBUG(DEBUG_NO_RBC)) ||
        (res->mod_info && res->mod_info->aux_usage != ISL_AUX_USAGE_NONE)) &&
       iris_get_ccs_surf(&screen->isl_dev, &res->surf, &res->aux.surf,
                         &res->aux.extra_aux.surf, 0);
@@ -941,11 +941,16 @@ iris_resource_finish_aux_import(struct pipe_screen *pscreen,
       import_aux_info(r[0], r[1]);
       map_aux_addresses(screen, r[0], format, 0);
 
-      /* Add on a clear color BO. */
+      /* Add on a clear color BO.
+       *
+       * Also add some padding to make sure the fast clear color state buffer
+       * starts at a 4K alignment to avoid some unknown issues.  See the
+       * matching comment in iris_resource_create_with_modifiers().
+       */
       if (iris_get_aux_clear_color_state_size(screen) > 0) {
          res->aux.clear_color_bo =
             iris_bo_alloc(screen->bufmgr, "clear color_buffer",
-                          iris_get_aux_clear_color_state_size(screen), 1,
+                          iris_get_aux_clear_color_state_size(screen), 4096,
                           IRIS_MEMZONE_OTHER, BO_ALLOC_ZEROED);
       }
       break;

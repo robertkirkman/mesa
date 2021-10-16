@@ -65,6 +65,7 @@ iris_update_draw_info(struct iris_context *ice,
                       const struct pipe_draw_info *info)
 {
    struct iris_screen *screen = (struct iris_screen *)ice->ctx.screen;
+   const struct intel_device_info *devinfo = &screen->devinfo;
    const struct brw_compiler *compiler = screen->compiler;
 
    if (ice->state.prim_mode != info->mode) {
@@ -105,8 +106,11 @@ iris_update_draw_info(struct iris_context *ice,
    if (ice->state.primitive_restart != info->primitive_restart ||
        ice->state.cut_index != cut_index) {
       ice->state.dirty |= IRIS_DIRTY_VF;
-      ice->state.primitive_restart = info->primitive_restart;
       ice->state.cut_index = cut_index;
+      ice->state.dirty |=
+         ((ice->state.primitive_restart != info->primitive_restart) &&
+          devinfo->verx10 >= 125) ? IRIS_DIRTY_VFG : 0;
+      ice->state.primitive_restart = info->primitive_restart;
    }
 }
 
@@ -271,7 +275,7 @@ iris_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *info,
    if (ice->state.predicate == IRIS_PREDICATE_STATE_DONT_RENDER)
       return;
 
-   if (INTEL_DEBUG & DEBUG_REEMIT) {
+   if (INTEL_DEBUG(DEBUG_REEMIT)) {
       ice->state.dirty |= IRIS_ALL_DIRTY_FOR_RENDER;
       ice->state.stage_dirty |= IRIS_ALL_STAGE_DIRTY_FOR_RENDER;
    }
@@ -382,7 +386,7 @@ iris_launch_grid(struct pipe_context *ctx, const struct pipe_grid_info *grid)
    if (ice->state.predicate == IRIS_PREDICATE_STATE_DONT_RENDER)
       return;
 
-   if (INTEL_DEBUG & DEBUG_REEMIT) {
+   if (INTEL_DEBUG(DEBUG_REEMIT)) {
       ice->state.dirty |= IRIS_ALL_DIRTY_FOR_COMPUTE;
       ice->state.stage_dirty |= IRIS_ALL_STAGE_DIRTY_FOR_COMPUTE;
    }

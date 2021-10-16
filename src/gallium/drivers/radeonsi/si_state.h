@@ -249,12 +249,6 @@ struct si_shader_data {
    uint32_t sh_base[SI_NUM_SHADERS];
 };
 
-#define SI_TRACKED_PA_CL_VS_OUT_CNTL__VS_MASK                                                      \
-   (S_02881C_USE_VTX_POINT_SIZE(1) | S_02881C_USE_VTX_EDGE_FLAG(1) |                               \
-    S_02881C_USE_VTX_RENDER_TARGET_INDX(1) | S_02881C_USE_VTX_VIEWPORT_INDX(1) |                   \
-    S_02881C_VS_OUT_MISC_VEC_ENA(1) | S_02881C_VS_OUT_MISC_SIDE_BUS_ENA(1) |                       \
-    S_02881C_USE_VTX_VRS_RATE(1))
-
 /* The list of registers whose emitted values are remembered by si_context. */
 enum si_tracked_reg
 {
@@ -280,8 +274,7 @@ enum si_tracked_reg
    SI_TRACKED_PA_SU_PRIM_FILTER_CNTL,
    SI_TRACKED_PA_SU_SMALL_PRIM_FILTER_CNTL,
 
-   SI_TRACKED_PA_CL_VS_OUT_CNTL__VS, /* set with SI_TRACKED_PA_CL_VS_OUT_CNTL__VS_MASK*/
-   SI_TRACKED_PA_CL_VS_OUT_CNTL__CL, /* set with ~SI_TRACKED_PA_CL_VS_OUT_CNTL__VS_MASK */
+   SI_TRACKED_PA_CL_VS_OUT_CNTL,
    SI_TRACKED_PA_CL_CLIP_CNTL,
 
    SI_TRACKED_PA_SC_BINNER_CNTL_0,
@@ -485,6 +478,8 @@ struct si_buffer_resources {
    } while (0)
 
 /* si_descriptors.c */
+void si_get_inline_uniform_state(union si_shader_key *key, enum pipe_shader_type shader,
+                                 bool *inline_uniforms, uint32_t **inlined_values);
 void si_set_mutable_tex_desc_fields(struct si_screen *sscreen, struct si_texture *tex,
                                     const struct legacy_surf_level *base_level_info,
                                     unsigned base_level, unsigned first_level, unsigned block_width,
@@ -560,7 +555,8 @@ struct si_fast_udiv_info32 si_compute_fast_udiv_info32(uint32_t D, unsigned num_
 /* si_state_binning.c */
 void si_emit_dpbb_state(struct si_context *sctx);
 
-/* si_state_shaders.c */
+/* si_state_shaders.cpp */
+struct si_pm4_state *si_build_vgt_shader_config(struct si_screen *screen, union si_vgt_stages_key key);
 void si_get_ir_cache_key(struct si_shader_selector *sel, bool ngg, bool es,
                          unsigned char ir_sha1_cache_key[20]);
 bool si_shader_cache_load_shader(struct si_screen *sscreen, unsigned char ir_sha1_cache_key[20],
@@ -578,17 +574,14 @@ void si_schedule_initial_compile(struct si_context *sctx, gl_shader_stage stage,
                                  util_queue_execute_func execute);
 void si_get_active_slot_masks(const struct si_shader_info *info, uint64_t *const_and_shader_buffers,
                               uint64_t *samplers_and_images);
-int si_shader_select_with_key(struct si_context *sctx, struct si_shader_ctx_state *state,
-                              const struct si_shader_key *key, int thread_index,
-                              bool optimized_or_none);
 int si_shader_select(struct pipe_context *ctx, struct si_shader_ctx_state *state);
 void si_vs_key_update_inputs(struct si_context *sctx);
-void si_get_vs_key_inputs(struct si_context *sctx, struct si_shader_key *key,
+void si_get_vs_key_inputs(struct si_context *sctx, union si_shader_key *key,
                           struct si_vs_prolog_bits *prolog_key);
 void si_update_ps_inputs_read_or_disabled(struct si_context *sctx);
 void si_update_ps_kill_enable(struct si_context *sctx);
 void si_update_vrs_flat_shading(struct si_context *sctx);
-unsigned si_get_input_prim(const struct si_shader_selector *gs, const struct si_shader_key *key);
+unsigned si_get_input_prim(const struct si_shader_selector *gs, const union si_shader_key *key);
 bool si_update_ngg(struct si_context *sctx);
 void si_ps_key_update_framebuffer(struct si_context *sctx);
 void si_ps_key_update_framebuffer_blend(struct si_context *sctx);

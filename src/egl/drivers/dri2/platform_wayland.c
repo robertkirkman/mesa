@@ -157,7 +157,8 @@ static_assert(ARRAY_SIZE(dri2_wl_visuals) <= EGL_DRI2_MAX_FORMATS,
 
 static int
 dri2_wl_visual_idx_from_config(struct dri2_egl_display *dri2_dpy,
-                               const __DRIconfig *config)
+                               const __DRIconfig *config,
+                               bool force_opaque)
 {
    int shifts[4];
    unsigned int sizes[4];
@@ -167,14 +168,14 @@ dri2_wl_visual_idx_from_config(struct dri2_egl_display *dri2_dpy,
    for (unsigned int i = 0; i < ARRAY_SIZE(dri2_wl_visuals); i++) {
       const struct dri2_wl_visual *wl_visual = &dri2_wl_visuals[i];
 
-      if (shifts[0] == wl_visual->rgba_shifts[0] &&
-          shifts[1] == wl_visual->rgba_shifts[1] &&
-          shifts[2] == wl_visual->rgba_shifts[2] &&
-          shifts[3] == wl_visual->rgba_shifts[3] &&
-          sizes[0] == wl_visual->rgba_sizes[0] &&
-          sizes[1] == wl_visual->rgba_sizes[1] &&
-          sizes[2] == wl_visual->rgba_sizes[2] &&
-          sizes[3] == wl_visual->rgba_sizes[3]) {
+      int cmp_rgb_shifts = memcmp(shifts, wl_visual->rgba_shifts,
+                                  3 * sizeof(shifts[0]));
+      int cmp_rgb_sizes = memcmp(sizes, wl_visual->rgba_sizes,
+                                 3 * sizeof(sizes[0]));
+
+      if (cmp_rgb_shifts == 0 && cmp_rgb_sizes == 0 &&
+          wl_visual->rgba_shifts[3] == (force_opaque ? -1 : shifts[3]) &&
+          wl_visual->rgba_sizes[3] == (force_opaque ? 0 : sizes[3])) {
          return i;
       }
    }
@@ -229,7 +230,8 @@ dri2_wl_is_format_supported(void* user_data, uint32_t format)
 
    for (int i = 0; dri2_dpy->driver_configs[i]; i++)
       if (j == dri2_wl_visual_idx_from_config(dri2_dpy,
-                                              dri2_dpy->driver_configs[i]))
+                                              dri2_dpy->driver_configs[i],
+                                              false))
          return true;
 
    return false;
@@ -276,6 +278,8 @@ resize_callback(struct wl_egl_window *wl_win, void *data)
    if (dri2_surf->base.Width == wl_win->width &&
        dri2_surf->base.Height == wl_win->height)
       return;
+
+   dri2_surf->resized = true;
 
    /* Update the surface size as soon as native window is resized; from user
     * pov, this makes the effect that resize is done immediately after native
@@ -356,7 +360,42 @@ dri2_wl_create_window_surface(_EGLDisplay *disp, _EGLConfig *conf,
    dri2_surf->base.Width = window->width;
    dri2_surf->base.Height = window->height;
 
-   visual_idx = dri2_wl_visual_idx_from_config(dri2_dpy, config);
+#ifndef NDEBUG
+   /* Enforce that every visual has an opaque variant (requirement to support
+    * EGL_EXT_present_opaque)
+    */
+   for (unsigned int i = 0; i < ARRAY_SIZE(dri2_wl_visuals); i++) {
+      const struct dri2_wl_visual *transparent_visual = &dri2_wl_visuals[i];
+      if (transparent_visual->rgba_sizes[3] == 0) {
+         continue;
+      }
+
+      bool found_opaque_equivalent = false;
+      for (unsigned int j = 0; j < ARRAY_SIZE(dri2_wl_visuals); j++) {
+         const struct dri2_wl_visual *opaque_visual = &dri2_wl_visuals[j];
+         if (opaque_visual->rgba_sizes[3] != 0) {
+            continue;
+         }
+
+         int cmp_rgb_shifts = memcmp(transparent_visual->rgba_shifts,
+                                     opaque_visual->rgba_shifts,
+                                     3 * sizeof(opaque_visual->rgba_shifts[0]));
+         int cmp_rgb_sizes = memcmp(transparent_visual->rgba_sizes,
+                                    opaque_visual->rgba_sizes,
+                                    3 * sizeof(opaque_visual->rgba_sizes[0]));
+
+         if (cmp_rgb_shifts == 0 && cmp_rgb_sizes == 0) {
+            found_opaque_equivalent = true;
+            break;
+         }
+      }
+
+      assert(found_opaque_equivalent);
+   }
+#endif
+
+   visual_idx = dri2_wl_visual_idx_from_config(dri2_dpy, config,
+                                               dri2_surf->base.PresentOpaque);
    assert(visual_idx != -1);
 
    if (dri2_dpy->wl_dmabuf || dri2_dpy->wl_drm) {
@@ -677,10 +716,9 @@ update_buffers(struct dri2_egl_surface *dri2_surf)
       dri2_surf->dy = dri2_surf->wl_win->dy;
    }
 
-   if (dri2_surf->wl_win &&
-       (dri2_surf->base.Width != dri2_surf->wl_win->attached_width ||
-        dri2_surf->base.Height != dri2_surf->wl_win->attached_height)) {
-      dri2_wl_release_buffers(dri2_surf);
+   if (dri2_surf->resized) {
+       dri2_wl_release_buffers(dri2_surf);
+       dri2_surf->resized = false;
    }
 
    if (get_back_bo(dri2_surf) < 0) {
@@ -1438,7 +1476,8 @@ dri2_wl_add_configs_for_visuals(_EGLDisplay *disp)
 
          /* No match for config. Try if we can blitImage convert to a visual */
          c = dri2_wl_visual_idx_from_config(dri2_dpy,
-                                            dri2_dpy->driver_configs[i]);
+                                            dri2_dpy->driver_configs[i],
+                                            false);
 
          if (c == -1)
             continue;
@@ -1636,6 +1675,8 @@ dri2_initialize_wayland_drm(_EGLDisplay *disp)
    disp->Extensions.EXT_buffer_age = EGL_TRUE;
 
    disp->Extensions.EXT_swap_buffers_with_damage = EGL_TRUE;
+
+   disp->Extensions.EXT_present_opaque = EGL_TRUE;
 
    /* Fill vtbl last to prevent accidentally calling virtual function during
     * initialization.

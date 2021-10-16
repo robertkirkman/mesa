@@ -74,6 +74,7 @@
 #include "radv_constants.h"
 #include "radv_descriptor_set.h"
 #include "radv_radeon_winsys.h"
+#include "radv_shader.h"
 #include "sid.h"
 
 /* Pre-declarations needed for WSI entrypoints */
@@ -769,8 +770,12 @@ struct radv_device {
     */
    uint32_t image_mrt_offset_counter;
    uint32_t fmask_mrt_offset_counter;
-   struct list_head shader_slabs;
-   mtx_t shader_slab_mutex;
+
+   struct list_head shader_arenas;
+   uint8_t shader_free_list_mask;
+   struct list_head shader_free_lists[RADV_SHADER_ALLOC_NUM_FREE_LISTS];
+   struct list_head shader_block_obj_pool;
+   mtx_t shader_arena_mutex;
 
    /* For detecting VM faults reported by dmesg. */
    uint64_t dmesg_timestamp;
@@ -827,6 +832,12 @@ struct radv_device {
       struct radv_buffer *buffer; /* HTILE */
       struct radv_device_memory *mem;
    } vrs;
+
+   struct u_rwlock vs_prologs_lock;
+   struct hash_table *vs_prologs;
+
+   struct radv_shader_prolog *simple_vs_prologs[MAX_VERTEX_ATTRIBS];
+   struct radv_shader_prolog *instance_rate_vs_prologs[816];
 };
 
 VkResult _radv_device_set_lost(struct radv_device *device, const char *file, int line,
@@ -992,7 +1003,8 @@ enum radv_dynamic_state_bits {
    RADV_DYNAMIC_LOGIC_OP = 1ull << 26,
    RADV_DYNAMIC_PRIMITIVE_RESTART_ENABLE = 1ull << 27,
    RADV_DYNAMIC_COLOR_WRITE_ENABLE = 1ull << 28,
-   RADV_DYNAMIC_ALL = (1ull << 29) - 1,
+   RADV_DYNAMIC_VERTEX_INPUT = 1ull << 29,
+   RADV_DYNAMIC_ALL = (1ull << 30) - 1,
 };
 
 enum radv_cmd_dirty_bits {
@@ -1027,12 +1039,14 @@ enum radv_cmd_dirty_bits {
    RADV_CMD_DIRTY_DYNAMIC_LOGIC_OP = 1ull << 26,
    RADV_CMD_DIRTY_DYNAMIC_PRIMITIVE_RESTART_ENABLE = 1ull << 27,
    RADV_CMD_DIRTY_DYNAMIC_COLOR_WRITE_ENABLE = 1ull << 28,
-   RADV_CMD_DIRTY_DYNAMIC_ALL = (1ull << 29) - 1,
-   RADV_CMD_DIRTY_PIPELINE = 1ull << 29,
-   RADV_CMD_DIRTY_INDEX_BUFFER = 1ull << 30,
-   RADV_CMD_DIRTY_FRAMEBUFFER = 1ull << 31,
-   RADV_CMD_DIRTY_VERTEX_BUFFER = 1ull << 32,
-   RADV_CMD_DIRTY_STREAMOUT_BUFFER = 1ull << 33
+   RADV_CMD_DIRTY_DYNAMIC_VERTEX_INPUT = 1ull << 29,
+   RADV_CMD_DIRTY_DYNAMIC_ALL = (1ull << 30) - 1,
+   RADV_CMD_DIRTY_PIPELINE = 1ull << 30,
+   RADV_CMD_DIRTY_INDEX_BUFFER = 1ull << 31,
+   RADV_CMD_DIRTY_FRAMEBUFFER = 1ull << 32,
+   RADV_CMD_DIRTY_VERTEX_BUFFER = 1ull << 33,
+   RADV_CMD_DIRTY_STREAMOUT_BUFFER = 1ull << 34,
+   RADV_CMD_DIRTY_VERTEX_STATE = RADV_CMD_DIRTY_VERTEX_BUFFER | RADV_CMD_DIRTY_DYNAMIC_VERTEX_INPUT,
 };
 
 enum radv_cmd_flush_bits {
@@ -1344,6 +1358,7 @@ struct radv_cmd_state {
    struct radv_render_pass *pass;
    const struct radv_subpass *subpass;
    struct radv_dynamic_state dynamic;
+   struct radv_vs_input_state dynamic_vs_input;
    struct radv_attachment_state *attachments;
    struct radv_streamout_state streamout;
    VkRect2D render_area;
@@ -1381,6 +1396,9 @@ struct radv_cmd_state {
    /* Whether CP DMA is busy/idle. */
    bool dma_is_busy;
 
+   /* Whether any images that are not L2 coherent are dirty from the CB. */
+   bool rb_noncoherent_dirty;
+
    /* Conditional rendering info. */
    uint8_t predication_op; /* 32-bit or 64-bit predicate value */
    int predication_type;   /* -1: disabled, 0: normal, 1: inverted */
@@ -1409,6 +1427,12 @@ struct radv_cmd_state {
    bool uses_draw_indirect_multi;
 
    uint32_t rt_stack_size;
+
+   struct radv_shader_prolog *emitted_vs_prolog;
+   uint32_t *emitted_vs_prolog_key;
+   uint32_t emitted_vs_prolog_key_hash;
+   uint32_t vbo_misaligned_mask;
+   uint32_t vbo_bound_mask;
 };
 
 struct radv_cmd_pool {
@@ -1526,10 +1550,17 @@ void si_cp_dma_clear_buffer(struct radv_cmd_buffer *cmd_buffer, uint64_t va, uin
 void si_cp_dma_wait_for_idle(struct radv_cmd_buffer *cmd_buffer);
 
 void radv_set_db_count_control(struct radv_cmd_buffer *cmd_buffer);
+
+unsigned radv_instance_rate_prolog_index(unsigned num_attributes, uint32_t instance_rate_inputs);
+uint32_t radv_hash_vs_prolog(const void *key_);
+bool radv_cmp_vs_prolog(const void *a_, const void *b_);
+
 bool radv_cmd_buffer_upload_alloc(struct radv_cmd_buffer *cmd_buffer, unsigned size,
                                   unsigned *out_offset, void **ptr);
 void radv_cmd_buffer_set_subpass(struct radv_cmd_buffer *cmd_buffer,
                                  const struct radv_subpass *subpass);
+void radv_cmd_buffer_restore_subpass(struct radv_cmd_buffer *cmd_buffer,
+                                     const struct radv_subpass *subpass);
 bool radv_cmd_buffer_upload_data(struct radv_cmd_buffer *cmd_buffer, unsigned size,
                                  const void *data, unsigned *out_offset);
 
@@ -1752,6 +1783,9 @@ struct radv_pipeline {
    uint32_t attrib_index_offset[MAX_VERTEX_ATTRIBS];
 
    bool use_per_attribute_vb_descs;
+   bool can_use_simple_input;
+   uint8_t last_vertex_attrib_bit;
+   uint8_t next_vertex_stage : 8;
    uint32_t vb_desc_usage_mask;
    uint32_t vb_desc_alloc_size;
 
@@ -1880,6 +1914,10 @@ uint32_t radv_translate_buffer_dataformat(const struct util_format_description *
 uint32_t radv_translate_buffer_numformat(const struct util_format_description *desc,
                                          int first_non_void);
 bool radv_is_buffer_format_supported(VkFormat format, bool *scaled);
+void radv_translate_vertex_format(const struct radv_physical_device *pdevice, VkFormat format,
+                                  const struct util_format_description *desc, unsigned *dfmt,
+                                  unsigned *nfmt, bool *post_shuffle,
+                                  enum radv_vs_input_alpha_adjust *alpha_adjust);
 uint32_t radv_translate_colorformat(VkFormat format);
 uint32_t radv_translate_color_numformat(VkFormat format, const struct util_format_description *desc,
                                         int first_non_void);

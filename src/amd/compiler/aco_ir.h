@@ -38,6 +38,7 @@
 
 struct radv_shader_args;
 struct radv_shader_info;
+struct radv_vs_prolog_key;
 
 namespace aco {
 
@@ -2072,6 +2073,8 @@ public:
    unsigned next_divergent_if_logical_depth = 0;
    unsigned next_uniform_if_depth = 0;
 
+   std::vector<Definition> vs_inputs;
+
    struct {
       FILE* output = stderr;
       bool shorten_messages = false;
@@ -2145,6 +2148,9 @@ void select_gs_copy_shader(Program* program, struct nir_shader* gs_shader, ac_sh
                            const struct radv_shader_args* args);
 void select_trap_handler_shader(Program* program, struct nir_shader* shader,
                                 ac_shader_config* config, const struct radv_shader_args* args);
+void select_vs_prolog(Program* program, const struct radv_vs_prolog_key* key,
+                      ac_shader_config* config, const struct radv_shader_args* args,
+                      unsigned* num_preserved_sgprs);
 
 void lower_phis(Program* program);
 void calc_min_waves(Program* program);

@@ -98,7 +98,6 @@ static const driOptionDescription brw_driconf[] = {
       DRI_CONF_VS_POSITION_ALWAYS_PRECISE(false)
       DRI_CONF_ALLOW_RGB10_CONFIGS(false)
       DRI_CONF_ALLOW_RGB565_CONFIGS(true)
-      DRI_CONF_ALLOW_FP16_CONFIGS(false)
    DRI_CONF_SECTION_END
 };
 
@@ -375,7 +374,7 @@ modifier_is_supported(const struct intel_device_info *devinfo,
 
    if (modinfo->aux_usage == ISL_AUX_USAGE_CCS_E) {
       /* If INTEL_DEBUG=norbc is set, don't support any CCS_E modifiers */
-      if (INTEL_DEBUG & DEBUG_NO_RBC)
+      if (INTEL_DEBUG(DEBUG_NO_RBC))
          return false;
 
       /* CCS_E is not supported for planar images */
@@ -2184,9 +2183,7 @@ brw_allowed_format(__DRIscreen *dri_screen, mesa_format format)
       return false;
 
    /* Shall we expose fp16 formats? */
-   bool allow_fp16_configs = driQueryOptionb(&screen->optionCache,
-                                             "allow_fp16_configs");
-   allow_fp16_configs &= brw_loader_get_cap(dri_screen, DRI_LOADER_CAP_FP16);
+   bool allow_fp16_configs = brw_loader_get_cap(dri_screen, DRI_LOADER_CAP_FP16);
    if (!allow_fp16_configs &&
        (format == MESA_FORMAT_RGBA_FLOAT16 ||
         format == MESA_FORMAT_RGBX_FLOAT16))
@@ -2492,7 +2489,7 @@ shader_perf_log_mesa(void *data, unsigned *msg_id, const char *fmt, ...)
    va_list args;
    va_start(args, fmt);
 
-   if (INTEL_DEBUG & DEBUG_PERF) {
+   if (INTEL_DEBUG(DEBUG_PERF)) {
       va_list args_copy;
       va_copy(args_copy, args);
       vfprintf(stderr, fmt, args_copy);
@@ -2564,7 +2561,7 @@ __DRIconfig **brw_init_screen(__DRIscreen *dri_screen)
 
    brw_process_intel_debug_variable();
 
-   if ((INTEL_DEBUG & DEBUG_SHADER_TIME) && devinfo->ver < 7) {
+   if (INTEL_DEBUG(DEBUG_SHADER_TIME) && devinfo->ver < 7) {
       fprintf(stderr,
               "shader_time debugging requires gfx7 (Ivybridge) or better.\n");
       intel_debug &= ~DEBUG_SHADER_TIME;
@@ -2815,7 +2812,7 @@ __DRIconfig **brw_init_screen(__DRIscreen *dri_screen)
 
    brw_screen_init_surface_formats(screen);
 
-   if (INTEL_DEBUG & (DEBUG_BATCH | DEBUG_SUBMIT)) {
+   if (INTEL_DEBUG(DEBUG_BATCH | DEBUG_SUBMIT)) {
       unsigned int caps = brw_get_integer(screen, I915_PARAM_HAS_SCHEDULER);
       if (caps) {
          fprintf(stderr, "Kernel scheduler detected: %08x\n", caps);

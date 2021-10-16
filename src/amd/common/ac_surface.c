@@ -1477,6 +1477,10 @@ static bool gfx10_DCN_requires_independent_64B_blocks(const struct radeon_info *
 {
    assert(info->chip_class >= GFX10);
 
+   /* Older kernels have buggy DAL. */
+   if (info->drm_minor <= 43)
+      return true;
+
    /* For 4K, DCN requires INDEPENDENT_64B_BLOCKS = 1 and MAX_COMPRESSED_BLOCK_SIZE = 64B. */
    return config->info.width > 2560 || config->info.height > 2560;
 }
@@ -1517,6 +1521,10 @@ static bool is_dcc_supported_by_DCN(const struct radeon_info *info,
 
    /* Handle unaligned DCC. */
    if (info->use_display_dcc_unaligned && (rb_aligned || pipe_aligned))
+      return false;
+
+   /* Big resolutions don't support DCC. */
+   if (config->info.width > 5760 || config->info.height > 5760)
       return false;
 
    switch (info->chip_class) {
@@ -2161,8 +2169,13 @@ static int gfx9_compute_surface(struct ac_addrlib *addrlib, const struct radeon_
                surf->u.gfx9.color.dcc.max_compressed_block_size = V_028C78_MAX_BLOCK_SIZE_64B;
             }
 
-            /* Use 64 && 128 for the non-modifier path for compatibility. */
-            if (info->chip_class >= GFX10_3) {
+            if ((info->chip_class >= GFX10_3 && info->family <= CHIP_YELLOW_CARP) ||
+                /* Newer chips will skip this when possible to get better performance.
+                 * This is also possible for other gfx10.3 chips, but is disabled for
+                 * interoperability between different Mesa versions.
+                 */
+                (info->family > CHIP_YELLOW_CARP &&
+                 gfx10_DCN_requires_independent_64B_blocks(info, config))) {
                surf->u.gfx9.color.dcc.independent_64B_blocks = 1;
                surf->u.gfx9.color.dcc.independent_128B_blocks = 1;
                surf->u.gfx9.color.dcc.max_compressed_block_size = V_028C78_MAX_BLOCK_SIZE_64B;

@@ -304,10 +304,11 @@ tu6_emit_mrt(struct tu_cmd_buffer *cmd,
 }
 
 void
-tu6_emit_msaa(struct tu_cs *cs, VkSampleCountFlagBits vk_samples)
+tu6_emit_msaa(struct tu_cs *cs, VkSampleCountFlagBits vk_samples,
+              enum a5xx_line_mode line_mode)
 {
    const enum a3xx_msaa_samples samples = tu_msaa_samples(vk_samples);
-   bool msaa_disable = samples == MSAA_ONE;
+   bool msaa_disable = (samples == MSAA_ONE) || (line_mode == BRESENHAM);
 
    tu_cs_emit_regs(cs,
                    A6XX_SP_TP_RAS_MSAA_CNTL(samples),
@@ -1589,6 +1590,7 @@ tu_BeginCommandBuffer(VkCommandBuffer commandBuffer,
 
    memset(&cmd_buffer->state, 0, sizeof(cmd_buffer->state));
    cmd_buffer->state.index_size = 0xff; /* dirty restart index */
+   cmd_buffer->state.line_mode = RECTANGULAR;
 
    tu_cache_init(&cmd_buffer->state.cache);
    tu_cache_init(&cmd_buffer->state.renderpass_cache);
@@ -2017,8 +2019,8 @@ tu_CmdBeginTransformFeedbackEXT(VkCommandBuffer commandBuffer,
          tu_cs_emit_pkt7(cs, CP_REG_RMW, 3);
          tu_cs_emit(cs, CP_REG_RMW_0_DST_REG(REG_A6XX_VPC_SO_BUFFER_OFFSET(idx)) |
                         CP_REG_RMW_0_SRC1_ADD);
-         tu_cs_emit_qw(cs, 0xffffffff);
-         tu_cs_emit_qw(cs, offset);
+         tu_cs_emit(cs, 0xffffffff);
+         tu_cs_emit(cs, offset);
       }
    }
 
@@ -2070,8 +2072,8 @@ tu_CmdEndTransformFeedbackEXT(VkCommandBuffer commandBuffer,
          tu_cs_emit_pkt7(cs, CP_REG_RMW, 3);
          tu_cs_emit(cs, CP_REG_RMW_0_DST_REG(REG_A6XX_CP_SCRATCH_REG(0)) |
                         CP_REG_RMW_0_SRC1_ADD);
-         tu_cs_emit_qw(cs, 0xffffffff);
-         tu_cs_emit_qw(cs, -offset);
+         tu_cs_emit(cs, 0xffffffff);
+         tu_cs_emit(cs, -offset);
       }
 
       tu_cs_emit_pkt7(cs, CP_REG_TO_MEM, 3);
@@ -2204,6 +2206,21 @@ tu_CmdBindPipeline(VkCommandBuffer commandBuffer,
 
       u_foreach_bit(i, mask)
          tu_cs_emit_draw_state(cs, TU_DRAW_STATE_DYNAMIC + i, pipeline->dynamic_state[i]);
+   }
+
+   if (cmd->state.line_mode != pipeline->line_mode) {
+      cmd->state.line_mode = pipeline->line_mode;
+
+      /* We have to disable MSAA when bresenham lines are used, this is
+       * a hardware limitation and spec allows it:
+       *
+       *    When Bresenham lines are being rasterized, sample locations may
+       *    all be treated as being at the pixel center (this may affect
+       *    attribute and depth interpolation).
+       */
+      if (cmd->state.subpass && cmd->state.subpass->samples) {
+         tu6_emit_msaa(&cmd->draw_cs, cmd->state.subpass->samples, cmd->state.line_mode);
+      }
    }
 
    /* the vertex_buffers draw state always contains all the currently
@@ -2613,6 +2630,14 @@ tu_CmdSetLogicOpEXT(VkCommandBuffer commandBuffer,
 VKAPI_ATTR void VKAPI_CALL
 tu_CmdSetPatchControlPointsEXT(VkCommandBuffer commandBuffer,
                                uint32_t patchControlPoints)
+{
+   tu_stub();
+}
+
+VKAPI_ATTR void VKAPI_CALL
+tu_CmdSetLineStippleEXT(VkCommandBuffer commandBuffer,
+                        uint32_t lineStippleFactor,
+                        uint16_t lineStipplePattern)
 {
    tu_stub();
 }
@@ -3186,7 +3211,7 @@ tu_CmdBeginRenderPass2(VkCommandBuffer commandBuffer,
    tu6_emit_zs(cmd, cmd->state.subpass, &cmd->draw_cs);
    tu6_emit_mrt(cmd, cmd->state.subpass, &cmd->draw_cs);
    if (cmd->state.subpass->samples)
-      tu6_emit_msaa(&cmd->draw_cs, cmd->state.subpass->samples);
+      tu6_emit_msaa(&cmd->draw_cs, cmd->state.subpass->samples, cmd->state.line_mode);
    tu6_emit_render_cntl(cmd, cmd->state.subpass, &cmd->draw_cs, false);
 
    tu_set_input_attachments(cmd, cmd->state.subpass);
@@ -3255,7 +3280,7 @@ tu_CmdNextSubpass2(VkCommandBuffer commandBuffer,
    tu6_emit_zs(cmd, cmd->state.subpass, cs);
    tu6_emit_mrt(cmd, cmd->state.subpass, cs);
    if (cmd->state.subpass->samples)
-      tu6_emit_msaa(cs, cmd->state.subpass->samples);
+      tu6_emit_msaa(cs, cmd->state.subpass->samples, cmd->state.line_mode);
    tu6_emit_render_cntl(cmd, cmd->state.subpass, cs, false);
 
    tu_set_input_attachments(cmd, cmd->state.subpass);

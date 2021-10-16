@@ -139,8 +139,7 @@ si_emit_compute(struct radv_device *device, struct radeon_cmdbuf *cs)
 
       assert(device->physical_device->rad_info.chip_class == GFX8);
 
-      tba_va = radv_buffer_get_va(device->trap_handler_shader->bo) +
-               device->trap_handler_shader->bo_offset;
+      tba_va = radv_shader_variant_get_va(device->trap_handler_shader);
       tma_va = radv_buffer_get_va(device->tma_bo);
 
       radeon_set_sh_reg_seq(cs, R_00B838_COMPUTE_TBA_LO, 4);
@@ -532,8 +531,7 @@ si_emit_graphics(struct radv_device *device, struct radeon_cmdbuf *cs)
 
       assert(device->physical_device->rad_info.chip_class == GFX8);
 
-      tba_va = radv_buffer_get_va(device->trap_handler_shader->bo) +
-               device->trap_handler_shader->bo_offset;
+      tba_va = radv_shader_variant_get_va(device->trap_handler_shader);
       tma_va = radv_buffer_get_va(device->tma_bo);
 
       uint32_t regs[] = {R_00B000_SPI_SHADER_TBA_LO_PS, R_00B100_SPI_SHADER_TBA_LO_VS,
@@ -1358,6 +1356,9 @@ si_emit_cache_flush(struct radv_cmd_buffer *cmd_buffer)
 
    if (unlikely(cmd_buffer->device->trace_bo))
       radv_cmd_buffer_trace_emit(cmd_buffer);
+
+   if (cmd_buffer->state.flush_bits & RADV_CMD_FLAG_INV_L2)
+      cmd_buffer->state.rb_noncoherent_dirty = false;
 
    /* Clear the caches that have been flushed to avoid syncing too much
     * when there is some pending active queries.

@@ -57,6 +57,7 @@ brw_type_for_base_type(const struct glsl_type *type)
    case GLSL_TYPE_STRUCT:
    case GLSL_TYPE_INTERFACE:
    case GLSL_TYPE_SAMPLER:
+   case GLSL_TYPE_TEXTURE:
    case GLSL_TYPE_ATOMIC_UINT:
       /* These should be overridden with the type of the member when
        * dereferenced into.  BRW_REGISTER_TYPE_UD seems like a likely
@@ -1294,14 +1295,14 @@ backend_shader::dump_instructions(const char *name) const
    if (cfg) {
       int ip = 0;
       foreach_block_and_inst(block, backend_instruction, inst, cfg) {
-         if (!(INTEL_DEBUG & DEBUG_OPTIMIZER))
+         if (!INTEL_DEBUG(DEBUG_OPTIMIZER))
             fprintf(file, "%4d: ", ip++);
          dump_instruction(inst, file);
       }
    } else {
       int ip = 0;
       foreach_in_list(backend_instruction, inst, &instructions) {
-         if (!(INTEL_DEBUG & DEBUG_OPTIMIZER))
+         if (!INTEL_DEBUG(DEBUG_OPTIMIZER))
             fprintf(file, "%4d: ", ip++);
          dump_instruction(inst, file);
       }
@@ -1340,7 +1341,7 @@ brw_compile_tes(const struct brw_compiler *compiler,
 {
    const struct intel_device_info *devinfo = compiler->devinfo;
    const bool is_scalar = compiler->scalar_stage[MESA_SHADER_TESS_EVAL];
-   const bool debug_enabled = INTEL_DEBUG & DEBUG_TES;
+   const bool debug_enabled = INTEL_DEBUG(DEBUG_TES);
    const unsigned *assembly;
 
    prog_data->base.base.stage = MESA_SHADER_TESS_EVAL;

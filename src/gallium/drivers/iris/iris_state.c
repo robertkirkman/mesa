@@ -4425,17 +4425,8 @@ iris_store_tes_state(const struct intel_device_info *devinfo,
    struct brw_vue_prog_data *vue_prog_data = (void *) prog_data;
    struct brw_tes_prog_data *tes_prog_data = (void *) prog_data;
 
-   uint32_t *te_state = (void *) shader->derived_data;
-   uint32_t *ds_state = te_state + GENX(3DSTATE_TE_length);
-
-   iris_pack_command(GENX(3DSTATE_TE), te_state, te) {
-      te.Partitioning = tes_prog_data->partitioning;
-      te.OutputTopology = tes_prog_data->output_topology;
-      te.TEDomain = tes_prog_data->domain;
-      te.TEEnable = true;
-      te.MaximumTessellationFactorOdd = 63.0;
-      te.MaximumTessellationFactorNotOdd = 64.0;
-   }
+   uint32_t *ds_state = (void *) shader->derived_data;
+   uint32_t *te_state = ds_state + GENX(3DSTATE_DS_length);
 
    iris_pack_command(GENX(3DSTATE_DS), ds_state, ds) {
       INIT_THREAD_DISPATCH_FIELDS(ds, Patch, MESA_SHADER_TESS_EVAL);
@@ -4449,6 +4440,24 @@ iris_store_tes_state(const struct intel_device_info *devinfo,
          vue_prog_data->cull_distance_mask;
    }
 
+   iris_pack_command(GENX(3DSTATE_TE), te_state, te) {
+      te.Partitioning = tes_prog_data->partitioning;
+      te.OutputTopology = tes_prog_data->output_topology;
+      te.TEDomain = tes_prog_data->domain;
+      te.TEEnable = true;
+      te.MaximumTessellationFactorOdd = 63.0;
+      te.MaximumTessellationFactorNotOdd = 64.0;
+#if GFX_VERx10 >= 125
+      te.TessellationDistributionMode = TEDMODE_RR_FREE;
+      te.TessellationDistributionLevel = TEDLEVEL_PATCH;
+      /* 64_TRIANGLES */
+      te.SmallPatchThreshold = 3;
+      /* 1K_TRIANGLES */
+      te.TargetBlockSize = 8;
+      /* 1K_TRIANGLES */
+      te.LocalBOPAccumulatorThreshold = 1;
+#endif
+   }
 }
 
 /**
@@ -6586,12 +6595,42 @@ iris_upload_dirty_render_state(struct iris_context *ice,
 
    if (dirty & IRIS_DIRTY_VF) {
       iris_emit_cmd(batch, GENX(3DSTATE_VF), vf) {
+#if GFX_VERx10 >= 125
+         vf.GeometryDistributionEnable = true;
+#endif
          if (draw->primitive_restart) {
             vf.IndexedDrawCutIndexEnable = true;
             vf.CutIndex = draw->restart_index;
          }
       }
    }
+
+#if GFX_VERx10 >= 125
+   if (dirty & IRIS_DIRTY_VFG) {
+      iris_emit_cmd(batch, GENX(3DSTATE_VFG), vfg) {
+         /* If 3DSTATE_TE: TE Enable == 1 then RR_STRICT else RR_FREE*/
+         vfg.DistributionMode =
+            ice->shaders.prog[MESA_SHADER_TESS_EVAL] != NULL ? RR_STRICT :
+                                                               RR_FREE;
+         vfg.DistributionGranularity = BatchLevelGranularity;
+         vfg.ListCutIndexEnable = draw->primitive_restart;
+         /* 192 vertices for TRILIST_ADJ */
+         vfg.ListNBatchSizeScale = 0;
+         /* Batch size of 384 vertices */
+         vfg.List3BatchSizeScale = 2;
+         /* Batch size of 128 vertices */
+         vfg.List2BatchSizeScale = 1;
+         /* Batch size of 128 vertices */
+         vfg.List1BatchSizeScale = 2;
+         /* Batch size of 256 vertices for STRIP topologies */
+         vfg.StripBatchSizeScale = 3;
+         /* 192 control points for PATCHLIST_3 */
+         vfg.PatchBatchSizeScale = 1;
+         /* 192 control points for PATCHLIST_3 */
+         vfg.PatchBatchSizeMultiplier = 31;
+      }
+   }
+#endif
 
    if (dirty & IRIS_DIRTY_VF_STATISTICS) {
       iris_emit_cmd(batch, GENX(3DSTATE_VF_STATISTICS), vf) {
@@ -7807,7 +7846,7 @@ iris_emit_raw_pipe_control(struct iris_batch *batch,
 
    /* Emit --------------------------------------------------------------- */
 
-   if (INTEL_DEBUG & DEBUG_PIPE_CONTROL) {
+   if (INTEL_DEBUG(DEBUG_PIPE_CONTROL)) {
       fprintf(stderr,
               "  PC [%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%"PRIx64"]: %s\n",
               (flags & PIPE_CONTROL_FLUSH_ENABLE) ? "PipeCon " : "",

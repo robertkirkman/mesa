@@ -424,6 +424,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .KHR_external_memory_fd = true,
       .KHR_external_semaphore = true,
       .KHR_external_semaphore_fd = true,
+      .KHR_format_feature_flags2 = true,
       .KHR_fragment_shading_rate = device->rad_info.chip_class >= GFX10_3,
       .KHR_get_memory_requirements2 = true,
       .KHR_image_format_list = true,
@@ -527,6 +528,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .EXT_texel_buffer_alignment = true,
       .EXT_transform_feedback = true,
       .EXT_vertex_attribute_divisor = true,
+      .EXT_vertex_input_dynamic_state = !device->use_llvm,
       .EXT_ycbcr_image_arrays = true,
       .AMD_buffer_marker = true,
       .AMD_device_coherent_memory = true,
@@ -618,6 +620,8 @@ radv_physical_device_try_create(struct radv_instance *instance, drmDevicePtr drm
    struct vk_physical_device_dispatch_table dispatch_table;
    vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table,
                                                       &radv_physical_device_entrypoints, true);
+   vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table,
+                                                      &wsi_physical_device_entrypoints, false);
 
    result = vk_physical_device_init(&device->vk, &instance->vk, NULL, &dispatch_table);
    if (result != VK_SUCCESS) {
@@ -850,6 +854,7 @@ static const struct debug_control radv_debug_options[] = {
    {"novrsflatshading", RADV_DEBUG_NO_VRS_FLAT_SHADING},
    {"noatocdithering", RADV_DEBUG_NO_ATOC_DITHERING},
    {"nonggc", RADV_DEBUG_NO_NGGC},
+   {"prologs", RADV_DEBUG_DUMP_PROLOGS},
    {NULL, 0}};
 
 const char *
@@ -964,6 +969,7 @@ radv_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
 
    struct vk_instance_dispatch_table dispatch_table;
    vk_instance_dispatch_table_from_entrypoints(&dispatch_table, &radv_instance_entrypoints, true);
+   vk_instance_dispatch_table_from_entrypoints(&dispatch_table, &wsi_instance_entrypoints, false);
    result = vk_instance_init(&instance->vk, &radv_instance_extensions_supported, &dispatch_table,
                              pCreateInfo, pAllocator);
    if (result != VK_SUCCESS) {
@@ -1620,6 +1626,12 @@ radv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          VkPhysicalDeviceMaintenance4FeaturesKHR *features =
             (VkPhysicalDeviceMaintenance4FeaturesKHR *)ext;
          features->maintenance4 = true;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT: {
+         VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT *features =
+            (VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT *)ext;
+         features->vertexInputDynamicState = true;
          break;
       }
       default:
@@ -2662,6 +2674,91 @@ radv_device_finish_border_color(struct radv_device *device)
    }
 }
 
+static VkResult
+radv_device_init_vs_prologs(struct radv_device *device)
+{
+   u_rwlock_init(&device->vs_prologs_lock);
+   device->vs_prologs = _mesa_hash_table_create(NULL, &radv_hash_vs_prolog, &radv_cmp_vs_prolog);
+   if (!device->vs_prologs)
+      return vk_error(device->physical_device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   /* don't pre-compile prologs if we want to print them */
+   if (device->instance->debug_flags & RADV_DEBUG_DUMP_PROLOGS)
+      return VK_SUCCESS;
+
+   struct radv_vs_input_state state;
+   state.nontrivial_divisors = 0;
+   memset(state.offsets, 0, sizeof(state.offsets));
+   state.alpha_adjust_lo = 0;
+   state.alpha_adjust_hi = 0;
+   memset(state.formats, 0, sizeof(state.formats));
+
+   struct radv_vs_prolog_key key;
+   key.state = &state;
+   key.misaligned_mask = 0;
+   key.as_ls = false;
+   key.is_ngg = device->physical_device->use_ngg;
+   key.next_stage = MESA_SHADER_VERTEX;
+   key.wave32 = device->physical_device->ge_wave_size == 32;
+
+   for (unsigned i = 1; i <= MAX_VERTEX_ATTRIBS; i++) {
+      state.attribute_mask = BITFIELD_MASK(i);
+      state.instance_rate_inputs = 0;
+
+      key.num_attributes = i;
+
+      device->simple_vs_prologs[i - 1] = radv_create_vs_prolog(device, &key);
+      if (!device->simple_vs_prologs[i - 1])
+         return vk_error(device->physical_device->instance, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+   }
+
+   unsigned idx = 0;
+   for (unsigned num_attributes = 1; num_attributes <= 16; num_attributes++) {
+      state.attribute_mask = BITFIELD_MASK(num_attributes);
+
+      for (unsigned i = 0; i < num_attributes; i++)
+         state.divisors[i] = 1;
+
+      for (unsigned count = 1; count <= num_attributes; count++) {
+         for (unsigned start = 0; start <= (num_attributes - count); start++) {
+            state.instance_rate_inputs = u_bit_consecutive(start, count);
+
+            key.num_attributes = num_attributes;
+
+            struct radv_shader_prolog *prolog = radv_create_vs_prolog(device, &key);
+            if (!prolog)
+               return vk_error(device->physical_device->instance, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+
+            assert(idx ==
+                   radv_instance_rate_prolog_index(num_attributes, state.instance_rate_inputs));
+            device->instance_rate_vs_prologs[idx++] = prolog;
+         }
+      }
+   }
+   assert(idx == ARRAY_SIZE(device->instance_rate_vs_prologs));
+
+   return VK_SUCCESS;
+}
+
+static void
+radv_device_finish_vs_prologs(struct radv_device *device)
+{
+   if (device->vs_prologs) {
+      hash_table_foreach(device->vs_prologs, entry)
+      {
+         free((void *)entry->key);
+         radv_prolog_destroy(device, entry->data);
+      }
+      _mesa_hash_table_destroy(device->vs_prologs, NULL);
+   }
+
+   for (unsigned i = 0; i < ARRAY_SIZE(device->simple_vs_prologs); i++)
+      radv_prolog_destroy(device, device->simple_vs_prologs[i]);
+
+   for (unsigned i = 0; i < ARRAY_SIZE(device->instance_rate_vs_prologs); i++)
+      radv_prolog_destroy(device, device->instance_rate_vs_prologs[i]);
+}
+
 VkResult
 radv_device_init_vrs_state(struct radv_device *device)
 {
@@ -2795,6 +2892,7 @@ radv_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCr
    bool custom_border_colors = false;
    bool attachment_vrs_enabled = false;
    bool image_float32_atomics = false;
+   bool vs_prologs = false;
 
    /* Check enabled features */
    if (pCreateInfo->pEnabledFeatures) {
@@ -2849,6 +2947,12 @@ radv_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCr
             image_float32_atomics = true;
          break;
       }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT: {
+         const VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT *features = (const void *)ext;
+         if (features->vertexInputDynamicState)
+            vs_prologs = true;
+         break;
+      }
       default:
          break;
       }
@@ -2867,6 +2971,7 @@ radv_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCr
    } else {
       vk_device_dispatch_table_from_entrypoints(&dispatch_table, &radv_device_entrypoints, true);
    }
+   vk_device_dispatch_table_from_entrypoints(&dispatch_table, &wsi_device_entrypoints, false);
 
    result =
       vk_device_init(&device->vk, &physical_device->vk, &dispatch_table, pCreateInfo, pAllocator);
@@ -2899,8 +3004,7 @@ radv_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCr
 
    device->image_float32_atomics = image_float32_atomics;
 
-   mtx_init(&device->shader_slab_mutex, mtx_plain);
-   list_inithead(&device->shader_slabs);
+   radv_init_shader_arenas(device);
 
    device->overallocation_disallowed = overallocation_disallowed;
    mtx_init(&device->overallocation_mutex, mtx_plain);
@@ -3086,6 +3190,12 @@ radv_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCr
          goto fail;
    }
 
+   if (vs_prologs) {
+      result = radv_device_init_vs_prologs(device);
+      if (result != VK_SUCCESS)
+         goto fail;
+   }
+
    for (int family = 0; family < RADV_MAX_QUEUE_FAMILIES; ++family) {
       device->empty_cs[family] = device->ws->cs_create(device->ws, family);
       if (!device->empty_cs[family])
@@ -3152,6 +3262,7 @@ fail:
    if (device->gfx_init)
       device->ws->buffer_destroy(device->ws, device->gfx_init);
 
+   radv_device_finish_vs_prologs(device);
    radv_device_finish_border_color(device);
 
    for (unsigned i = 0; i < RADV_MAX_QUEUE_FAMILIES; i++) {
@@ -3182,6 +3293,7 @@ radv_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
    if (device->gfx_init)
       device->ws->buffer_destroy(device->ws, device->gfx_init);
 
+   radv_device_finish_vs_prologs(device);
    radv_device_finish_border_color(device);
    radv_device_finish_vrs_image(device);
 
@@ -3207,7 +3319,7 @@ radv_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
    radv_trap_handler_finish(device);
    radv_finish_trace(device);
 
-   radv_destroy_shader_slabs(device);
+   radv_destroy_shader_arenas(device);
 
    u_cnd_monotonic_destroy(&device->timeline_cond);
 

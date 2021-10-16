@@ -189,6 +189,7 @@ nir_shader_add_variable(nir_shader *shader, nir_variable *var)
    case nir_var_uniform:
    case nir_var_mem_ubo:
    case nir_var_mem_ssbo:
+   case nir_var_image:
    case nir_var_mem_shared:
    case nir_var_system_value:
    case nir_var_mem_push_const:
@@ -376,7 +377,7 @@ void nir_src_copy(nir_src *dest, const nir_src *src)
       dest->reg.base_offset = src->reg.base_offset;
       dest->reg.reg = src->reg.reg;
       if (src->reg.indirect) {
-         dest->reg.indirect = malloc(sizeof(nir_src));
+         dest->reg.indirect = calloc(1, sizeof(nir_src));
          nir_src_copy(dest->reg.indirect, src->reg.indirect);
       } else {
          dest->reg.indirect = NULL;
@@ -396,7 +397,7 @@ void nir_dest_copy(nir_dest *dest, const nir_dest *src)
    dest->reg.base_offset = src->reg.base_offset;
    dest->reg.reg = src->reg.reg;
    if (src->reg.indirect) {
-      dest->reg.indirect = malloc(sizeof(nir_src));
+      dest->reg.indirect = calloc(1, sizeof(nir_src));
       nir_src_copy(dest->reg.indirect, src->reg.indirect);
    } else {
       dest->reg.indirect = NULL;

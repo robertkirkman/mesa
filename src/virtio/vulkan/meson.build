@@ -56,6 +56,7 @@ vn_deps = [
   dep_thread,
   idep_mesautil,
   idep_vulkan_util,
+  idep_vulkan_wsi,
   idep_xmlconfig,
 ]
 
@@ -68,16 +69,13 @@ vn_libs = []
 if with_platform_wayland or with_platform_x11
   libvn_files += files('vn_wsi.c')
   vn_flags += '-DVN_USE_WSI_PLATFORM'
-  vn_libs += libvulkan_wsi
 endif
 
 if with_platform_wayland
-  libvn_files += files('vn_wsi_wayland.c')
   vn_deps += dep_wayland_client
 endif
 
 if with_platform_x11
-  libvn_files += files('vn_wsi_x11.c')
   vn_deps += dep_xcb_dri3
 endif
 
@@ -90,7 +88,7 @@ libvulkan_virtio = shared_library(
   'vulkan_virtio',
   [libvn_files, vn_entrypoints, sha1_h],
   include_directories : [
-    inc_include, inc_src, inc_vulkan_wsi, inc_virtio,
+    inc_include, inc_src, inc_virtio,
   ],
   link_with : vn_libs,
   dependencies : [vn_deps],

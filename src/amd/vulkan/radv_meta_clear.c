@@ -461,7 +461,7 @@ emit_color_clear(struct radv_cmd_buffer *cmd_buffer, const VkClearAttachment *cl
       radv_CmdDraw(cmd_buffer_h, 3, clear_rect->layerCount, 0, clear_rect->baseArrayLayer);
    }
 
-   radv_cmd_buffer_set_subpass(cmd_buffer, subpass);
+   radv_cmd_buffer_restore_subpass(cmd_buffer, subpass);
 }
 
 static void
@@ -814,7 +814,7 @@ emit_depthstencil_clear(struct radv_cmd_buffer *cmd_buffer, const VkClearAttachm
       radv_CmdSetStencilReference(cmd_buffer_h, VK_STENCIL_FACE_FRONT_BIT, prev_reference);
    }
 
-   radv_cmd_buffer_set_subpass(cmd_buffer, subpass);
+   radv_cmd_buffer_restore_subpass(cmd_buffer, subpass);
 }
 
 static uint32_t
@@ -1175,7 +1175,7 @@ build_clear_dcc_comp_to_single_shader(bool is_msaa)
                         nir_channel(&b, global_id, 2),
                         nir_ssa_undef(&b, 1, 32));
 
-   nir_variable *output_img = nir_variable_create(b.shader, nir_var_uniform, img_type, "out_img");
+   nir_variable *output_img = nir_variable_create(b.shader, nir_var_image, img_type, "out_img");
    output_img->data.descriptor_set = 0;
    output_img->data.binding = 0;
 

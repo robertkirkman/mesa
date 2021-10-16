@@ -43,10 +43,12 @@
 #include "util/u_thread.h"
 #include "util/xmlconfig.h"
 
+#include "vk_instance.h"
+#include "vk_physical_device.h"
 #include "vk_util.h"
 #include "vk_enum_to_str.h"
+#include "wsi_common_entrypoints.h"
 #include "wsi_common_private.h"
-#include "wsi_common_x11.h"
 #include "wsi_common_queue.h"
 
 #ifdef HAVE_SYS_SHM_H
@@ -174,7 +176,7 @@ static struct wsi_x11_connection *
 wsi_x11_connection_create(struct wsi_device *wsi_dev,
                           xcb_connection_t *conn)
 {
-   xcb_query_extension_cookie_t dri3_cookie, pres_cookie, randr_cookie, amd_cookie, nv_cookie, shm_cookie;
+   xcb_query_extension_cookie_t dri3_cookie, pres_cookie, randr_cookie, amd_cookie, nv_cookie, shm_cookie, sync_cookie;
    xcb_query_extension_reply_t *dri3_reply, *pres_reply, *randr_reply, *amd_reply, *nv_reply, *shm_reply = NULL;
    bool has_dri3_v1_2 = false;
    bool has_present_v1_2 = false;
@@ -185,6 +187,7 @@ wsi_x11_connection_create(struct wsi_device *wsi_dev,
    if (!wsi_conn)
       return NULL;
 
+   sync_cookie = xcb_query_extension(conn, 4, "SYNC");
    dri3_cookie = xcb_query_extension(conn, 4, "DRI3");
    pres_cookie = xcb_query_extension(conn, 7, "Present");
    randr_cookie = xcb_query_extension(conn, 5, "RANDR");
@@ -204,6 +207,7 @@ wsi_x11_connection_create(struct wsi_device *wsi_dev,
    amd_cookie = xcb_query_extension(conn, 11, "ATIFGLRXDRI");
    nv_cookie = xcb_query_extension(conn, 10, "NV-CONTROL");
 
+   xcb_discard_reply(conn, sync_cookie.sequence);
    dri3_reply = xcb_query_extension_reply(conn, dri3_cookie, NULL);
    pres_reply = xcb_query_extension_reply(conn, pres_cookie, NULL);
    randr_reply = xcb_query_extension_reply(conn, randr_cookie, NULL);
@@ -468,12 +472,14 @@ visual_has_alpha(xcb_visualtype_t *visual, unsigned depth)
    return (all_mask & ~rgb_mask) != 0;
 }
 
-VkBool32 wsi_get_physical_device_xcb_presentation_support(
-    struct wsi_device *wsi_device,
-    uint32_t                                    queueFamilyIndex,
-    xcb_connection_t*                           connection,
-    xcb_visualid_t                              visual_id)
+VKAPI_ATTR VkBool32 VKAPI_CALL
+wsi_GetPhysicalDeviceXcbPresentationSupportKHR(VkPhysicalDevice physicalDevice,
+                                               uint32_t queueFamilyIndex,
+                                               xcb_connection_t *connection,
+                                               xcb_visualid_t visual_id)
 {
+   VK_FROM_HANDLE(vk_physical_device, pdevice, physicalDevice);
+   struct wsi_device *wsi_device = pdevice->wsi_device;
    struct wsi_x11_connection *wsi_conn =
       wsi_x11_get_connection(wsi_device, connection);
 
@@ -493,6 +499,18 @@ VkBool32 wsi_get_physical_device_xcb_presentation_support(
       return false;
 
    return true;
+}
+
+VKAPI_ATTR VkBool32 VKAPI_CALL
+wsi_GetPhysicalDeviceXlibPresentationSupportKHR(VkPhysicalDevice physicalDevice,
+                                                uint32_t queueFamilyIndex,
+                                                Display *dpy,
+                                                VisualID visualID)
+{
+   return wsi_GetPhysicalDeviceXcbPresentationSupportKHR(physicalDevice,
+                                                         queueFamilyIndex,
+                                                         XGetXCBConnection(dpy),
+                                                         visualID);
 }
 
 static xcb_connection_t*
@@ -775,14 +793,19 @@ x11_surface_get_present_rectangles(VkIcdSurfaceBase *icd_surface,
    return vk_outarray_status(&out);
 }
 
-VkResult wsi_create_xcb_surface(const VkAllocationCallbacks *pAllocator,
-				const VkXcbSurfaceCreateInfoKHR *pCreateInfo,
-				VkSurfaceKHR *pSurface)
+VKAPI_ATTR VkResult VKAPI_CALL
+wsi_CreateXcbSurfaceKHR(VkInstance _instance,
+                        const VkXcbSurfaceCreateInfoKHR *pCreateInfo,
+                        const VkAllocationCallbacks *pAllocator,
+                        VkSurfaceKHR *pSurface)
 {
+   VK_FROM_HANDLE(vk_instance, instance, _instance);
    VkIcdSurfaceXcb *surface;
 
-   surface = vk_alloc(pAllocator, sizeof *surface, 8,
-                      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR);
+
+   surface = vk_alloc2(&instance->alloc, pAllocator, sizeof *surface, 8,
+                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (surface == NULL)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
@@ -794,14 +817,19 @@ VkResult wsi_create_xcb_surface(const VkAllocationCallbacks *pAllocator,
    return VK_SUCCESS;
 }
 
-VkResult wsi_create_xlib_surface(const VkAllocationCallbacks *pAllocator,
-				 const VkXlibSurfaceCreateInfoKHR *pCreateInfo,
-				 VkSurfaceKHR *pSurface)
+VKAPI_ATTR VkResult VKAPI_CALL
+wsi_CreateXlibSurfaceKHR(VkInstance _instance,
+                         const VkXlibSurfaceCreateInfoKHR *pCreateInfo,
+                         const VkAllocationCallbacks *pAllocator,
+                         VkSurfaceKHR *pSurface)
 {
+   VK_FROM_HANDLE(vk_instance, instance, _instance);
    VkIcdSurfaceXlib *surface;
 
-   surface = vk_alloc(pAllocator, sizeof *surface, 8,
-                      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR);
+
+   surface = vk_alloc2(&instance->alloc, pAllocator, sizeof *surface, 8,
+                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (surface == NULL)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
