@@ -196,19 +196,7 @@ blorp_alloc_vertex_buffer(struct blorp_batch *batch, uint32_t size,
        */
       .reloc_flags = RELOC_32BIT,
 
-#if GFX_VER == 11
-      .mocs = ICL_MOCS_WB,
-#elif GFX_VER == 10
-      .mocs = CNL_MOCS_WB,
-#elif GFX_VER == 9
-      .mocs = SKL_MOCS_WB,
-#elif GFX_VER == 8
-      .mocs = BDW_MOCS_WB,
-#elif GFX_VER == 7
-      .mocs = GFX7_MOCS_L3,
-#elif GFX_VER > 6
-#error "Missing MOCS setting!"
-#endif
+      .mocs = brw_mocs(&brw->isl_dev, brw->batch.state.bo),
    };
 
    return data;
@@ -349,7 +337,7 @@ retry:
    brw_emit_post_sync_nonzero_flush(brw);
 #endif
 
-   brw_upload_state_base_address(brw);
+   brw->vtbl.emit_state_base_address(brw);
 
 #if GFX_VER >= 8
    gfx7_l3_state.emit(brw);

@@ -61,6 +61,15 @@ extern "C" {
 /* Alignment for optimal CP DMA performance. */
 #define SI_CPDMA_ALIGNMENT 32
 
+/* We don't want to evict buffers from VRAM by mapping them for CPU access,
+ * because they might never be moved back again. If a buffer is large enough,
+ * upload data by copying from a temporary GTT buffer. 8K might not seem much,
+ * but there can be 100000 buffers.
+ *
+ * This tweak improves performance for viewperf creo & snx.
+ */
+#define SI_MAX_VRAM_MAP_SIZE     8196
+
 /* Tunables for compute-based clear_buffer and copy_buffer: */
 #define SI_COMPUTE_CLEAR_DW_PER_THREAD 4
 #define SI_COMPUTE_COPY_DW_PER_THREAD  4
@@ -217,7 +226,6 @@ enum
    DBG_NO_GFX,
    DBG_NO_NGG,
    DBG_ALWAYS_NGG_CULLING_ALL,
-   DBG_ALWAYS_NGG_CULLING_TESS,
    DBG_NO_NGG_CULLING,
    DBG_SWITCH_ON_EOP,
    DBG_NO_OUT_OF_ORDER,
@@ -273,6 +281,25 @@ enum si_coherency
    SI_COHERENCY_CP,
 };
 
+#define SI_BIND_CONSTANT_BUFFER_SHIFT     0
+#define SI_BIND_SHADER_BUFFER_SHIFT       6
+#define SI_BIND_IMAGE_BUFFER_SHIFT        12
+#define SI_BIND_SAMPLER_BUFFER_SHIFT      18
+#define SI_BIND_OTHER_BUFFER_SHIFT        24
+
+/* Bind masks for all 6 shader stages. */
+#define SI_BIND_CONSTANT_BUFFER_ALL       (0x3f << SI_BIND_CONSTANT_BUFFER_SHIFT)
+#define SI_BIND_SHADER_BUFFER_ALL         (0x3f << SI_BIND_SHADER_BUFFER_SHIFT)
+#define SI_BIND_IMAGE_BUFFER_ALL          (0x3f << SI_BIND_IMAGE_BUFFER_SHIFT)
+#define SI_BIND_SAMPLER_BUFFER_ALL        (0x3f << SI_BIND_SAMPLER_BUFFER_SHIFT)
+
+#define SI_BIND_CONSTANT_BUFFER(shader)   ((1 << (shader)) << SI_BIND_CONSTANT_BUFFER_SHIFT)
+#define SI_BIND_SHADER_BUFFER(shader)     ((1 << (shader)) << SI_BIND_SHADER_BUFFER_SHIFT)
+#define SI_BIND_IMAGE_BUFFER(shader)      ((1 << (shader)) << SI_BIND_IMAGE_BUFFER_SHIFT)
+#define SI_BIND_SAMPLER_BUFFER(shader)    ((1 << (shader)) << SI_BIND_SAMPLER_BUFFER_SHIFT)
+#define SI_BIND_VERTEX_BUFFER             (1 << (SI_BIND_OTHER_BUFFER_SHIFT + 0))
+#define SI_BIND_STREAMOUT_BUFFER          (1 << (SI_BIND_OTHER_BUFFER_SHIFT + 1))
+
 struct si_compute;
 struct si_shader_context;
 struct hash_table;
@@ -294,7 +321,7 @@ struct si_resource {
    uint8_t bo_alignment_log2;
    enum radeon_bo_domain domains:8;
    enum radeon_bo_flag flags:16;
-   unsigned bind_history;
+   unsigned bind_history; /* bitmask of SI_BIND_xxx_BUFFER */
 
    /* The buffer range which is initialized (with a write transfer,
     * streamout, DMA, or as a random access target). The rest of
@@ -548,6 +575,7 @@ struct si_screen {
 
    struct {
 #define OPT_BOOL(name, dflt, description) bool name : 1;
+#define OPT_INT(name, dflt, description) int name;
 #include "si_debug_options.h"
    } options;
 
@@ -622,7 +650,6 @@ struct si_screen {
    simple_mtx_t shader_parts_mutex;
    struct si_shader_part *vs_prologs;
    struct si_shader_part *tcs_epilogs;
-   struct si_shader_part *gs_prologs;
    struct si_shader_part *ps_prologs;
    struct si_shader_part *ps_epilogs;
 
@@ -705,6 +732,7 @@ struct si_samplers {
 
    /* The i-th bit is set if that element is enabled (non-NULL resource). */
    unsigned enabled_mask;
+   uint32_t has_depth_tex_mask;
    uint32_t needs_depth_decompress_mask;
    uint32_t needs_color_decompress_mask;
 };
@@ -1045,6 +1073,7 @@ struct si_context {
    unsigned descriptors_dirty;
    unsigned shader_pointers_dirty;
    unsigned shader_needs_decompress_mask;
+   unsigned shader_has_depth_tex;
    struct si_buffer_resources internal_bindings;
    struct si_buffer_resources const_and_shader_buffers[SI_NUM_SHADERS];
    struct si_samplers samplers[SI_NUM_SHADERS];
@@ -1288,7 +1317,7 @@ bool si_nir_is_output_const_if_tex_is_const(nir_shader *shader, float *in, float
 
 /* si_buffer.c */
 bool si_cs_is_buffer_referenced(struct si_context *sctx, struct pb_buffer *buf,
-                                enum radeon_bo_usage usage);
+                                unsigned usage);
 void *si_buffer_map(struct si_context *sctx, struct si_resource *resource,
                     unsigned usage);
 void si_init_resource_fields(struct si_screen *sscreen, struct si_resource *res, uint64_t size,
@@ -1340,6 +1369,7 @@ void si_init_clear_functions(struct si_context *sctx);
 #define SI_OP_CS_IMAGE                    (1 << 5)
 #define SI_OP_CS_RENDER_COND_ENABLE       (1 << 6)
 #define SI_OP_CPDMA_SKIP_CHECK_CS_SPACE   (1 << 7) /* don't call need_cs_space */
+#define SI_OP_SYNC_GE_BEFORE              (1 << 8) /* only sync VS, TCS, TES, GS */
 
 unsigned si_get_flush_flags(struct si_context *sctx, enum si_coherency coher,
                             enum si_cache_policy cache_policy);
@@ -1895,7 +1925,7 @@ static inline void si_need_gfx_cs_space(struct si_context *ctx, unsigned num_dra
    ctx->memory_usage_kb = 0;
 
    if (radeon_cs_memory_below_limit(ctx->screen, &ctx->gfx_cs, kb) &&
-       ctx->ws->cs_check_space(cs, si_get_minimum_num_gfx_cs_dwords(ctx, num_draws), false))
+       ctx->ws->cs_check_space(cs, si_get_minimum_num_gfx_cs_dwords(ctx, num_draws)))
       return;
 
    si_flush_gfx_cs(ctx, RADEON_FLUSH_ASYNC_START_NEXT_GFX_IB_NOW, NULL);
@@ -1912,12 +1942,11 @@ static inline void si_need_gfx_cs_space(struct si_context *ctx, unsigned num_dra
  * rebuilt.
  */
 static inline void radeon_add_to_buffer_list(struct si_context *sctx, struct radeon_cmdbuf *cs,
-                                             struct si_resource *bo, enum radeon_bo_usage usage,
-                                             enum radeon_bo_priority priority)
+                                             struct si_resource *bo, unsigned usage)
 {
    assert(usage);
-   sctx->ws->cs_add_buffer(cs, bo->buf, (enum radeon_bo_usage)(usage | RADEON_USAGE_SYNCHRONIZED),
-                           bo->domains, priority);
+   sctx->ws->cs_add_buffer(cs, bo->buf, usage | RADEON_USAGE_SYNCHRONIZED,
+                           bo->domains);
 }
 
 /**
@@ -1937,15 +1966,14 @@ static inline void radeon_add_to_buffer_list(struct si_context *sctx, struct rad
  */
 static inline void radeon_add_to_gfx_buffer_list_check_mem(struct si_context *sctx,
                                                            struct si_resource *bo,
-                                                           enum radeon_bo_usage usage,
-                                                           enum radeon_bo_priority priority,
+                                                           unsigned usage,
                                                            bool check_mem)
 {
    if (check_mem &&
        !radeon_cs_memory_below_limit(sctx->screen, &sctx->gfx_cs, sctx->memory_usage_kb + bo->memory_usage_kb))
       si_flush_gfx_cs(sctx, RADEON_FLUSH_ASYNC_START_NEXT_GFX_IB_NOW, NULL);
 
-   radeon_add_to_buffer_list(sctx, &sctx->gfx_cs, bo, usage, priority);
+   radeon_add_to_buffer_list(sctx, &sctx->gfx_cs, bo, usage);
 }
 
 static inline unsigned si_get_wave_size(struct si_screen *sscreen,

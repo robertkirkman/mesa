@@ -454,8 +454,8 @@ struct si_buffer_resources {
    struct pipe_resource **buffers; /* this has num_buffers elements */
    unsigned *offsets;              /* this has num_buffers elements */
 
-   enum radeon_bo_priority priority : 6;
-   enum radeon_bo_priority priority_constbuf : 6;
+   unsigned priority;
+   unsigned priority_constbuf;
 
    /* The i-th bit is set if that element is enabled (non-NULL resource). */
    uint64_t enabled_mask;
@@ -489,6 +489,10 @@ void si_update_ps_colorbuf0_slot(struct si_context *sctx);
 void si_invalidate_inlinable_uniforms(struct si_context *sctx, enum pipe_shader_type shader);
 void si_get_pipe_constant_buffer(struct si_context *sctx, uint shader, uint slot,
                                  struct pipe_constant_buffer *cbuf);
+void si_set_shader_buffers(struct pipe_context *ctx, enum pipe_shader_type shader,
+                           unsigned start_slot, unsigned count,
+                           const struct pipe_shader_buffer *sbuffers,
+                           unsigned writable_bitmask, bool internal_blit);
 void si_get_shader_buffers(struct si_context *sctx, enum pipe_shader_type shader, uint start_slot,
                            uint count, struct pipe_shader_buffer *sbuf);
 void si_set_ring_buffer(struct si_context *sctx, uint slot, struct pipe_resource *buffer,
@@ -535,6 +539,7 @@ struct pipe_sampler_view *si_create_sampler_view_custom(struct pipe_context *ctx
                                                         const struct pipe_sampler_view *state,
                                                         unsigned width0, unsigned height0,
                                                         unsigned force_level);
+void si_set_sampler_depth_decompress_mask(struct si_context *sctx, struct si_texture *tex);
 void si_update_fb_dirtiness_after_rendering(struct si_context *sctx);
 void si_mark_display_dcc_dirty(struct si_context *sctx, struct si_texture *tex);
 void si_update_ps_iter_samples(struct si_context *sctx);

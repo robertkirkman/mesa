@@ -89,7 +89,6 @@ void
 genX(cmd_buffer_emit_state_base_address)(struct anv_cmd_buffer *cmd_buffer)
 {
    struct anv_device *device = cmd_buffer->device;
-   UNUSED const struct intel_device_info *devinfo = &device->info;
    uint32_t mocs = isl_mocs(&device->isl_dev, 0, false);
 
    /* If we are emitting a new state base address we probably need to re-emit
@@ -112,17 +111,6 @@ genX(cmd_buffer_emit_state_base_address)(struct anv_cmd_buffer *cmd_buffer)
 #endif
       pc.RenderTargetCacheFlushEnable = true;
       pc.CommandStreamerStallEnable = true;
-#if GFX_VER == 12
-      /* Wa_1606662791:
-       *
-       *   Software must program PIPE_CONTROL command with "HDC Pipeline
-       *   Flush" prior to programming of the below two non-pipeline state :
-       *      * STATE_BASE_ADDRESS
-       *      * 3DSTATE_BINDING_TABLE_POOL_ALLOC
-       */
-      if (devinfo->revision == 0 /* A0 */)
-         pc.HDCPipelineFlushEnable = true;
-#endif
       anv_debug_dump_pc(pc);
    }
 
@@ -2113,7 +2101,6 @@ genX(cmd_buffer_config_l3)(struct anv_cmd_buffer *cmd_buffer,
 void
 genX(cmd_buffer_apply_pipe_flushes)(struct anv_cmd_buffer *cmd_buffer)
 {
-   UNUSED const struct intel_device_info *devinfo = &cmd_buffer->device->info;
    enum anv_pipe_bits bits = cmd_buffer->state.pending_pipe_bits;
 
    if (unlikely(cmd_buffer->device->physical->always_flush_cache))
@@ -2196,12 +2183,9 @@ genX(cmd_buffer_apply_pipe_flushes)(struct anv_cmd_buffer *cmd_buffer)
     *  PIPELINE_SELECT command is set to GPGPU mode of operation)."
     *
     * The same text exists a few rows below for Post Sync Op.
-    *
-    * On Gfx12 this is Wa_1607156449.
     */
    if (bits & ANV_PIPE_POST_SYNC_BIT) {
-      if ((GFX_VER == 9 || (GFX_VER == 12 && devinfo->revision == 0 /* A0 */)) &&
-          cmd_buffer->state.current_pipeline == GPGPU)
+      if (GFX_VER == 9 && cmd_buffer->state.current_pipeline == GPGPU)
          bits |= ANV_PIPE_CS_STALL_BIT;
       bits &= ~ANV_PIPE_POST_SYNC_BIT;
    }
@@ -3189,30 +3173,35 @@ cmd_buffer_emit_push_constant(struct anv_cmd_buffer *cmd_buffer,
    assert(stage < ARRAY_SIZE(push_constant_opcodes));
    assert(push_constant_opcodes[stage] > 0);
 
+   UNUSED uint32_t mocs = anv_mocs(cmd_buffer->device, NULL, 0);
+
    anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_CONSTANT_VS), c) {
       c._3DCommandSubOpcode = push_constant_opcodes[stage];
+
+      /* Set MOCS, except on Gfx8, because the Broadwell PRM says:
+       *
+       *    "Constant Buffer Object Control State must be always
+       *     programmed to zero."
+       *
+       * This restriction does not exist on any newer platforms.
+       *
+       * We only have one MOCS field for the whole packet, not one per
+       * buffer.  We could go out of our way here to walk over all of
+       * the buffers and see if any of them are used externally and use
+       * the external MOCS.  However, the notion that someone would use
+       * the same bit of memory for both scanout and a UBO is nuts.
+       *
+       * Let's not bother and assume it's all internal.
+       */
+#if GFX_VER >= 9
+      c.MOCS = mocs;
+#elif GFX_VER < 8
+      c.ConstantBody.MOCS = mocs;
+#endif
 
       if (anv_pipeline_has_stage(pipeline, stage)) {
          const struct anv_pipeline_bind_map *bind_map =
             &pipeline->shaders[stage]->bind_map;
-
-#if GFX_VER >= 9
-         /* This field exists since Gfx8.  However, the Broadwell PRM says:
-          *
-          *    "Constant Buffer Object Control State must be always programmed
-          *    to zero."
-          *
-          * This restriction does not exist on any newer platforms.
-          *
-          * We only have one MOCS field for the whole packet, not one per
-          * buffer.  We could go out of our way here to walk over all of the
-          * buffers and see if any of them are used externally and use the
-          * external MOCS.  However, the notion that someone would use the
-          * same bit of memory for both scanout and a UBO is nuts.  Let's not
-          * bother and assume it's all internal.
-          */
-         c.MOCS = isl_mocs(&cmd_buffer->device->isl_dev, 0, false);
-#endif
 
 #if GFX_VERx10 >= 75
          /* The Skylake PRM contains the following restriction:
@@ -3610,6 +3599,8 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
             state = (struct GENX(VERTEX_BUFFER_STATE)) {
                .VertexBufferIndex = vb,
                .NullVertexBuffer = true,
+               .MOCS = anv_mocs(cmd_buffer->device, NULL,
+                                ISL_SURF_USAGE_VERTEX_BUFFER_BIT),
             };
          }
 
@@ -3666,6 +3657,8 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
                sob.SurfaceEndAddress = anv_address_add(xfb->buffer->address,
                                                        xfb->offset + xfb->size);
 #endif
+            } else {
+               sob.MOCS = anv_mocs(cmd_buffer->device, NULL, 0);
             }
          }
       }
@@ -3784,8 +3777,8 @@ emit_vertex_bo(struct anv_cmd_buffer *cmd_buffer,
          .VertexBufferIndex = index,
          .AddressModifyEnable = true,
          .BufferPitch = 0,
-         .MOCS = addr.bo ? anv_mocs(cmd_buffer->device, addr.bo,
-                                    ISL_SURF_USAGE_VERTEX_BUFFER_BIT) : 0,
+         .MOCS = anv_mocs(cmd_buffer->device, addr.bo,
+                          ISL_SURF_USAGE_VERTEX_BUFFER_BIT),
          .NullVertexBuffer = size == 0,
 #if GFX_VER >= 12
          .L3BypassDisable = true,
@@ -5811,7 +5804,9 @@ cmd_buffer_emit_depth_stencil(struct anv_cmd_buffer *cmd_buffer)
    if (dw == NULL)
       return;
 
-   struct isl_depth_stencil_hiz_emit_info info = { };
+   struct isl_depth_stencil_hiz_emit_info info = {
+      .mocs = anv_mocs(device, NULL, ISL_SURF_USAGE_DEPTH_BIT),
+   };
 
    if (iview)
       info.view = &iview->planes[0].isl;

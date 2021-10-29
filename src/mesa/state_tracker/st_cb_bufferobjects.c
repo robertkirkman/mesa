@@ -353,7 +353,10 @@ bufferobj_data(struct gl_context *ctx,
 
    release_buffer(obj);
 
-   const unsigned bindings = buffer_target_to_bind_flags(target);
+   unsigned bindings = buffer_target_to_bind_flags(target);
+
+   if (storageFlags & MESA_GALLIUM_VERTEX_STATE_STORAGE)
+      bindings |= PIPE_BIND_VERTEX_STATE;
 
    if (ST_DEBUG & DEBUG_BUFFER) {
       debug_printf("Create buffer size %" PRId64 " bind 0x%x\n",
@@ -405,8 +408,6 @@ bufferobj_data(struct gl_context *ctx,
     */
    if (st_obj->Base.UsageHistory & USAGE_ARRAY_BUFFER)
       ctx->NewDriverState |= ST_NEW_VERTEX_ARRAYS;
-   /* if (st_obj->Base.UsageHistory & USAGE_ELEMENT_ARRAY_BUFFER) */
-   /*    ctx->NewDriverState |= TODO: Handle indices as gallium state; */
    if (st_obj->Base.UsageHistory & USAGE_UNIFORM_BUFFER)
       ctx->NewDriverState |= ST_NEW_UNIFORM_BUFFER;
    if (st_obj->Base.UsageHistory & USAGE_SHADER_STORAGE_BUFFER)

@@ -3039,17 +3039,10 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
       if (sel->info.stage == MESA_SHADER_VERTEX) {
          if (sscreen->debug_flags & DBG(ALWAYS_NGG_CULLING_ALL))
             sel->ngg_cull_vert_threshold = 0; /* always enabled */
-         else if (sscreen->options.shader_culling ||
-                  sscreen->info.chip_class == GFX10_3 ||
-                  (sscreen->info.chip_class == GFX10 &&
-                   sscreen->info.is_pro_graphics)) {
+         else
             sel->ngg_cull_vert_threshold = 128;
-         }
       } else if (sel->info.stage == MESA_SHADER_TESS_EVAL) {
-         if (sel->rast_prim != PIPE_PRIM_POINTS &&
-             (sscreen->debug_flags & DBG(ALWAYS_NGG_CULLING_ALL) ||
-              sscreen->debug_flags & DBG(ALWAYS_NGG_CULLING_TESS) ||
-              sscreen->info.chip_class == GFX10_3))
+         if (sel->rast_prim != PIPE_PRIM_POINTS)
             sel->ngg_cull_vert_threshold = 0; /* always enabled */
       }
    }
@@ -3963,7 +3956,7 @@ void si_init_tess_factor_ring(struct si_context *sctx)
       assert(sctx->chip_class >= GFX7);
 
       radeon_add_to_buffer_list(sctx, &sctx->gfx_cs, si_resource(sctx->tess_rings),
-                                RADEON_USAGE_READWRITE, RADEON_PRIO_SHADER_RINGS);
+                                RADEON_USAGE_READWRITE | RADEON_PRIO_SHADER_RINGS);
       si_emit_vgt_flush(cs);
 
       /* Set tessellation registers. */
@@ -4081,8 +4074,8 @@ static void si_emit_scratch_state(struct si_context *sctx)
    radeon_end();
 
    if (sctx->scratch_buffer) {
-      radeon_add_to_buffer_list(sctx, &sctx->gfx_cs, sctx->scratch_buffer, RADEON_USAGE_READWRITE,
-                                RADEON_PRIO_SCRATCH_BUFFER);
+      radeon_add_to_buffer_list(sctx, &sctx->gfx_cs, sctx->scratch_buffer,
+                                RADEON_USAGE_READWRITE | RADEON_PRIO_SCRATCH_BUFFER);
    }
 }
 

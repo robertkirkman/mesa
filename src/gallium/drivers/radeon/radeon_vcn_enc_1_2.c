@@ -35,7 +35,7 @@
 #include <stdio.h>
 
 #define RENCODE_FW_INTERFACE_MAJOR_VERSION 1
-#define RENCODE_FW_INTERFACE_MINOR_VERSION 2
+#define RENCODE_FW_INTERFACE_MINOR_VERSION 9
 
 #define RENCODE_IB_PARAM_SESSION_INFO              0x00000001
 #define RENCODE_IB_PARAM_TASK_INFO                 0x00000002
@@ -90,8 +90,13 @@ static void radeon_enc_task_info(struct radeon_encoder *enc, bool need_feedback)
 
 static void radeon_enc_session_init(struct radeon_encoder *enc)
 {
-   enc->enc_pic.session_init.encode_standard = RENCODE_ENCODE_STANDARD_H264;
-   enc->enc_pic.session_init.aligned_picture_width = align(enc->base.width, 16);
+   if (u_reduce_video_profile(enc->base.profile) == PIPE_VIDEO_FORMAT_MPEG4_AVC) {
+      enc->enc_pic.session_init.encode_standard = RENCODE_ENCODE_STANDARD_H264;
+      enc->enc_pic.session_init.aligned_picture_width = align(enc->base.width, 16);
+   } else if (u_reduce_video_profile(enc->base.profile) == PIPE_VIDEO_FORMAT_HEVC) {
+      enc->enc_pic.session_init.encode_standard = RENCODE_ENCODE_STANDARD_HEVC;
+      enc->enc_pic.session_init.aligned_picture_width = align(enc->base.width, 64);
+   }
    enc->enc_pic.session_init.aligned_picture_height = align(enc->base.height, 16);
    enc->enc_pic.session_init.padding_width =
       enc->enc_pic.session_init.aligned_picture_width - enc->base.width;
@@ -99,6 +104,7 @@ static void radeon_enc_session_init(struct radeon_encoder *enc)
       enc->enc_pic.session_init.aligned_picture_height - enc->base.height;
    enc->enc_pic.session_init.pre_encode_mode = RENCODE_PREENCODE_MODE_NONE;
    enc->enc_pic.session_init.pre_encode_chroma_enabled = false;
+   enc->enc_pic.session_init.display_remote = 0;
 
    RADEON_ENC_BEGIN(enc->cmd.session_init);
    RADEON_ENC_CS(enc->enc_pic.session_init.encode_standard);
@@ -108,29 +114,7 @@ static void radeon_enc_session_init(struct radeon_encoder *enc)
    RADEON_ENC_CS(enc->enc_pic.session_init.padding_height);
    RADEON_ENC_CS(enc->enc_pic.session_init.pre_encode_mode);
    RADEON_ENC_CS(enc->enc_pic.session_init.pre_encode_chroma_enabled);
-   RADEON_ENC_END();
-}
-
-static void radeon_enc_session_init_hevc(struct radeon_encoder *enc)
-{
-   enc->enc_pic.session_init.encode_standard = RENCODE_ENCODE_STANDARD_HEVC;
-   enc->enc_pic.session_init.aligned_picture_width = align(enc->base.width, 64);
-   enc->enc_pic.session_init.aligned_picture_height = align(enc->base.height, 16);
-   enc->enc_pic.session_init.padding_width =
-      enc->enc_pic.session_init.aligned_picture_width - enc->base.width;
-   enc->enc_pic.session_init.padding_height =
-      enc->enc_pic.session_init.aligned_picture_height - enc->base.height;
-   enc->enc_pic.session_init.pre_encode_mode = RENCODE_PREENCODE_MODE_NONE;
-   enc->enc_pic.session_init.pre_encode_chroma_enabled = false;
-
-   RADEON_ENC_BEGIN(enc->cmd.session_init);
-   RADEON_ENC_CS(enc->enc_pic.session_init.encode_standard);
-   RADEON_ENC_CS(enc->enc_pic.session_init.aligned_picture_width);
-   RADEON_ENC_CS(enc->enc_pic.session_init.aligned_picture_height);
-   RADEON_ENC_CS(enc->enc_pic.session_init.padding_width);
-   RADEON_ENC_CS(enc->enc_pic.session_init.padding_height);
-   RADEON_ENC_CS(enc->enc_pic.session_init.pre_encode_mode);
-   RADEON_ENC_CS(enc->enc_pic.session_init.pre_encode_chroma_enabled);
+   RADEON_ENC_CS(enc->enc_pic.session_init.display_remote);
    RADEON_ENC_END();
 }
 
@@ -272,11 +256,13 @@ static void radeon_enc_quality_params(struct radeon_encoder *enc)
    enc->enc_pic.quality_params.vbaq_mode = 0;
    enc->enc_pic.quality_params.scene_change_sensitivity = 0;
    enc->enc_pic.quality_params.scene_change_min_idr_interval = 0;
+   enc->enc_pic.quality_params.two_pass_search_center_map_mode = 0;
 
    RADEON_ENC_BEGIN(enc->cmd.quality_params);
    RADEON_ENC_CS(enc->enc_pic.quality_params.vbaq_mode);
    RADEON_ENC_CS(enc->enc_pic.quality_params.scene_change_sensitivity);
    RADEON_ENC_CS(enc->enc_pic.quality_params.scene_change_min_idr_interval);
+   RADEON_ENC_CS(enc->enc_pic.quality_params.two_pass_search_center_map_mode);
    RADEON_ENC_END();
 }
 
@@ -1051,6 +1037,7 @@ static void radeon_enc_ctx(struct radeon_encoder *enc)
    enc->enc_pic.ctx_buf.rec_luma_pitch = align(enc->base.width, enc->alignment);
    enc->enc_pic.ctx_buf.rec_chroma_pitch = align(enc->base.width, enc->alignment);
    enc->enc_pic.ctx_buf.num_reconstructed_pictures = 2;
+   enc->enc_pic.ctx_buf.two_pass_search_center_map_offset = 0;
 
    RADEON_ENC_BEGIN(enc->cmd.ctx);
    RADEON_ENC_READWRITE(enc->cpb.res->buf, enc->cpb.res->domains, 0);
@@ -1070,6 +1057,7 @@ static void radeon_enc_ctx(struct radeon_encoder *enc)
    for (int i = 0; i < 136; i++)
       RADEON_ENC_CS(0x00000000);
 
+   RADEON_ENC_CS(enc->enc_pic.ctx_buf.two_pass_search_center_map_offset);
    RADEON_ENC_END();
 }
 
@@ -1158,56 +1146,6 @@ static void radeon_enc_encode_params(struct radeon_encoder *enc)
    enc->enc_pic.enc_params.input_pic_swizzle_mode = enc->luma->u.gfx9.swizzle_mode;
 
    if (enc->enc_pic.picture_type == PIPE_H2645_ENC_PICTURE_TYPE_IDR)
-      enc->enc_pic.enc_params.reference_picture_index = 0xFFFFFFFF;
-   else
-      enc->enc_pic.enc_params.reference_picture_index = (enc->enc_pic.frame_num - 1) % 2;
-
-   enc->enc_pic.enc_params.reconstructed_picture_index = enc->enc_pic.frame_num % 2;
-
-   RADEON_ENC_BEGIN(enc->cmd.enc_params);
-   RADEON_ENC_CS(enc->enc_pic.enc_params.pic_type);
-   RADEON_ENC_CS(enc->enc_pic.enc_params.allowed_max_bitstream_size);
-   RADEON_ENC_READ(enc->handle, RADEON_DOMAIN_VRAM, enc->luma->u.gfx9.surf_offset);
-   RADEON_ENC_READ(enc->handle, RADEON_DOMAIN_VRAM, enc->chroma->u.gfx9.surf_offset);
-   RADEON_ENC_CS(enc->enc_pic.enc_params.input_pic_luma_pitch);
-   RADEON_ENC_CS(enc->enc_pic.enc_params.input_pic_chroma_pitch);
-   RADEON_ENC_CS(enc->enc_pic.enc_params.input_pic_swizzle_mode);
-   RADEON_ENC_CS(enc->enc_pic.enc_params.reference_picture_index);
-   RADEON_ENC_CS(enc->enc_pic.enc_params.reconstructed_picture_index);
-   RADEON_ENC_END();
-}
-
-static void radeon_enc_encode_params_hevc(struct radeon_encoder *enc)
-{
-   switch (enc->enc_pic.picture_type) {
-   case PIPE_H2645_ENC_PICTURE_TYPE_I:
-   case PIPE_H2645_ENC_PICTURE_TYPE_IDR:
-      enc->enc_pic.enc_params.pic_type = RENCODE_PICTURE_TYPE_I;
-      break;
-   case PIPE_H2645_ENC_PICTURE_TYPE_P:
-      enc->enc_pic.enc_params.pic_type = RENCODE_PICTURE_TYPE_P;
-      break;
-   case PIPE_H2645_ENC_PICTURE_TYPE_SKIP:
-      enc->enc_pic.enc_params.pic_type = RENCODE_PICTURE_TYPE_P_SKIP;
-      break;
-   case PIPE_H2645_ENC_PICTURE_TYPE_B:
-      enc->enc_pic.enc_params.pic_type = RENCODE_PICTURE_TYPE_B;
-      break;
-   default:
-      enc->enc_pic.enc_params.pic_type = RENCODE_PICTURE_TYPE_I;
-   }
-
-   if (enc->luma->meta_offset) {
-      RVID_ERR("DCC surfaces not supported.\n");
-      return;
-   }
-
-   enc->enc_pic.enc_params.allowed_max_bitstream_size = enc->bs_size;
-   enc->enc_pic.enc_params.input_pic_luma_pitch = enc->luma->u.gfx9.surf_pitch;
-   enc->enc_pic.enc_params.input_pic_chroma_pitch = enc->chroma->u.gfx9.surf_pitch;
-   enc->enc_pic.enc_params.input_pic_swizzle_mode = enc->luma->u.gfx9.swizzle_mode;
-
-   if (enc->enc_pic.enc_params.pic_type == RENCODE_PICTURE_TYPE_I)
       enc->enc_pic.enc_params.reference_picture_index = 0xFFFFFFFF;
    else
       enc->enc_pic.enc_params.reference_picture_index = (enc->enc_pic.frame_num - 1) % 2;
@@ -1387,22 +1325,21 @@ void radeon_enc_1_2_init(struct radeon_encoder *enc)
    enc->op_init_rc = radeon_enc_op_init_rc;
    enc->op_init_rc_vbv = radeon_enc_op_init_rc_vbv;
    enc->op_preset = radeon_enc_op_speed;
+   enc->encode_params = radeon_enc_encode_params;
+   enc->session_init = radeon_enc_session_init;
 
    if (u_reduce_video_profile(enc->base.profile) == PIPE_VIDEO_FORMAT_MPEG4_AVC) {
-      enc->session_init = radeon_enc_session_init;
       enc->slice_control = radeon_enc_slice_control;
       enc->spec_misc = radeon_enc_spec_misc;
       enc->deblocking_filter = radeon_enc_deblocking_filter_h264;
       enc->nalu_sps = radeon_enc_nalu_sps;
       enc->nalu_pps = radeon_enc_nalu_pps;
       enc->slice_header = radeon_enc_slice_header;
-      enc->encode_params = radeon_enc_encode_params;
       enc->encode_params_codec_spec = radeon_enc_encode_params_h264;
       enc->encode_headers = radeon_enc_headers_h264;
       enc->nalu_prefix = radeon_enc_nalu_prefix;
       enc->nalu_sei = radeon_enc_nalu_sei;
    } else if (u_reduce_video_profile(enc->base.profile) == PIPE_VIDEO_FORMAT_HEVC) {
-      enc->session_init = radeon_enc_session_init_hevc;
       enc->slice_control = radeon_enc_slice_control_hevc;
       enc->spec_misc = radeon_enc_spec_misc_hevc;
       enc->deblocking_filter = radeon_enc_deblocking_filter_hevc;
@@ -1411,7 +1348,6 @@ void radeon_enc_1_2_init(struct radeon_encoder *enc)
       enc->nalu_vps = radeon_enc_nalu_vps;
       enc->nalu_aud = radeon_enc_nalu_aud_hevc;
       enc->slice_header = radeon_enc_slice_header_hevc;
-      enc->encode_params = radeon_enc_encode_params_hevc;
       enc->encode_headers = radeon_enc_headers_hevc;
    }
 

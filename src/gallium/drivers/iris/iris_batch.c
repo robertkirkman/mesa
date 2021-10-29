@@ -105,8 +105,10 @@ dump_bo_list(struct iris_batch *batch)
       struct iris_bo *bo = batch->exec_bos[i];
       struct iris_bo *backing = iris_get_backing_bo(bo);
       bool written = BITSET_TEST(batch->bos_written, i);
+      bool exported = iris_bo_is_exported(bo);
+      bool imported = iris_bo_is_imported(bo);
 
-      fprintf(stderr, "[%2d]: %3d (%3d) %-14s @ 0x%016"PRIx64" (%-6s %8"PRIu64"B) %2d refs  %s\n",
+      fprintf(stderr, "[%2d]: %3d (%3d) %-14s @ 0x%016"PRIx64" (%-6s %8"PRIu64"B) %2d refs %s%s%s\n",
               i,
               bo->gem_handle,
               backing->gem_handle,
@@ -115,7 +117,9 @@ dump_bo_list(struct iris_batch *batch)
               backing->real.local ? "local" : "system",
               bo->size,
               bo->refcount,
-              written ? "(write)" : "");
+              written ? " write" : "",
+              exported ? " exported" : "",
+              imported ? " imported" : "");
    }
 }
 
@@ -411,6 +415,9 @@ iris_batch_reset(struct iris_batch *batch)
 
    create_batch(batch);
    assert(batch->bo->index == 0);
+
+   memset(batch->bos_written, 0,
+          sizeof(BITSET_WORD) * BITSET_WORDS(batch->exec_array_size));
 
    struct iris_syncobj *syncobj = iris_create_syncobj(bufmgr);
    iris_batch_add_syncobj(batch, syncobj, I915_EXEC_FENCE_SIGNAL);

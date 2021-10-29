@@ -135,8 +135,21 @@ panfrost_resource_get_handle(struct pipe_screen *pscreen,
                              unsigned usage)
 {
         struct panfrost_device *dev = pan_device(pscreen);
-        struct panfrost_resource *rsrc = (struct panfrost_resource *) pt;
-        struct renderonly_scanout *scanout = rsrc->scanout;
+        struct panfrost_resource *rsrc;
+        struct renderonly_scanout *scanout;
+        struct pipe_resource *cur = pt;
+
+        /* Even though panfrost doesn't support multi-planar formats, we
+         * can get here through GBM, which does. Walk the list of planes
+         * to find the right one.
+         */
+        for (int i = 0; i < handle->plane; i++) {
+                cur = cur->next;
+                if (!cur)
+                        return false;
+        }
+        rsrc = pan_resource(cur);
+        scanout = rsrc->scanout;
 
         handle->modifier = rsrc->image.layout.modifier;
         rsrc->modifier_constant = true;
@@ -191,6 +204,8 @@ panfrost_resource_get_param(struct pipe_screen *pscreen,
                             unsigned usage, uint64_t *value)
 {
         struct panfrost_resource *rsrc = (struct panfrost_resource *) prsc;
+        struct pipe_resource *cur;
+        unsigned count;
 
         switch (param) {
         case PIPE_RESOURCE_PARAM_STRIDE:
@@ -201,6 +216,16 @@ panfrost_resource_get_param(struct pipe_screen *pscreen,
                 return true;
         case PIPE_RESOURCE_PARAM_MODIFIER:
                 *value = rsrc->image.layout.modifier;
+                return true;
+        case PIPE_RESOURCE_PARAM_NPLANES:
+                /* Panfrost doesn't directly support multi-planar formats,
+                 * but we should still handle this case for gbm users
+                 * that might want to use resources shared with panfrost
+                 * on video processing hardware that does.
+                 */
+                for (count = 0, cur = prsc; cur; cur = cur->next)
+                        count++;
+                *value = count;
                 return true;
         default:
                 return false;
@@ -218,7 +243,10 @@ panfrost_create_surface(struct pipe_context *pipe,
                         struct pipe_resource *pt,
                         const struct pipe_surface *surf_tmpl)
 {
+        struct panfrost_context *ctx = pan_context(pipe);
         struct pipe_surface *ps = NULL;
+
+        pan_legalize_afbc_format(ctx, pan_resource(pt), surf_tmpl->format);
 
         ps = CALLOC_STRUCT(pipe_surface);
 
@@ -355,8 +383,8 @@ panfrost_should_afbc(struct panfrost_device *dev,
         if (pres->base.bind & ~valid_binding)
                 return false;
 
-        /* AFBC introduced with Mali T760 */
-        if (dev->quirks & MIDGARD_NO_AFBC)
+        /* AFBC support is optional */
+        if (!dev->has_afbc)
                 return false;
 
         /* AFBC<-->staging is expensive */
@@ -1065,6 +1093,29 @@ pan_resource_modifier_convert(struct panfrost_context *ctx,
         panfrost_resource_setup(pan_device(ctx->base.screen), rsrc, modifier,
                                 blit.dst.format);
         pipe_resource_reference(&tmp_prsrc, NULL);
+}
+
+/* Validate that an AFBC resource may be used as a particular format. If it may
+ * not, decompress it on the fly. Failure to do so can produce wrong results or
+ * invalid data faults when sampling or rendering to AFBC */
+
+void
+pan_legalize_afbc_format(struct panfrost_context *ctx,
+                         struct panfrost_resource *rsrc,
+                         enum pipe_format format)
+{
+        struct panfrost_device *dev = pan_device(ctx->base.screen);
+
+        if (!drm_is_afbc(rsrc->image.layout.modifier))
+                return;
+
+        if (panfrost_afbc_format(dev, pan_blit_format(rsrc->base.format)) ==
+            panfrost_afbc_format(dev, pan_blit_format(format)))
+                return;
+
+        pan_resource_modifier_convert(ctx, rsrc,
+                        DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED,
+                        "Reinterpreting AFBC surface as incompatible format");
 }
 
 static bool

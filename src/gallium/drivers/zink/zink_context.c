@@ -711,7 +711,7 @@ zink_create_sampler_view(struct pipe_context *pctx, struct pipe_resource *pres,
 {
    struct zink_screen *screen = zink_screen(pctx->screen);
    struct zink_resource *res = zink_resource(pres);
-   struct zink_sampler_view *sampler_view = CALLOC_STRUCT(zink_sampler_view);
+   struct zink_sampler_view *sampler_view = CALLOC_STRUCT_CL(zink_sampler_view);
    bool err;
 
    sampler_view->base = *state;
@@ -766,7 +766,7 @@ zink_create_sampler_view(struct pipe_context *pctx, struct pipe_resource *pres,
       err = !sampler_view->buffer_view;
    }
    if (err) {
-      FREE(sampler_view);
+      FREE_CL(sampler_view);
       return NULL;
    }
    return &sampler_view->base;
@@ -777,6 +777,11 @@ zink_destroy_buffer_view(struct zink_screen *screen, struct zink_buffer_view *bu
 {
    struct zink_resource *res = zink_resource(buffer_view->pres);
    simple_mtx_lock(&res->bufferview_mtx);
+   if (buffer_view->reference.count) {
+      /* got a cache hit during deletion */
+      simple_mtx_unlock(&res->bufferview_mtx);
+      return;
+   }
    struct hash_entry *he = _mesa_hash_table_search_pre_hashed(&res->bufferview_cache, buffer_view->hash, &buffer_view->bvci);
    assert(he);
    _mesa_hash_table_remove(&res->bufferview_cache, he);
@@ -798,7 +803,7 @@ zink_sampler_view_destroy(struct pipe_context *pctx,
       zink_surface_reference(zink_screen(pctx->screen), &view->image_view, NULL);
    }
    pipe_resource_reference(&pview->texture, NULL);
-   FREE(view);
+   FREE_CL(view);
 }
 
 static void
@@ -2568,15 +2573,8 @@ zink_set_framebuffer_state(struct pipe_context *pctx,
    update_framebuffer_state(ctx, w, h);
 
    uint8_t rast_samples = ctx->fb_state.samples - 1;
-   /* update the shader key if applicable:
-    * if gl_SampleMask[] is written to, we have to ensure that we get a shader with the same sample count:
-    * in GL, rast_samples==1 means ignore gl_SampleMask[]
-    * in VK, gl_SampleMask[] is never ignored
-    */
-   if (rast_samples != ctx->gfx_pipeline_state.rast_samples &&
-       (!ctx->gfx_stages[PIPE_SHADER_FRAGMENT] ||
-        ctx->gfx_stages[PIPE_SHADER_FRAGMENT]->nir->info.outputs_written & (1 << FRAG_RESULT_SAMPLE_MASK)))
-      zink_set_fs_key(ctx)->samples = ctx->fb_state.samples > 0;
+   if (rast_samples != ctx->gfx_pipeline_state.rast_samples)
+      zink_update_fs_key_samples(ctx);
    if (ctx->gfx_pipeline_state.rast_samples != rast_samples) {
       ctx->sample_locations_changed |= ctx->gfx_pipeline_state.sample_locations_enabled;
       ctx->gfx_pipeline_state.dirty = true;
@@ -3763,6 +3761,9 @@ rebind_buffer(struct zink_context *ctx, struct zink_resource *res, uint32_t rebi
    unsigned num_rebinds = 0;
    bool has_write = false;
 
+   if (!zink_resource_has_binds(res))
+      return 0;
+
    assert(!res->bindless[1]); //TODO
    if ((rebind_mask & BITFIELD_BIT(TC_BINDING_STREAMOUT_BUFFER)) || (!rebind_mask && res->so_bind_count && ctx->num_so_targets)) {
       for (unsigned i = 0; i < ctx->num_so_targets; i++) {
@@ -3914,12 +3915,11 @@ rebind_image(struct zink_context *ctx, struct zink_resource *res)
 bool
 zink_resource_rebind(struct zink_context *ctx, struct zink_resource *res)
 {
-   /* force counter buffer reset */
-   res->so_valid = false;
-   if (!zink_resource_has_binds(res))
-      return true;
-   if (res->base.b.target == PIPE_BUFFER)
+   if (res->base.b.target == PIPE_BUFFER) {
+      /* force counter buffer reset */
+      res->so_valid = false;
       return rebind_buffer(ctx, res, 0, 0) == res->bind_count[0] + res->bind_count[1];
+   }
    rebind_image(ctx, res);
    return false;
 }
@@ -3973,6 +3973,7 @@ zink_context_replace_buffer_storage(struct pipe_context *pctx, struct pipe_resou
    assert(d->obj);
    assert(s->obj);
    util_idalloc_mt_free(&screen->buffer_ids, delete_buffer_id);
+   zink_descriptor_set_refs_clear(&d->obj->desc_set_refs, d->obj);
    /* add a ref just like check_resource_for_batch_ref() would've */
    if (zink_resource_has_binds(d) && zink_resource_has_usage(d))
       zink_batch_reference_resource(&ctx->batch, d);
