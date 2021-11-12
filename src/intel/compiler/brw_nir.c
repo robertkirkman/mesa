@@ -775,7 +775,7 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
 
    /* See also brw_nir_trig_workarounds.py */
    if (compiler->precise_trig &&
-       !(devinfo->ver >= 10 || devinfo->is_kabylake))
+       !(devinfo->ver >= 10 || devinfo->platform == INTEL_PLATFORM_KBL))
       OPT(brw_nir_apply_trig_workarounds);
 
    if (devinfo->ver >= 12)
@@ -1285,7 +1285,7 @@ get_subgroup_size(gl_shader_stage stage,
    case BRW_SUBGROUP_SIZE_REQUIRE_8:
    case BRW_SUBGROUP_SIZE_REQUIRE_16:
    case BRW_SUBGROUP_SIZE_REQUIRE_32:
-      assert(stage == MESA_SHADER_COMPUTE);
+      assert(gl_shader_stage_uses_workgroup(stage));
       /* These enum values are expressly chosen to be equal to the subgroup
        * size that they require.
        */

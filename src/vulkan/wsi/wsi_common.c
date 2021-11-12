@@ -75,6 +75,8 @@ wsi_device_init(struct wsi_device *wsi,
    GetPhysicalDeviceMemoryProperties(pdevice, &wsi->memory_props);
    GetPhysicalDeviceQueueFamilyProperties(pdevice, &wsi->queue_family_count, NULL);
 
+   list_inithead(&wsi->hotplug_fences);
+
 #define WSI_GET_CB(func) \
    wsi->func = (PFN_vk##func)proc_addr(pdevice, "vk" #func)
    WSI_GET_CB(AllocateMemory);
@@ -201,6 +203,15 @@ wsi_DestroySurfaceKHR(VkInstance _instance,
       return;
 
    vk_free2(&instance->alloc, pAllocator, surface);
+}
+
+void
+wsi_device_setup_syncobj_fd(struct wsi_device *wsi_device,
+                            int fd)
+{
+#ifdef VK_USE_PLATFORM_DISPLAY_KHR
+   wsi_display_setup_syncobj_fd(wsi_device, fd);
+#endif
 }
 
 VkResult

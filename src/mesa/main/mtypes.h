@@ -1639,8 +1639,9 @@ struct gl_vertex_array_object
    /** "Enabled" with the position/generic0 attribute aliasing resolved */
    GLbitfield _EnabledWithMapMode;
 
-   /** Mask of VERT_BIT_* values indicating changed/dirty arrays */
-   GLbitfield NewArrays;
+   /** Which states have been changed according to the gallium definitions. */
+   bool NewVertexBuffers;
+   bool NewVertexElements;
 
    /** The index buffer (also known as the element array buffer in OpenGL). */
    struct gl_buffer_object *IndexBufferObj;
@@ -1704,6 +1705,17 @@ struct gl_array_attrib
     * array draw is executed.
     */
    GLbitfield _DrawVAOEnabledAttribs;
+
+   /**
+    * If gallium vertex buffers are dirty, this flag indicates whether gallium
+    * vertex elements are dirty too. If this is false, GL states corresponding
+    * to vertex elements have not been changed. Thus, this affects what will
+    * happen when gl_driver_flags::NewArray is set.
+    *
+    * The driver should clear this when it's done.
+    */
+   bool NewVertexElements;
+
    /**
     * Initially or if the VAO referenced by _DrawVAO is deleted the _DrawVAO
     * pointer is set to the _EmptyVAO which is just an empty VAO all the time.
@@ -4553,10 +4565,12 @@ struct gl_extensions
    GLboolean KHR_texture_compression_astc_ldr;
    GLboolean KHR_texture_compression_astc_sliced_3d;
    GLboolean MESA_framebuffer_flip_y;
+   GLboolean MESA_pack_invert;
    GLboolean MESA_tile_raster_order;
    GLboolean EXT_shader_framebuffer_fetch;
    GLboolean EXT_shader_framebuffer_fetch_non_coherent;
    GLboolean MESA_shader_integer_functions;
+   GLboolean MESA_window_pos;
    GLboolean MESA_ycbcr_texture;
    GLboolean NV_alpha_to_coverage_dither_control;
    GLboolean NV_compute_shader_derivatives;

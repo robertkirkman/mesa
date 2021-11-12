@@ -245,6 +245,8 @@ struct intel_perf_query_result;
  */
 #define ANV_PERF_QUERY_OFFSET_REG 0x2670 /* MI_ALU_REG14 */
 
+#define ANV_GRAPHICS_SHADER_STAGE_COUNT (MESA_SHADER_MESH + 1)
+
 /* For gfx12 we set the streamout buffers using 4 separate commands
  * (3DSTATE_SO_BUFFER_INDEX_*) instead of 3DSTATE_SO_BUFFER. However the layout
  * of the 3DSTATE_SO_BUFFER_INDEX_* commands is identical to that of
@@ -436,7 +438,7 @@ struct anv_bo {
     * validation list building alrogithm to track which buffers are already
     * in the validation list so that we can ensure uniqueness.
     */
-   uint32_t index;
+   uint32_t exec_obj_index;
 
    /* Index for use with util_sparse_array_free_list */
    uint32_t free_index;
@@ -450,11 +452,16 @@ struct anv_bo {
    /** Size of the buffer not including implicit aux */
    uint64_t size;
 
-   /* Map for internally mapped BOs.
+   /* Map for mapped BOs.
     *
-    * If ANV_BO_WRAPPER is set in flags, map points to the wrapped BO.
+    * If ANV_BO_ALLOC_MAPPED is set in flags, this is the map for the whole
+    * BO. If ANV_BO_WRAPPER is set in flags, map points to the wrapped BO.
+    * Otherwise, this is the map for the currently mapped range mapped via
+    * vkMapMemory().
     */
    void *map;
+
+   size_t map_size;
 
    /** Size of the implicit CCS range at the end of the buffer
     *
@@ -523,6 +530,28 @@ anv_bo_unwrap(struct anv_bo *bo)
    return bo;
 }
 
+static inline bool
+anv_bo_is_pinned(struct anv_bo *bo)
+{
+#if defined(GFX_VERx10) && GFX_VERx10 >= 90
+   /* Sky Lake and later always uses softpin */
+   assert(bo->flags & EXEC_OBJECT_PINNED);
+   return true;
+#elif defined(GFX_VERx10) && GFX_VERx10 < 80
+   /* Haswell and earlier never use softpin */
+   assert(!(bo->flags & EXEC_OBJECT_PINNED));
+   assert(!bo->has_fixed_address);
+   return false;
+#else
+   /* If we don't have a GFX_VERx10 #define, we need to look at the BO.  Also,
+    * for GFX version 8, we need to look at the BO because Broadwell softpins
+    * but Cherryview doesn't.
+    */
+   assert((bo->flags & EXEC_OBJECT_PINNED) || !bo->has_fixed_address);
+   return (bo->flags & EXEC_OBJECT_PINNED) != 0;
+#endif
+}
+
 /* Represents a lock-free linked list of "free" things.  This is used by
  * both the block pool and the state pools.  Unfortunately, in order to
  * solve the ABA problem, we can't use a single uint32_t head.
@@ -566,7 +595,7 @@ struct anv_block_pool {
    const char *name;
 
    struct anv_device *device;
-   bool use_softpin;
+   bool use_relocations;
 
    /* Wrapper BO for use in relocation lists.  This BO is simply a wrapper
     * around the actual BO so that we grow the pool after the wrapper BO has
@@ -890,7 +919,6 @@ struct anv_physical_device {
     int                                         cmd_parser_version;
     bool                                        has_exec_async;
     bool                                        has_exec_capture;
-    bool                                        has_exec_fence;
     bool                                        has_syncobj_wait;
     bool                                        has_syncobj_wait_available;
     int                                         max_context_priority;
@@ -900,6 +928,7 @@ struct anv_physical_device {
     bool                                        has_userptr_probe;
     uint64_t                                    gtt_size;
 
+    bool                                        use_relocations;
     bool                                        use_softpin;
     bool                                        always_use_bindless;
     bool                                        use_call_secondary;
@@ -1243,42 +1272,42 @@ struct anv_device {
 #endif
 
 static inline bool
-anv_use_softpin(const struct anv_physical_device *pdevice)
+anv_use_relocations(const struct anv_physical_device *pdevice)
 {
 #if defined(GFX_VERx10) && GFX_VERx10 >= 90
    /* Sky Lake and later always uses softpin */
-   assert(pdevice->use_softpin);
-   return true;
+   assert(!pdevice->use_relocations);
+   return false;
 #elif defined(GFX_VERx10) && GFX_VERx10 < 80
    /* Haswell and earlier never use softpin */
-   assert(!pdevice->use_softpin);
-   return false;
+   assert(pdevice->use_relocations);
+   return true;
 #else
    /* If we don't have a GFX_VERx10 #define, we need to look at the physical
     * device.  Also, for GFX version 8, we need to look at the physical
     * device because Broadwell softpins but Cherryview doesn't.
     */
-   return pdevice->use_softpin;
+   return pdevice->use_relocations;
 #endif
 }
 
 static inline struct anv_state_pool *
 anv_binding_table_pool(struct anv_device *device)
 {
-   if (anv_use_softpin(device->physical))
-      return &device->binding_table_pool;
-   else
+   if (anv_use_relocations(device->physical))
       return &device->surface_state_pool;
+   else
+      return &device->binding_table_pool;
 }
 
 static inline struct anv_state
 anv_binding_table_pool_alloc(struct anv_device *device)
 {
-   if (anv_use_softpin(device->physical))
+   if (anv_use_relocations(device->physical))
+      return anv_state_pool_alloc_back(&device->surface_state_pool);
+   else
       return anv_state_pool_alloc(&device->binding_table_pool,
                                   device->binding_table_pool.block_size, 0);
-   else
-      return anv_state_pool_alloc_back(&device->surface_state_pool);
 }
 
 static inline void
@@ -1377,6 +1406,14 @@ VkResult anv_device_alloc_bo(struct anv_device *device,
                              enum anv_bo_alloc_flags alloc_flags,
                              uint64_t explicit_address,
                              struct anv_bo **bo);
+VkResult anv_device_map_bo(struct anv_device *device,
+                           struct anv_bo *bo,
+                           uint64_t offset,
+                           size_t size,
+                           uint32_t gem_flags,
+                           void **map_out);
+void anv_device_unmap_bo(struct anv_device *device,
+                         struct anv_bo *bo);
 VkResult anv_device_import_bo_from_host_ptr(struct anv_device *device,
                                             void *host_ptr, uint32_t size,
                                             enum anv_bo_alloc_flags alloc_flags,
@@ -1388,6 +1425,13 @@ VkResult anv_device_import_bo(struct anv_device *device, int fd,
                               struct anv_bo **bo);
 VkResult anv_device_export_bo(struct anv_device *device,
                               struct anv_bo *bo, int *fd_out);
+VkResult anv_device_get_bo_tiling(struct anv_device *device,
+                                  struct anv_bo *bo,
+                                  enum isl_tiling *tiling_out);
+VkResult anv_device_set_bo_tiling(struct anv_device *device,
+                                  struct anv_bo *bo,
+                                  uint32_t row_pitch_B,
+                                  enum isl_tiling tiling);
 void anv_device_release_bo(struct anv_device *device,
                            struct anv_bo *bo);
 
@@ -1443,7 +1487,6 @@ int anv_gem_get_context_param(int fd, int context, uint32_t param,
 int anv_gem_get_param(int fd, uint32_t param);
 uint64_t anv_gem_get_drm_cap(int fd, uint32_t capability);
 int anv_gem_get_tiling(struct anv_device *device, uint32_t gem_handle);
-bool anv_gem_get_bit6_swizzle(int fd, uint32_t tiling);
 int anv_gem_context_get_reset_stats(int fd, int context,
                                     uint32_t *active, uint32_t *pending);
 int anv_gem_handle_to_fd(struct anv_device *device, uint32_t gem_handle);
@@ -1632,9 +1675,7 @@ anv_address_is_null(struct anv_address addr)
 static inline uint64_t
 anv_address_physical(struct anv_address addr)
 {
-   if (addr.bo && (ANV_ALWAYS_SOFTPIN ||
-                   (addr.bo->flags & EXEC_OBJECT_PINNED))) {
-      assert(addr.bo->flags & EXEC_OBJECT_PINNED);
+   if (addr.bo && anv_bo_is_pinned(addr.bo)) {
       return intel_canonical_address(addr.bo->offset + addr.offset);
    } else {
       return intel_canonical_address(addr.offset);
@@ -1671,7 +1712,7 @@ _anv_combine_address(struct anv_batch *batch, void *location,
    if (address.bo == NULL) {
       return address.offset + delta;
    } else if (batch == NULL) {
-      assert(address.bo->flags & EXEC_OBJECT_PINNED);
+      assert(anv_bo_is_pinned(address.bo));
       return anv_address_physical(anv_address_add(address, delta));
    } else {
       assert(batch->start <= location && location < batch->end);
@@ -1766,8 +1807,9 @@ struct anv_device_memory {
 
    struct anv_bo *                              bo;
    const struct anv_memory_type *               type;
-   VkDeviceSize                                 map_size;
-   void *                                       map;
+
+   /* The map, from the user PoV is bo->map + map_delta */
+   uint64_t                                     map_delta;
 
    /* If set, we are holding reference to AHardwareBuffer
     * which we must release when memory is freed.
@@ -3168,7 +3210,7 @@ struct anv_cmd_buffer {
 static inline bool
 anv_cmd_buffer_is_chainable(struct anv_cmd_buffer *cmd_buffer)
 {
-   return anv_use_softpin(cmd_buffer->device->physical) &&
+   return !anv_use_relocations(cmd_buffer->device->physical) &&
       !(cmd_buffer->usage_flags & VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT);
 }
 
@@ -3554,7 +3596,7 @@ struct anv_graphics_pipeline {
 
    struct anv_subpass *                         subpass;
 
-   struct anv_shader_bin *                      shaders[MESA_SHADER_STAGES];
+   struct anv_shader_bin *                      shaders[ANV_GRAPHICS_SHADER_STAGE_COUNT];
 
    VkShaderStageFlags                           active_stages;
 

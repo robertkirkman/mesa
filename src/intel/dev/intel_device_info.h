@@ -43,6 +43,31 @@ struct drm_i915_query_topology_info;
 #define INTEL_DEVICE_MAX_EUS_PER_SUBSLICE (16) /* Maximum on gfx12 */
 #define INTEL_DEVICE_MAX_PIXEL_PIPES      (3)  /* Maximum on gfx12 */
 
+enum intel_platform {
+   INTEL_PLATFORM_GFX3 = 1,
+   INTEL_PLATFORM_I965,
+   INTEL_PLATFORM_ILK,
+   INTEL_PLATFORM_G4X,
+   INTEL_PLATFORM_SNB,
+   INTEL_PLATFORM_IVB,
+   INTEL_PLATFORM_BYT,
+   INTEL_PLATFORM_HSW,
+   INTEL_PLATFORM_BDW,
+   INTEL_PLATFORM_CHV,
+   INTEL_PLATFORM_SKL,
+   INTEL_PLATFORM_BXT,
+   INTEL_PLATFORM_KBL,
+   INTEL_PLATFORM_GLK,
+   INTEL_PLATFORM_CFL,
+   INTEL_PLATFORM_ICL,
+   INTEL_PLATFORM_EHL,
+   INTEL_PLATFORM_TGL,
+   INTEL_PLATFORM_RKL,
+   INTEL_PLATFORM_DG1,
+   INTEL_PLATFORM_ADL,
+   INTEL_PLATFORM_DG2,
+};
+
 /**
  * Intel hardware information and quirks
  */
@@ -55,27 +80,12 @@ struct intel_device_info
    int revision;
    int gt;
 
-   bool is_g4x;
-   bool is_ivybridge;
-   bool is_baytrail;
-   bool is_haswell;
-   bool is_broadwell;
-   bool is_cherryview;
-   bool is_skylake;
-   bool is_broxton;
-   bool is_kabylake;
-   bool is_geminilake;
-   bool is_coffeelake;
-   bool is_elkhartlake;
-   bool is_tigerlake;
-   bool is_rocketlake;
-   bool is_dg1;
-   bool is_alderlake;
-   bool is_dg2;
+   enum intel_platform platform;
 
    bool has_hiz_and_separate_stencil;
    bool must_use_separate_stencil;
    bool has_sample_with_hiz;
+   bool has_bit6_swizzle;
    bool has_llc;
 
    bool has_pln;
@@ -91,6 +101,7 @@ struct intel_device_info
    bool has_ray_tracing;
    bool has_local_mem;
    bool has_lsc;
+   bool has_mesh_shading;
 
    /**
     * \name Intel hardware quirks
@@ -136,9 +147,22 @@ struct intel_device_info
    unsigned num_slices;
 
    /**
+    * Maximum number of slices present on this device (can be more than
+    * num_slices if some slices are fused).
+    */
+   unsigned max_slices;
+
+   /**
     * Number of subslices for each slice (used to be uniform until CNL).
     */
    unsigned num_subslices[INTEL_DEVICE_MAX_SUBSLICES];
+
+   /**
+    * Maximum number of subslices per slice present on this device (can be
+    * more than the maximum value in the num_subslices[] array if some
+    * subslices are fused).
+    */
+   unsigned max_subslices_per_slice;
 
    /**
     * Number of subslices on each pixel pipe (ICL).
@@ -151,6 +175,12 @@ struct intel_device_info
     * be acurate for one subslice).
     */
    unsigned num_eu_per_subslice;
+
+   /**
+    * Maximum number of EUs per subslice (can be more than num_eu_per_subslice
+    * if some EUs are fused off).
+    */
+   unsigned max_eu_per_subslice;
 
    /**
     * Number of threads per eu, varies between 4 and 8 between generations.
@@ -327,12 +357,14 @@ struct intel_device_info
 #ifdef GFX_VER
 
 #define intel_device_info_is_9lp(devinfo) \
-   (GFX_VER == 9 && ((devinfo)->is_broxton || (devinfo)->is_geminilake))
+   (GFX_VER == 9 && ((devinfo)->platform == INTEL_PLATFORM_BXT || \
+                     (devinfo)->platform == INTEL_PLATFORM_GLK))
 
 #else
 
 #define intel_device_info_is_9lp(devinfo) \
-   ((devinfo)->is_broxton || (devinfo)->is_geminilake)
+   ((devinfo)->platform == INTEL_PLATFORM_BXT || \
+    (devinfo)->platform == INTEL_PLATFORM_GLK)
 
 #endif
 
@@ -355,11 +387,23 @@ intel_device_info_eu_available(const struct intel_device_info *devinfo,
 }
 
 static inline uint32_t
+intel_device_info_subslice_total(const struct intel_device_info *devinfo)
+{
+   uint32_t total = 0;
+
+   for (size_t i = 0; i < ARRAY_SIZE(devinfo->subslice_masks); i++) {
+      total += __builtin_popcount(devinfo->subslice_masks[i]);
+   }
+
+   return total;
+}
+
+static inline uint32_t
 intel_device_info_eu_total(const struct intel_device_info *devinfo)
 {
    uint32_t total = 0;
 
-   for (uint32_t i = 0; i < ARRAY_SIZE(devinfo->eu_masks); i++)
+   for (size_t i = 0; i < ARRAY_SIZE(devinfo->eu_masks); i++)
       total += __builtin_popcount(devinfo->eu_masks[i]);
 
    return total;
@@ -384,7 +428,6 @@ intel_device_info_timebase_scale(const struct intel_device_info *devinfo,
 bool intel_get_device_info_from_fd(int fh, struct intel_device_info *devinfo);
 bool intel_get_device_info_from_pci_id(int pci_id,
                                        struct intel_device_info *devinfo);
-int intel_get_aperture_size(int fd, uint64_t *size);
 
 #ifdef __cplusplus
 }

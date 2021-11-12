@@ -60,9 +60,9 @@ static void anv_spirv_nir_debug(void *private_data,
 
    switch (level) {
    case NIR_SPIRV_DEBUG_LEVEL_INFO:
-      vk_logi(VK_LOG_OBJS(&debug_data->module->base),
-              "SPIR-V offset %lu: %s",
-              (unsigned long) spirv_offset, message);
+      //vk_logi(VK_LOG_OBJS(&debug_data->module->base),
+              //"SPIR-V offset %lu: %s",
+              //(unsigned long) spirv_offset, message);
       break;
    case NIR_SPIRV_DEBUG_LEVEL_WARNING:
       vk_logw(VK_LOG_OBJS(&debug_data->module->base),
@@ -1409,7 +1409,7 @@ anv_pipeline_compile_graphics(struct anv_graphics_pipeline *pipeline,
    int64_t pipeline_start = os_time_get_nano();
 
    const struct brw_compiler *compiler = pipeline->base.device->physical->compiler;
-   struct anv_pipeline_stage stages[MESA_SHADER_STAGES] = {};
+   struct anv_pipeline_stage stages[ANV_GRAPHICS_SHADER_STAGE_COUNT] = {};
 
    /* Information on which states are considered dynamic. */
    const VkPipelineDynamicStateCreateInfo *dyn_info =
@@ -1576,7 +1576,20 @@ anv_pipeline_compile_graphics(struct anv_graphics_pipeline *pipeline,
 
    void *pipeline_ctx = ralloc_context(NULL);
 
-   for (unsigned s = 0; s < ARRAY_SIZE(pipeline->shaders); s++) {
+   const gl_shader_stage shader_order[] = {
+      MESA_SHADER_VERTEX,
+      MESA_SHADER_TESS_CTRL,
+      MESA_SHADER_TESS_EVAL,
+      MESA_SHADER_GEOMETRY,
+
+      MESA_SHADER_TASK,
+      MESA_SHADER_MESH,
+
+      MESA_SHADER_FRAGMENT,
+   };
+
+   for (unsigned i = 0; i < ARRAY_SIZE(shader_order); i++) {
+      gl_shader_stage s = shader_order[i];
       if (!stages[s].entrypoint)
          continue;
 
@@ -1621,7 +1634,8 @@ anv_pipeline_compile_graphics(struct anv_graphics_pipeline *pipeline,
 
    /* Walk backwards to link */
    struct anv_pipeline_stage *next_stage = NULL;
-   for (int s = ARRAY_SIZE(pipeline->shaders) - 1; s >= 0; s--) {
+   for (int i = ARRAY_SIZE(shader_order) - 1; i >= 0; i--) {
+      gl_shader_stage s = shader_order[i];
       if (!stages[s].entrypoint)
          continue;
 
@@ -1655,8 +1669,8 @@ anv_pipeline_compile_graphics(struct anv_graphics_pipeline *pipeline,
        * used in all the active shaders, so this check can't be done per
        * individual shaders.
        */
-      nir_shader *shaders[MESA_SHADER_STAGES] = {};
-      for (unsigned s = 0; s < MESA_SHADER_STAGES; s++)
+      nir_shader *shaders[ANV_GRAPHICS_SHADER_STAGE_COUNT] = {};
+      for (unsigned s = 0; s < ARRAY_SIZE(shaders); s++)
          shaders[s] = stages[s].nir;
 
       pipeline->use_primitive_replication =
@@ -1666,7 +1680,8 @@ anv_pipeline_compile_graphics(struct anv_graphics_pipeline *pipeline,
    }
 
    struct anv_pipeline_stage *prev_stage = NULL;
-   for (unsigned s = 0; s < ARRAY_SIZE(pipeline->shaders); s++) {
+   for (unsigned i = 0; i < ARRAY_SIZE(shader_order); i++) {
+      gl_shader_stage s = shader_order[i];
       if (!stages[s].entrypoint)
          continue;
 
@@ -1693,7 +1708,8 @@ anv_pipeline_compile_graphics(struct anv_graphics_pipeline *pipeline,
    }
 
    prev_stage = NULL;
-   for (unsigned s = 0; s < MESA_SHADER_STAGES; s++) {
+   for (unsigned i = 0; i < ARRAY_SIZE(shader_order); i++) {
+      gl_shader_stage s = shader_order[i];
       if (!stages[s].entrypoint)
          continue;
 

@@ -225,10 +225,9 @@ get_image_usage_for_feats(struct zink_screen *screen, VkFormatFeatureFlags feats
       if (feats & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT && (bind & (PIPE_BIND_LINEAR | PIPE_BIND_SHARED)) != (PIPE_BIND_LINEAR | PIPE_BIND_SHARED))
          usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
 
-      if ((templ->nr_samples <= 1 || screen->info.feats.features.shaderStorageImageMultisample) &&
-          (bind & PIPE_BIND_SHADER_IMAGE)) {
-         if (feats & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)
-            usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+      if ((feats & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) && (bind & PIPE_BIND_SHADER_IMAGE)) {
+         assert(templ->nr_samples <= 1 || screen->info.feats.features.shaderStorageImageMultisample);
+         usage |= VK_IMAGE_USAGE_STORAGE_BIT;
       }
    }
 
@@ -335,10 +334,12 @@ create_ici(struct zink_screen *screen, VkImageCreateInfo *ici, const struct pipe
    ici->usage = 0;
    ici->queueFamilyIndexCount = 0;
 
+   bool need_2D_zs = false;
    switch (templ->target) {
    case PIPE_TEXTURE_1D:
    case PIPE_TEXTURE_1D_ARRAY:
-      ici->imageType = VK_IMAGE_TYPE_1D;
+      need_2D_zs = screen->need_2D_zs && util_format_is_depth_or_stencil(templ->format);
+      ici->imageType = need_2D_zs ? VK_IMAGE_TYPE_2D : VK_IMAGE_TYPE_1D;
       break;
 
    case PIPE_TEXTURE_CUBE:
@@ -788,6 +789,8 @@ resource_create(struct pipe_screen *pscreen,
       }
    } else {
       res->format = zink_get_format(screen, templ->format);
+      res->need_2D_zs = screen->need_2D_zs && util_format_is_depth_or_stencil(templ->format) &&
+                        (templ->target == PIPE_TEXTURE_1D || templ->target == PIPE_TEXTURE_1D_ARRAY);
       res->dmabuf_acquire = whandle && whandle->type == WINSYS_HANDLE_TYPE_FD;
       res->layout = res->dmabuf_acquire ? VK_IMAGE_LAYOUT_PREINITIALIZED : VK_IMAGE_LAYOUT_UNDEFINED;
       res->optimal_tiling = optimal_tiling;

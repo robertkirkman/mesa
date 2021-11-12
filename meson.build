@@ -333,6 +333,11 @@ else
   with_dri_platform = 'none'
 endif
 
+with_vulkan_beta = get_option('vulkan-beta')
+if with_vulkan_beta
+  pre_args += '-DVK_ENABLE_BETA_EXTENSIONS'
+endif
+
 _platforms = get_option('platforms')
 if _platforms.contains('auto')
   if system_has_kms_drm
@@ -484,20 +489,24 @@ if with_egl
   if with_gbm and not with_platform_android
     _platforms += 'drm'
   endif
-endif
 
-egl_native_platform = get_option('egl-native-platform')
-if egl_native_platform.contains('auto')
-  if _platforms.length() != 0
+  egl_native_platform = get_option('egl-native-platform')
+  if egl_native_platform.contains('auto')
     egl_native_platform = _platforms[0]
-  else
-    egl_native_platform = 'surfaceless'
   endif
 endif
 
 if with_egl and not _platforms.contains(egl_native_platform)
   error('-Degl-native-platform does not specify an enabled platform')
 endif
+
+if 'x11' in _platforms
+  _platforms += 'xcb'
+endif
+
+foreach platform : _platforms
+  pre_args += '-DHAVE_@0@_PLATFORM'.format(platform.to_upper())
+endforeach
 
 # Android uses emutls for versions <= P/28. For USE_ELF_TLS we need ELF TLS.
 use_elf_tls = false
@@ -920,10 +929,6 @@ endif
 
 gl_pkgconfig_c_flags = []
 if with_platform_x11
-  if with_any_vk or with_egl or (with_glx == 'dri' and with_dri_platform == 'drm')
-    pre_args += '-DHAVE_X11_PLATFORM'
-    pre_args += '-DHAVE_XCB_PLATFORM'
-  endif
   if with_glx == 'xlib' or with_glx == 'gallium-xlib'
     pre_args += '-DUSE_XSHM'
   else
@@ -942,12 +947,6 @@ if with_platform_x11
 else
   pre_args += '-DEGL_NO_X11'
   gl_pkgconfig_c_flags += '-DEGL_NO_X11'
-endif
-if with_gbm and not with_platform_android
-  pre_args += '-DHAVE_DRM_PLATFORM'
-endif
-if with_platform_windows
-  pre_args += '-DHAVE_WINDOWS_PLATFORM'
 endif
 
 with_android_stub = get_option('android-stub')
@@ -972,13 +971,9 @@ if with_platform_android
     endif
   endif
   pre_args += [
-    '-DHAVE_ANDROID_PLATFORM',
     '-DANDROID',
     '-DANDROID_API_LEVEL=' + get_option('platform-sdk-version').to_string()
   ]
-endif
-if with_platform_haiku
-  pre_args += '-DHAVE_HAIKU_PLATFORM'
 endif
 
 prog_python = import('python').find_installation('python3')
@@ -1218,11 +1213,22 @@ if host_machine.system() == 'windows'
     endif
   else
     add_project_link_arguments(
-      '-Wl,--nxcompat',
-      '-Wl,--dynamicbase',
-      '-static-libgcc',
-      '-static-libstdc++',
-      language : ['c', 'cpp'],
+      cc.get_supported_arguments(
+        '-Wl,--nxcompat',
+        '-Wl,--dynamicbase',
+        '-static-libgcc',
+        '-static-libstdc++',
+      ),
+      language : ['c'],
+    )
+    add_project_link_arguments(
+      cpp.get_supported_arguments(
+        '-Wl,--nxcompat',
+        '-Wl,--dynamicbase',
+        '-static-libgcc',
+        '-static-libstdc++',
+      ),
+      language : ['cpp'],
     )
   endif
 endif
@@ -1620,6 +1626,11 @@ if dep_libdrm.found()
   endif
 endif
 
+dep_libudev = dependency('libudev', required : false)
+if dep_libudev.found()
+  pre_args += '-DHAVE_LIBUDEV'
+endif
+
 llvm_modules = ['bitwriter', 'engine', 'mcdisassembler', 'mcjit', 'core', 'executionengine', 'scalaropts', 'transformutils', 'instcombine']
 llvm_optional_modules = ['coroutines']
 if with_amd_vk or with_gallium_radeonsi or with_gallium_r600
@@ -1987,7 +1998,7 @@ if with_platform_wayland
     dep_wl_protocols.get_pkgconfig_variable('pkgdatadir'), 'unstable',
     'linux-dmabuf', 'linux-dmabuf-unstable-v1.xml'
   )
-  pre_args += ['-DHAVE_WAYLAND_PLATFORM', '-DWL_HIDE_DEPRECATED']
+  pre_args += '-DWL_HIDE_DEPRECATED'
 endif
 
 dep_x11 = null_dep
@@ -2260,10 +2271,6 @@ if with_egl
   lines += 'EGL drivers:     ' + ' '.join(egl_drivers)
 endif
 if with_egl or with_any_vk
-  _platforms += 'surfaceless'
-  if with_gbm and not with_platform_android
-    _platforms += 'drm'
-  endif
   lines += 'EGL/Vulkan/VL platforms:   ' + ' '.join(_platforms)
 endif
 lines += 'GBM:             ' + (with_gbm ? 'yes' : 'no')

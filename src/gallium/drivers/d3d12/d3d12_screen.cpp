@@ -331,12 +331,22 @@ d3d12_get_paramf(struct pipe_screen *pscreen, enum pipe_capf param)
    struct d3d12_screen *screen = d3d12_screen(pscreen);
 
    switch (param) {
+   case PIPE_CAPF_MIN_LINE_WIDTH:
+   case PIPE_CAPF_MIN_LINE_WIDTH_AA:
+   case PIPE_CAPF_MIN_POINT_SIZE:
+   case PIPE_CAPF_MIN_POINT_SIZE_AA:
+      return 1;
+
+   case PIPE_CAPF_POINT_SIZE_GRANULARITY:
+   case PIPE_CAPF_LINE_WIDTH_GRANULARITY:
+      return 0.1;
+
    case PIPE_CAPF_MAX_LINE_WIDTH:
    case PIPE_CAPF_MAX_LINE_WIDTH_AA:
       return 1.0f; /* no clue */
 
-   case PIPE_CAPF_MAX_POINT_WIDTH:
-   case PIPE_CAPF_MAX_POINT_WIDTH_AA:
+   case PIPE_CAPF_MAX_POINT_SIZE:
+   case PIPE_CAPF_MAX_POINT_SIZE_AA:
       return D3D12_MAX_POINT_SIZE;
 
    case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
@@ -637,6 +647,7 @@ d3d12_flush_frontbuffer(struct pipe_screen * pscreen,
    void *map = winsys->displaytarget_map(winsys, res->dt, 0);
 
    if (map) {
+      pctx = threaded_context_unwrap_sync(pctx);
       pipe_transfer *transfer = nullptr;
       void *res_map = pipe_texture_map(pctx, pres, level, layer, PIPE_MAP_READ, 0, 0,
                                         u_minify(pres->width0, level),

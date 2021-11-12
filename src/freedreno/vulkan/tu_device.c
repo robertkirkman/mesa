@@ -154,6 +154,8 @@ get_device_extensions(const struct tu_physical_device *device,
       .KHR_uniform_buffer_standard_layout = true,
       .KHR_variable_pointers = true,
       .KHR_vulkan_memory_model = true,
+      .KHR_driver_properties = true,
+      .KHR_separate_depth_stencil_layouts = true,
 #ifndef TU_USE_KGSL
       .KHR_timeline_semaphore = false,
 #endif
@@ -251,8 +253,6 @@ tu_physical_device_init(struct tu_physical_device *device,
    char buf[VK_UUID_SIZE * 2 + 1];
    disk_cache_format_hex_id(buf, device->cache_uuid, VK_UUID_SIZE * 2);
    device->disk_cache = disk_cache_create(device->name, buf, 0);
-
-   vk_warn_non_conformant_implementation("tu");
 
    fd_get_driver_uuid(device->driver_uuid);
    fd_get_device_uuid(device->device_uuid, &device->dev_id);
@@ -557,7 +557,7 @@ tu_get_physical_device_features_1_2(struct tu_physical_device *pdevice,
    features->imagelessFramebuffer                = true;
    features->uniformBufferStandardLayout         = true;
    features->shaderSubgroupExtendedTypes         = true;
-   features->separateDepthStencilLayouts         = false;
+   features->separateDepthStencilLayouts         = true;
    features->hostQueryReset                      = true;
    features->timelineSemaphore                   = true;
    features->bufferDeviceAddress                 = false;
@@ -845,12 +845,11 @@ tu_get_physical_device_properties_1_2(struct tu_physical_device *pdevice,
    memset(p->driverInfo, 0, sizeof(p->driverInfo));
    snprintf(p->driverInfo, VK_MAX_DRIVER_INFO_SIZE_KHR,
             "Mesa " PACKAGE_VERSION MESA_GIT_SHA1);
-   /* XXX: VK 1.2: Need to pass conformance. */
    p->conformanceVersion = (VkConformanceVersionKHR) {
-      .major = 0,
-      .minor = 0,
-      .subminor = 0,
-      .patch = 0,
+      .major = 1,
+      .minor = 2,
+      .subminor = 7,
+      .patch = 1,
    };
 
    p->denormBehaviorIndependence =

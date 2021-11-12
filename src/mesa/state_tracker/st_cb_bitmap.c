@@ -280,6 +280,7 @@ restore_render_state(struct gl_context *ctx)
    cso_restore_state(cso, CSO_UNBIND_FS_SAMPLERVIEWS);
    st->state.num_sampler_views[PIPE_SHADER_FRAGMENT] = 0;
 
+   ctx->Array.NewVertexElements = true;
    st->dirty |= ST_NEW_VERTEX_ARRAYS |
                 ST_NEW_FS_SAMPLER_VIEWS;
 }
@@ -766,7 +767,7 @@ st_DrawAtlasBitmaps(struct gl_context *ctx,
 
    u_upload_unmap(pipe->stream_uploader);
 
-   cso_set_vertex_buffers(st->cso_context, 0, 1, &vb);
+   cso_set_vertex_buffers(st->cso_context, 0, 1, 0, false, &vb);
    st->last_num_vbuffers = MAX2(st->last_num_vbuffers, 1);
 
    cso_draw_arrays(st->cso_context, PIPE_PRIM_QUADS, 0, num_verts);

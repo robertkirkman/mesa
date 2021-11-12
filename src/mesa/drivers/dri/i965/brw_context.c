@@ -670,7 +670,7 @@ brw_initialize_context_constants(struct brw_context *brw)
    ctx->Const.MaxPointSizeAA = 255.0;
    ctx->Const.PointSizeGranularity = 1.0;
 
-   if (devinfo->ver >= 5 || devinfo->is_g4x)
+   if (devinfo->verx10 >= 45)
       ctx->Const.MaxClipPlanes = 8;
 
    ctx->Const.GLSLFragCoordIsSysVal = true;
@@ -1010,8 +1010,6 @@ brw_create_context(gl_api api,
 
    brw->has_hiz = devinfo->has_hiz_and_separate_stencil;
    brw->has_separate_stencil = devinfo->has_hiz_and_separate_stencil;
-
-   brw->has_swizzling = screen->hw_has_swizzling;
 
    /* We don't push UBOs on IVB and earlier because the restrictions on
     * 3DSTATE_CONSTANT_* make it really annoying to use push constants

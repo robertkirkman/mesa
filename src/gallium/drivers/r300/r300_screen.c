@@ -406,10 +406,18 @@ static float r300_get_paramf(struct pipe_screen* pscreen,
     struct r300_screen* r300screen = r300_screen(pscreen);
 
     switch (param) {
+        case PIPE_CAPF_MIN_LINE_WIDTH:
+        case PIPE_CAPF_MIN_LINE_WIDTH_AA:
+        case PIPE_CAPF_MIN_POINT_SIZE:
+        case PIPE_CAPF_MIN_POINT_SIZE_AA:
+            return 1;
+        case PIPE_CAPF_POINT_SIZE_GRANULARITY:
+        case PIPE_CAPF_LINE_WIDTH_GRANULARITY:
+            return 0.1;
         case PIPE_CAPF_MAX_LINE_WIDTH:
         case PIPE_CAPF_MAX_LINE_WIDTH_AA:
-        case PIPE_CAPF_MAX_POINT_WIDTH:
-        case PIPE_CAPF_MAX_POINT_WIDTH_AA:
+        case PIPE_CAPF_MAX_POINT_SIZE:
+        case PIPE_CAPF_MAX_POINT_SIZE_AA:
             /* The maximum dimensions of the colorbuffer are our practical
              * rendering limits. 2048 pixels should be enough for anybody. */
             if (r300screen->caps.is_r500) {

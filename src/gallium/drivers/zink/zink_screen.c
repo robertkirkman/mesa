@@ -279,6 +279,23 @@ zink_get_compute_param(struct pipe_screen *pscreen, enum pipe_shader_ir ir_type,
    }
 }
 
+static uint32_t
+get_smallest_buffer_heap(struct zink_screen *screen)
+{
+   enum zink_heap heaps[] = {
+      ZINK_HEAP_DEVICE_LOCAL,
+      ZINK_HEAP_DEVICE_LOCAL_VISIBLE,
+      ZINK_HEAP_HOST_VISIBLE_COHERENT,
+      ZINK_HEAP_HOST_VISIBLE_COHERENT
+   };
+   unsigned size = UINT32_MAX;
+   for (unsigned i = 0; i < ARRAY_SIZE(heaps); i++) {
+      unsigned heap_idx = screen->info.mem_props.memoryTypes[screen->heap_map[i]].heapIndex;
+      size = MIN2(screen->info.mem_props.memoryHeaps[heap_idx].size, size);
+   }
+   return size;
+}
+
 static int
 zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 {
@@ -429,6 +446,9 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TEXTURE_SWIZZLE:
       return 1;
 
+   case PIPE_CAP_VERTEX_ATTRIB_ELEMENT_ALIGNED_ONLY:
+      return 1;
+
    case PIPE_CAP_GL_CLAMP:
       return 0;
 
@@ -525,7 +545,8 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 1;
 
    case PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE:
-      return screen->info.props.limits.maxTexelBufferElements;
+      return MIN2(get_smallest_buffer_heap(screen),
+                  screen->info.props.limits.maxTexelBufferElements);
 
    case PIPE_CAP_ENDIANNESS:
       return PIPE_ENDIAN_NATIVE; /* unsure */
@@ -620,7 +641,7 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       /* 1<<27 is required by VK spec */
       assert(screen->info.props.limits.maxStorageBufferRange >= 1 << 27);
       /* but Gallium can't handle values that are too big, so clamp to VK spec minimum */
-      return 1 << 27;
+      return MIN2(get_smallest_buffer_heap(screen), 1 << 27);
 
    case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
    case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
@@ -675,14 +696,38 @@ zink_get_paramf(struct pipe_screen *pscreen, enum pipe_capf param)
    struct zink_screen *screen = zink_screen(pscreen);
 
    switch (param) {
+   case PIPE_CAPF_MIN_LINE_WIDTH:
+   case PIPE_CAPF_MIN_LINE_WIDTH_AA:
+      if (!screen->info.feats.features.wideLines)
+         return 1.0f;
+      return MAX2(screen->info.props.limits.lineWidthRange[0], 0.01);
+
+   case PIPE_CAPF_MIN_POINT_SIZE:
+   case PIPE_CAPF_MIN_POINT_SIZE_AA:
+      if (!screen->info.feats.features.largePoints)
+         return 1.0f;
+      return MAX2(screen->info.props.limits.pointSizeRange[0], 0.01);
+
+
+   case PIPE_CAPF_LINE_WIDTH_GRANULARITY:
+      if (!screen->info.feats.features.wideLines)
+         return 0.1f;
+      return screen->info.props.limits.lineWidthGranularity;
+
+   case PIPE_CAPF_POINT_SIZE_GRANULARITY:
+      if (!screen->info.feats.features.largePoints)
+         return 0.1f;
+      return screen->info.props.limits.pointSizeGranularity;
+
+
    case PIPE_CAPF_MAX_LINE_WIDTH:
    case PIPE_CAPF_MAX_LINE_WIDTH_AA:
       if (!screen->info.feats.features.wideLines)
          return 1.0f;
       return screen->info.props.limits.lineWidthRange[1];
 
-   case PIPE_CAPF_MAX_POINT_WIDTH:
-   case PIPE_CAPF_MAX_POINT_WIDTH_AA:
+   case PIPE_CAPF_MAX_POINT_SIZE:
+   case PIPE_CAPF_MAX_POINT_SIZE_AA:
       if (!screen->info.feats.features.largePoints)
          return 1.0f;
       return screen->info.props.limits.pointSizeRange[1];
@@ -769,6 +814,14 @@ zink_get_shader_param(struct pipe_screen *pscreen,
       default:
          return 0; /* unsupported stage */
       }
+      switch (shader) {
+      case PIPE_SHADER_VERTEX:
+      case PIPE_SHADER_TESS_EVAL:
+      case PIPE_SHADER_GEOMETRY:
+         /* last vertex stage must support streamout, and this is capped in glsl compiler */
+         return MIN2(max, MAX_VARYING);
+      default: break;
+      }
       return MIN2(max, 64); // prevent overflowing struct shader_info::inputs_read
    }
 
@@ -800,7 +853,8 @@ zink_get_shader_param(struct pipe_screen *pscreen,
       /* At least 16384 is guaranteed by VK spec */
       assert(screen->info.props.limits.maxUniformBufferRange >= 16384);
       /* but Gallium can't handle values that are too big */
-      return MIN2(screen->info.props.limits.maxUniformBufferRange, 1 << 31);
+      return MIN3(get_smallest_buffer_heap(screen),
+                  screen->info.props.limits.maxUniformBufferRange, 1 << 31);
 
    case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
       return  MIN2(screen->info.props.limits.maxPerStageDescriptorUniformBuffers,
@@ -931,6 +985,9 @@ zink_is_format_supported(struct pipe_screen *pscreen,
                          unsigned bind)
 {
    struct zink_screen *screen = zink_screen(pscreen);
+
+   if (storage_sample_count && !screen->info.feats.features.shaderStorageImageMultisample && bind & PIPE_BIND_SHADER_IMAGE)
+      return false;
 
    if (format == PIPE_FORMAT_NONE)
       return screen->info.props.limits.framebufferNoAttachmentsSampleCounts &
@@ -1097,6 +1154,7 @@ zink_destroy_screen(struct pipe_screen *pscreen)
    if (screen->threaded)
       util_queue_destroy(&screen->flush_queue);
 
+   simple_mtx_destroy(&screen->queue_lock);
    VKSCR(DestroyDevice)(screen->dev, NULL);
    vkDestroyInstance(screen->instance, NULL);
    util_idalloc_mt_fini(&screen->buffer_ids);
@@ -1108,14 +1166,15 @@ zink_destroy_screen(struct pipe_screen *pscreen)
    ralloc_free(screen);
 }
 
-static void
+static bool
 choose_pdev(struct zink_screen *screen)
 {
    uint32_t i, pdev_count;
    VkPhysicalDevice *pdevs;
+   bool is_cpu = false;
    VkResult result = vkEnumeratePhysicalDevices(screen->instance, &pdev_count, NULL);
    if (result != VK_SUCCESS)
-      return;
+      return is_cpu;
 
    assert(pdev_count > 0);
 
@@ -1134,6 +1193,7 @@ choose_pdev(struct zink_screen *screen)
          if (props->deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU) {
             screen->pdev = pdevs[i];
             screen->info.device_version = props->apiVersion;
+            is_cpu = true;
             break;
          }
          continue;
@@ -1157,6 +1217,7 @@ choose_pdev(struct zink_screen *screen)
       screen->spirv_version = SPIRV_VERSION(1, 3);
    else
       screen->spirv_version = SPIRV_VERSION(1, 0);
+   return is_cpu;
 }
 
 static void
@@ -1183,6 +1244,7 @@ update_queue_props(struct zink_screen *screen)
 static void
 init_queue(struct zink_screen *screen)
 {
+   simple_mtx_init(&screen->queue_lock, mtx_plain);
    vkGetDeviceQueue(screen->dev, screen->gfx_queue, 0, &screen->queue);
    if (screen->threaded && screen->max_queues > 1)
       vkGetDeviceQueue(screen->dev, screen->gfx_queue, 1, &screen->thread_queue);
@@ -1356,25 +1418,21 @@ check_have_device_time(struct zink_screen *screen)
 static void
 zink_error(const char *msg)
 {
-   fprintf(stderr, "zink ERR: '%s'\n", msg);
 }
 
 static void
 zink_warn(const char *msg)
 {
-   fprintf(stderr, "zink WRN: '%s'\n", msg);
 }
 
 static void
 zink_info(const char *msg)
 {
-   fprintf(stderr, "zink NFO: '%s'\n", msg);
 }
 
 static void
 zink_msg(const char *msg)
 {
-   fprintf(stderr, "zink MSG: '%s'\n", msg);
 }
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL
@@ -1516,6 +1574,13 @@ populate_format_props(struct zink_screen *screen)
       } else
          VKSCR(GetPhysicalDeviceFormatProperties)(screen->pdev, format, &screen->format_props[i]);
    }
+   VkImageFormatProperties image_props;
+   VkResult ret = VKSCR(GetPhysicalDeviceImageFormatProperties)(screen->pdev, VK_FORMAT_D32_SFLOAT,
+                                                                VK_IMAGE_TYPE_1D,
+                                                                VK_IMAGE_TILING_OPTIMAL,
+                                                                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                                                0, &image_props);
+   screen->need_2D_zs = ret != VK_SUCCESS;
 }
 
 bool
@@ -1580,11 +1645,13 @@ noop_submit(void *data, void *gdata, int thread_index)
    struct noop_submit_info *n = data;
    VkSubmitInfo si = {0};
    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+   simple_mtx_lock(&n->screen->queue_lock);
    if (n->VKSCR(QueueSubmit)(n->screen->threaded ? n->screen->thread_queue : n->screen->queue,
                      1, &si, n->fence) != VK_SUCCESS) {
       debug_printf("ZINK: vkQueueSubmit() failed\n");
       n->screen->device_lost = true;
    }
+   simple_mtx_unlock(&n->screen->queue_lock);
 }
 
 bool
@@ -1849,7 +1916,7 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
       (zink_debug & ZINK_DEBUG_VALIDATION) && !create_debug(screen))
       debug_printf("ZINK: failed to setup debug utils\n");
 
-   choose_pdev(screen);
+   screen->is_cpu = choose_pdev(screen);
    if (screen->pdev == VK_NULL_HANDLE)
       goto fail;
 
@@ -1951,7 +2018,7 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
       //screen->driconf.inline_uniforms = driQueryOptionb(config->options, "radeonsi_inline_uniforms");
    }
 #endif
-   screen->driconf.inline_uniforms = debug_get_bool_option("ZINK_INLINE_UNIFORMS", false);
+   screen->driconf.inline_uniforms = debug_get_bool_option("ZINK_INLINE_UNIFORMS", screen->is_cpu);
 
    screen->total_video_mem = get_video_mem(screen);
    screen->clamp_video_mem = screen->total_video_mem * 0.8;

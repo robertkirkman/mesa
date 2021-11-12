@@ -403,12 +403,22 @@ static float
 iris_get_paramf(struct pipe_screen *pscreen, enum pipe_capf param)
 {
    switch (param) {
+   case PIPE_CAPF_MIN_LINE_WIDTH:
+   case PIPE_CAPF_MIN_LINE_WIDTH_AA:
+   case PIPE_CAPF_MIN_POINT_SIZE:
+   case PIPE_CAPF_MIN_POINT_SIZE_AA:
+      return 1;
+
+   case PIPE_CAPF_POINT_SIZE_GRANULARITY:
+   case PIPE_CAPF_LINE_WIDTH_GRANULARITY:
+      return 0.1;
+
    case PIPE_CAPF_MAX_LINE_WIDTH:
    case PIPE_CAPF_MAX_LINE_WIDTH_AA:
       return 7.375f;
 
-   case PIPE_CAPF_MAX_POINT_WIDTH:
-   case PIPE_CAPF_MAX_POINT_WIDTH_AA:
+   case PIPE_CAPF_MAX_POINT_SIZE:
+   case PIPE_CAPF_MAX_POINT_SIZE_AA:
       return 255.0f;
 
    case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
@@ -517,7 +527,8 @@ iris_get_compute_param(struct pipe_screen *pscreen,
    struct iris_screen *screen = (struct iris_screen *)pscreen;
    const struct intel_device_info *devinfo = &screen->devinfo;
 
-   const uint32_t max_invocations = 32 * devinfo->max_cs_workgroup_threads;
+   const uint32_t max_invocations =
+      MIN2(1024, 32 * devinfo->max_cs_workgroup_threads);
 
 #define RET(x) do {                  \
    if (ret)                          \
@@ -572,10 +583,7 @@ iris_get_compute_param(struct pipe_screen *pscreen,
       RET((uint32_t []) { 400 }); /* TODO */
 
    case PIPE_COMPUTE_CAP_MAX_COMPUTE_UNITS: {
-      unsigned total_num_subslices = 0;
-      for (unsigned i = 0; i < devinfo->num_slices; i++)
-         total_num_subslices += devinfo->num_subslices[i];
-      RET((uint32_t []) { total_num_subslices });
+      RET((uint32_t []) { intel_device_info_subslice_total(devinfo) });
    }
 
    case PIPE_COMPUTE_CAP_MAX_PRIVATE_SIZE:
@@ -778,7 +786,7 @@ iris_screen_create(int fd, const struct pipe_screen_config *config)
 
    p_atomic_set(&screen->refcount, 1);
 
-   if (screen->devinfo.ver < 8 || screen->devinfo.is_cherryview)
+   if (screen->devinfo.ver < 8 || screen->devinfo.platform == INTEL_PLATFORM_CHV)
       return NULL;
 
    driParseConfigFiles(config->options, config->options_info, 0, "iris",
@@ -825,7 +833,7 @@ iris_screen_create(int fd, const struct pipe_screen_config *config)
 
    screen->precompile = env_var_as_boolean("shader_precompile", true);
 
-   isl_device_init(&screen->isl_dev, &screen->devinfo, false);
+   isl_device_init(&screen->isl_dev, &screen->devinfo);
 
    screen->compiler = brw_compiler_create(screen, &screen->devinfo);
    screen->compiler->shader_debug_log = iris_shader_debug_log;

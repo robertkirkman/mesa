@@ -234,6 +234,10 @@
    DRI_CONF_OPT_B(force_compat_profile, def, \
                   "Force an OpenGL compatibility context")
 
+#define DRI_CONF_FORCE_DIRECT_GLX_CONTEXT(def) \
+   DRI_CONF_OPT_B(force_direct_glx_context, def, \
+                  "Force direct GLX context (even if indirect is requested)")
+
 #define DRI_CONF_OVERRIDE_VRAM_SIZE() \
    DRI_CONF_OPT_I(override_vram_size, -1, -1, 2147483647, \
                   "Override the VRAM size advertised to the application in MiB (-1 = default)")
@@ -246,6 +250,10 @@
 
 #define DRI_CONF_TRANSCODE_ASTC(def) \
    DRI_CONF_OPT_B(transcode_astc, def, "Transcode ASTC formats to DXTC if unsupported")
+
+#define DRI_CONF_MESA_EXTENSION_OVERRIDE() \
+   DRI_CONF_OPT_S_NODEF(mesa_extension_override, \
+                  "Allow enabling/disabling a list of extensions")
 
 #define DRI_CONF_GLX_EXTENSION_OVERRIDE() \
    DRI_CONF_OPT_S_NODEF(glx_extension_override, \
@@ -479,6 +487,10 @@
 #define DRI_CONF_GLES_SAMPLES_PASSED_VALUE(def, minimum, maximum) \
    DRI_CONF_OPT_I(gles_samples_passed_value, def, minimum, maximum, \
                   "GL_SAMPLES_PASSED value when emulated by GL_ANY_SAMPLES_PASSED")
+
+#define DRI_CONF_FORMAT_L8_SRGB_ENABLE_READBACK(def) \
+   DRI_CONF_OPT_B(format_l8_srgb_enable_readback, def, \
+                  "Force-enable reading back L8_SRGB textures")
 
 /**
  * \brief RADV specific configuration options

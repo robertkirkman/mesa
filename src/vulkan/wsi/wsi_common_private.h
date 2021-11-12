@@ -24,7 +24,7 @@
 #define WSI_COMMON_PRIVATE_H
 
 #include "wsi_common.h"
-#include "vulkan/util/vk_object.h"
+#include "vulkan/runtime/vk_object.h"
 
 struct wsi_image {
    VkImage image;
@@ -166,6 +166,10 @@ wsi_display_init_wsi(struct wsi_device *wsi_device,
 void
 wsi_display_finish_wsi(struct wsi_device *wsi_device,
                        const VkAllocationCallbacks *alloc);
+
+void
+wsi_display_setup_syncobj_fd(struct wsi_device *wsi_device,
+                             int fd);
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(wsi_swapchain, base, VkSwapchainKHR,
                                VK_OBJECT_TYPE_SWAPCHAIN_KHR)

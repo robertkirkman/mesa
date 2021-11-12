@@ -76,6 +76,7 @@ struct zink_modifier_prop {
 struct zink_screen {
    struct pipe_screen base;
    bool threaded;
+   bool is_cpu;
    uint32_t curr_batch; //the current batch id
    uint32_t last_finished; //this is racy but ultimately doesn't matter
    VkSemaphore sem;
@@ -126,6 +127,7 @@ struct zink_screen {
    bool have_X8_D24_UNORM_PACK32;
    bool have_D24_UNORM_S8_UINT;
    bool have_triangle_fans;
+   bool need_2D_zs;
 
    uint32_t gfx_queue;
    uint32_t max_queues;
@@ -133,6 +135,7 @@ struct zink_screen {
    VkDevice dev;
    VkQueue queue; //gfx+compute
    VkQueue thread_queue; //gfx+compute
+   simple_mtx_t queue_lock;
    VkDebugUtilsMessengerEXT debugUtilsCallbackHandle;
 
    uint32_t cur_custom_border_color_samplers;

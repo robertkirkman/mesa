@@ -24,7 +24,7 @@
 #include "v3dv_private.h"
 
 static uint32_t
-num_subpass_attachments(const VkSubpassDescription *desc)
+num_subpass_attachments(const VkSubpassDescription2 *desc)
 {
    return desc->inputAttachmentCount +
           desc->colorAttachmentCount +
@@ -120,19 +120,25 @@ pass_find_subpass_range_for_attachments(struct v3dv_device *device,
 
 
 VKAPI_ATTR VkResult VKAPI_CALL
-v3dv_CreateRenderPass(VkDevice _device,
-                      const VkRenderPassCreateInfo *pCreateInfo,
-                      const VkAllocationCallbacks *pAllocator,
-                      VkRenderPass *pRenderPass)
+v3dv_CreateRenderPass2(VkDevice _device,
+                       const VkRenderPassCreateInfo2 *pCreateInfo,
+                       const VkAllocationCallbacks *pAllocator,
+                       VkRenderPass *pRenderPass)
 {
    V3DV_FROM_HANDLE(v3dv_device, device, _device);
    struct v3dv_render_pass *pass;
 
-   assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO);
+   assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2);
 
-   const VkRenderPassMultiviewCreateInfo *multiview_info =
-      vk_find_struct_const(pCreateInfo->pNext, RENDER_PASS_MULTIVIEW_CREATE_INFO);
-   bool multiview_enabled = multiview_info && multiview_info->subpassCount > 0;
+   /* From the VK_KHR_multiview spec:
+    *
+    *   When a subpass uses a non-zero view mask, multiview functionality is
+    *   considered to be enabled. Multiview is all-or-nothing for a render
+    *   pass - that is, either all subpasses must have a non-zero view mask
+    *   (though some subpasses may have only one view) or all must be zero.
+    */
+   bool multiview_enabled = pCreateInfo->subpassCount &&
+      pCreateInfo->pSubpasses[0].viewMask;
 
    size_t size = sizeof(*pass);
    size_t subpasses_offset = size;
@@ -156,7 +162,7 @@ v3dv_CreateRenderPass(VkDevice _device,
 
    uint32_t subpass_attachment_count = 0;
    for (uint32_t i = 0; i < pCreateInfo->subpassCount; i++) {
-      const VkSubpassDescription *desc = &pCreateInfo->pSubpasses[i];
+      const VkSubpassDescription2 *desc = &pCreateInfo->pSubpasses[i];
       subpass_attachment_count += num_subpass_attachments(desc);
    }
 
@@ -176,13 +182,12 @@ v3dv_CreateRenderPass(VkDevice _device,
 
    struct v3dv_subpass_attachment *p = pass->subpass_attachments;
    for (uint32_t i = 0; i < pCreateInfo->subpassCount; i++) {
-      const VkSubpassDescription *desc = &pCreateInfo->pSubpasses[i];
+      const VkSubpassDescription2 *desc = &pCreateInfo->pSubpasses[i];
       struct v3dv_subpass *subpass = &pass->subpasses[i];
 
       subpass->input_count = desc->inputAttachmentCount;
       subpass->color_count = desc->colorAttachmentCount;
-      if (multiview_enabled)
-         subpass->view_mask = multiview_info->pViewMasks[i];
+      subpass->view_mask = desc->viewMask;
 
       if (desc->inputAttachmentCount > 0) {
          subpass->input_attachments = p;
@@ -297,12 +302,13 @@ subpass_get_granularity(struct v3dv_device *device,
    struct v3dv_subpass *subpass = &pass->subpasses[subpass_idx];
    const uint32_t color_attachment_count = subpass->color_count;
 
+   bool msaa = false;
    uint32_t max_internal_bpp = 0;
    for (uint32_t i = 0; i < color_attachment_count; i++) {
       uint32_t attachment_idx = subpass->color_attachments[i].attachment;
       if (attachment_idx == VK_ATTACHMENT_UNUSED)
          continue;
-      const VkAttachmentDescription *desc =
+      const VkAttachmentDescription2 *desc =
          &pass->attachments[attachment_idx].desc;
       const struct v3dv_format *format = v3dv_X(device, get_format)(desc->format);
       uint32_t internal_type, internal_bpp;
@@ -310,6 +316,9 @@ subpass_get_granularity(struct v3dv_device *device,
          (format->rt_type, &internal_type, &internal_bpp);
 
       max_internal_bpp = MAX2(max_internal_bpp, internal_bpp);
+
+      if (desc->samples > VK_SAMPLE_COUNT_1_BIT)
+         msaa = true;
    }
 
    uint32_t idx = 0;
@@ -317,6 +326,9 @@ subpass_get_granularity(struct v3dv_device *device,
       idx += 2;
    else if (color_attachment_count > 1)
       idx += 1;
+
+   if (msaa)
+      idx += 2;
 
    idx += max_internal_bpp;
 

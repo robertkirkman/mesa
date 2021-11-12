@@ -77,9 +77,6 @@ static const struct vk_instance_extension_table lvp_instance_extensions_supporte
 #ifdef VK_USE_PLATFORM_XLIB_KHR
    .KHR_xlib_surface                         = true,
 #endif
-#ifdef VK_USE_PLATFORM_XLIB_XRANDR_EXT
-   .EXT_acquire_xlib_display                 = true,
-#endif
 };
 
 static const struct vk_device_extension_table lvp_device_extensions_supported = {
@@ -95,6 +92,7 @@ static const struct vk_device_extension_table lvp_device_extensions_supported = 
    .KHR_device_group                      = true,
    .KHR_draw_indirect_count               = true,
    .KHR_driver_properties                 = true,
+   .KHR_dynamic_rendering                 = true,
    .KHR_external_fence                    = true,
    .KHR_external_memory                   = true,
 #ifdef PIPE_MEMORY_FD
@@ -669,6 +667,11 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceFeatures2(
          features->primitiveTopologyPatchListRestart = true;
          break;
       }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR: {
+         VkPhysicalDeviceDynamicRenderingFeaturesKHR *features = (VkPhysicalDeviceDynamicRenderingFeaturesKHR *)ext;
+         features->dynamicRendering = VK_TRUE;
+         break;
+      }
       default:
          break;
       }
@@ -801,7 +804,7 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceProperties(VkPhysicalDevice phys
       .maxCullDistances                         = 8,
       .maxCombinedClipAndCullDistances          = 8,
       .discreteQueuePriorities                  = 2,
-      .pointSizeRange                           = { 0.0, pdevice->pscreen->get_paramf(pdevice->pscreen, PIPE_CAPF_MAX_POINT_WIDTH) },
+      .pointSizeRange                           = { 0.0, pdevice->pscreen->get_paramf(pdevice->pscreen, PIPE_CAPF_MAX_POINT_SIZE) },
       .lineWidthRange                           = { 1.0, pdevice->pscreen->get_paramf(pdevice->pscreen, PIPE_CAPF_MAX_LINE_WIDTH) },
       .pointSizeGranularity                     = (1.0 / 8.0),
       .lineWidthGranularity                     = 1.0 / 128.0,
@@ -1431,7 +1434,7 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateDevice(
                                     pAllocator);
    if (result != VK_SUCCESS) {
       vk_free(&device->vk.alloc, device);
-      return vk_error(instance, result);
+      return result;
    }
 
    device->instance = (struct lvp_instance *)physical_device->vk.instance;

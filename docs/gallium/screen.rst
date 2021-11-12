@@ -139,6 +139,12 @@ The integer capabilities:
 * ``PIPE_CAP_VERTEX_ELEMENT_SRC_OFFSET_4BYTE_ALIGNED_ONLY``: This CAP describes
   a hw limitation.  If true, pipe_vertex_element::src_offset must always be
   aligned to 4.  If false, there are no restrictions on src_offset.
+* ``PIPE_CAP_VERTEX_ATTRIB_ELEMENT_ALIGNED_ONLY``: This CAP describes
+  a hw limitation.  If true, the sum of
+  ``pipe_vertex_element::src_offset + pipe_vertex_buffer::buffer_offset + pipe_vertex_buffer::stride``
+  must always be aligned to the component size for the vertex attributes
+  which access that buffer.  If false, there are no restrictions on these values.
+  This CAP cannot be used with any other alignment-requiring CAPs.
 * ``PIPE_CAP_COMPUTE``: Whether the implementation supports the
   compute entry points defined in pipe_context and pipe_screen.
 * ``PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT``: Describes the required
@@ -631,10 +637,16 @@ PIPE_CAPF_*
 
 The floating-point capabilities are:
 
+* ``PIPE_CAPF_MIN_LINE_WIDTH``: The minimum width of a regular line.
+* ``PIPE_CAPF_MIN_LINE_WIDTH_AA``: The minimum width of a smoothed line.
 * ``PIPE_CAPF_MAX_LINE_WIDTH``: The maximum width of a regular line.
 * ``PIPE_CAPF_MAX_LINE_WIDTH_AA``: The maximum width of a smoothed line.
-* ``PIPE_CAPF_MAX_POINT_WIDTH``: The maximum width and height of a point.
-* ``PIPE_CAPF_MAX_POINT_WIDTH_AA``: The maximum width and height of a smoothed point.
+* ``PIPE_CAPF_LINE_WIDTH_GRANULARITY``: The line width is rounded to a multiple of this number.
+* ``PIPE_CAPF_MIN_POINT_SIZE``: The minimum width and height of a point.
+* ``PIPE_CAPF_MIN_POINT_SIZE_AA``: The minimum width and height of a smoothed point.
+* ``PIPE_CAPF_MAX_POINT_SIZE``: The maximum width and height of a point.
+* ``PIPE_CAPF_MAX_POINT_SIZE_AA``: The maximum width and height of a smoothed point.
+* ``PIPE_CAPF_POINT_SIZE_GRANULARITY``: The point size is rounded to a multiple of this number.
 * ``PIPE_CAPF_MAX_TEXTURE_ANISOTROPY``: The maximum level of anisotropy that can be
   applied to anisotropically filtered textures.
 * ``PIPE_CAPF_MAX_TEXTURE_LOD_BIAS``: The maximum :term:`LOD` bias that may be applied

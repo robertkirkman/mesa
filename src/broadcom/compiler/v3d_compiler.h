@@ -419,7 +419,7 @@ struct v3d_fs_key {
          */
         struct {
                 enum pipe_format format;
-                const uint8_t *swizzle;
+                uint8_t swizzle[4];
         } color_fmt[V3D_MAX_DRAW_BUFFERS];
 
         uint8_t logicop_func;
@@ -799,7 +799,7 @@ struct v3d_compile {
         uint32_t uniform_array_size;
         uint32_t num_uniforms;
         uint32_t output_position_index;
-        nir_variable *output_color_var[4];
+        nir_variable *output_color_var[V3D_MAX_DRAW_BUFFERS];
         uint32_t output_sample_mask_index;
 
         struct qreg undef;

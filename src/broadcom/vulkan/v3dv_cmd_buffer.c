@@ -26,38 +26,6 @@
 #include "vk_format_info.h"
 #include "vk_util.h"
 
-const struct v3dv_dynamic_state default_dynamic_state = {
-   .viewport = {
-      .count = 0,
-   },
-   .scissor = {
-      .count = 0,
-   },
-   .stencil_compare_mask =
-   {
-     .front = ~0u,
-     .back = ~0u,
-   },
-   .stencil_write_mask =
-   {
-     .front = ~0u,
-     .back = ~0u,
-   },
-   .stencil_reference =
-   {
-     .front = 0u,
-     .back = 0u,
-   },
-   .blend_constants = { 0.0f, 0.0f, 0.0f, 0.0f },
-   .depth_bias = {
-      .constant_factor = 0.0f,
-      .depth_bias_clamp = 0.0f,
-      .slope_factor = 0.0f,
-   },
-   .line_width = 1.0f,
-   .color_write_enable = (1ull << (4 * V3D_MAX_DRAW_BUFFERS)) - 1,
-};
-
 void
 v3dv_job_add_bo(struct v3dv_job *job, struct v3dv_bo *bo)
 {
@@ -1319,9 +1287,9 @@ cmd_buffer_ensure_render_pass_attachment_state(struct v3dv_cmd_buffer *cmd_buffe
 }
 
 VKAPI_ATTR void VKAPI_CALL
-v3dv_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
-                        const VkRenderPassBeginInfo *pRenderPassBegin,
-                        VkSubpassContents contents)
+v3dv_CmdBeginRenderPass2(VkCommandBuffer commandBuffer,
+                         const VkRenderPassBeginInfo *pRenderPassBegin,
+                         const VkSubpassBeginInfo *pSubpassBeginInfo)
 {
    V3DV_FROM_HANDLE(v3dv_cmd_buffer, cmd_buffer, commandBuffer);
    V3DV_FROM_HANDLE(v3dv_render_pass, pass, pRenderPassBegin->renderPass);
@@ -1359,7 +1327,9 @@ v3dv_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
 }
 
 VKAPI_ATTR void VKAPI_CALL
-v3dv_CmdNextSubpass(VkCommandBuffer commandBuffer, VkSubpassContents contents)
+v3dv_CmdNextSubpass2(VkCommandBuffer commandBuffer,
+                     const VkSubpassBeginInfo *pSubpassBeginInfo,
+                     const VkSubpassEndInfo *pSubpassEndInfo)
 {
    V3DV_FROM_HANDLE(v3dv_cmd_buffer, cmd_buffer, commandBuffer);
 
@@ -1622,7 +1592,8 @@ v3dv_cmd_buffer_subpass_finish(struct v3dv_cmd_buffer *cmd_buffer)
 }
 
 VKAPI_ATTR void VKAPI_CALL
-v3dv_CmdEndRenderPass(VkCommandBuffer commandBuffer)
+v3dv_CmdEndRenderPass2(VkCommandBuffer commandBuffer,
+                       const VkSubpassEndInfo *pSubpassEndInfo)
 {
    V3DV_FROM_HANDLE(v3dv_cmd_buffer, cmd_buffer, commandBuffer);
 

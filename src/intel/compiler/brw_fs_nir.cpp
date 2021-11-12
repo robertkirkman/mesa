@@ -192,8 +192,7 @@ emit_system_values_block(nir_block *block, fs_visitor *v)
          break;
 
       case nir_intrinsic_load_workgroup_id:
-         assert(v->stage == MESA_SHADER_COMPUTE ||
-                v->stage == MESA_SHADER_KERNEL);
+         assert(gl_shader_stage_uses_workgroup(v->stage));
          reg = &v->nir_system_values[SYSTEM_VALUE_WORKGROUP_ID];
          if (reg->file == BAD_FILE)
             *reg = *v->emit_cs_work_group_id_setup();
@@ -3802,7 +3801,7 @@ void
 fs_visitor::nir_emit_cs_intrinsic(const fs_builder &bld,
                                   nir_intrinsic_instr *instr)
 {
-   assert(stage == MESA_SHADER_COMPUTE || stage == MESA_SHADER_KERNEL);
+   assert(gl_shader_stage_uses_workgroup(stage));
    struct brw_cs_prog_data *cs_prog_data = brw_cs_prog_data(prog_data);
 
    fs_reg dest;
@@ -3885,7 +3884,6 @@ fs_visitor::nir_emit_cs_intrinsic(const fs_builder &bld,
 
    case nir_intrinsic_load_shared: {
       assert(devinfo->ver >= 7);
-      assert(stage == MESA_SHADER_COMPUTE || stage == MESA_SHADER_KERNEL);
 
       const unsigned bit_size = nir_dest_bit_size(instr->dest);
       fs_reg srcs[SURFACE_LOGICAL_NUM_SRCS];
@@ -3922,7 +3920,6 @@ fs_visitor::nir_emit_cs_intrinsic(const fs_builder &bld,
 
    case nir_intrinsic_store_shared: {
       assert(devinfo->ver >= 7);
-      assert(stage == MESA_SHADER_COMPUTE || stage == MESA_SHADER_KERNEL);
 
       const unsigned bit_size = nir_src_bit_size(instr->src[0]);
       fs_reg srcs[SURFACE_LOGICAL_NUM_SRCS];
@@ -3959,8 +3956,12 @@ fs_visitor::nir_emit_cs_intrinsic(const fs_builder &bld,
    }
 
    case nir_intrinsic_load_workgroup_size: {
-      assert(compiler->lower_variable_group_size);
+      /* For non-variable case, this should've been lowered already. */
       assert(nir->info.workgroup_size_variable);
+
+      assert(compiler->lower_variable_group_size);
+      assert(gl_shader_stage_is_compute(stage));
+
       for (unsigned i = 0; i < 3; i++) {
          bld.MOV(retype(offset(dest, bld, i), BRW_REGISTER_TYPE_UD),
             group_size[i]);
@@ -4657,7 +4658,7 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
             (instr->num_components - 1) * type_sz(dest.type);
 
          bool supports_64bit_indirects =
-            !devinfo->is_cherryview && !intel_device_info_is_9lp(devinfo);
+            devinfo->platform != INTEL_PLATFORM_CHV && !intel_device_info_is_9lp(devinfo);
 
          if (type_sz(dest.type) != 8 || supports_64bit_indirects) {
             for (unsigned j = 0; j < instr->num_components; j++) {
@@ -6466,7 +6467,7 @@ setup_imm_df(const fs_builder &bld, double v)
    /* gfx7.5 does not support DF immediates straighforward but the DIM
     * instruction allows to set the 64-bit immediate value.
     */
-   if (devinfo->is_haswell) {
+   if (devinfo->platform == INTEL_PLATFORM_HSW) {
       const fs_builder ubld = bld.exec_all().group(1, 0);
       fs_reg dst = ubld.vgrf(BRW_REGISTER_TYPE_DF, 1);
       ubld.DIM(dst, brw_imm_df(v));

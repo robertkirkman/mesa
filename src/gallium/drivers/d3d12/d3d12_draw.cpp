@@ -67,7 +67,7 @@ fill_cbv_descriptors(struct d3d12_context *ctx,
          cbv_desc.BufferLocation = d3d12_resource_gpu_virtual_address(res) + buffer->buffer_offset;
          cbv_desc.SizeInBytes = MIN2(D3D12_REQ_CONSTANT_BUFFER_ELEMENT_COUNT * 16,
             align(buffer->buffer_size, 256));
-         d3d12_batch_reference_resource(batch, res);
+         d3d12_batch_reference_resource(batch, res, false);
       }
 
       struct d3d12_descriptor_handle handle;
@@ -104,6 +104,13 @@ fill_srv_descriptors(struct d3d12_context *ctx,
       if (view != NULL) {
          descs[desc_idx] = view->handle.cpu_handle;
          d3d12_batch_reference_sampler_view(batch, view);
+
+         struct d3d12_resource *res = d3d12_resource(view->base.texture);
+         /* If this is a buffer that's been replaced, re-create the descriptor */
+         if (view->texture_generation_id != res->generation_id) {
+            d3d12_init_sampler_view_descriptor(view);
+            view->texture_generation_id = res->generation_id;
+         }
 
          D3D12_RESOURCE_STATES state = (stage == PIPE_SHADER_FRAGMENT) ?
                                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE :
@@ -393,7 +400,7 @@ transition_surface_subresources_state(struct d3d12_context *ctx,
 {
    struct d3d12_resource *res = d3d12_resource(pres);
    unsigned start_layer, num_layers;
-   if (!d3d12_subresource_id_uses_layer(res->base.target)) {
+   if (!d3d12_subresource_id_uses_layer(res->base.b.target)) {
       start_layer = 0;
       num_layers = 1;
    } else {
@@ -479,7 +486,7 @@ d3d12_draw_vbo(struct pipe_context *pctx,
    for (int i = 0; i < ctx->fb.nr_cbufs; ++i) {
       if (ctx->fb.cbufs[i]) {
          struct d3d12_surface *surface = d3d12_surface(ctx->fb.cbufs[i]);
-         conversion_modes[i] = d3d12_surface_update_pre_draw(surface, d3d12_rtv_format(ctx, i));
+         conversion_modes[i] = d3d12_surface_update_pre_draw(pctx, surface, d3d12_rtv_format(ctx, i));
          if (conversion_modes[i] != D3D12_SURFACE_CONVERSION_NONE)
             ctx->cmdlist_dirty |= D3D12_DIRTY_FRAMEBUFFER;
       }
@@ -647,7 +654,7 @@ d3d12_draw_vbo(struct pipe_context *pctx,
          struct d3d12_resource *res = d3d12_resource(ctx->vbs[i].buffer.resource);
          d3d12_transition_resource_state(ctx, res, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, D3D12_BIND_INVALIDATE_NONE);
          if (ctx->cmdlist_dirty & D3D12_DIRTY_VERTEX_BUFFERS)
-            d3d12_batch_reference_resource(batch, res);
+            d3d12_batch_reference_resource(batch, res, false);
       }
    }
    if (ctx->cmdlist_dirty & D3D12_DIRTY_VERTEX_BUFFERS)
@@ -657,13 +664,13 @@ d3d12_draw_vbo(struct pipe_context *pctx,
       D3D12_INDEX_BUFFER_VIEW ibv;
       struct d3d12_resource *res = d3d12_resource(index_buffer);
       ibv.BufferLocation = d3d12_resource_gpu_virtual_address(res) + index_offset;
-      ibv.SizeInBytes = res->base.width0 - index_offset;
+      ibv.SizeInBytes = res->base.b.width0 - index_offset;
       ibv.Format = ib_format(dinfo->index_size);
       d3d12_transition_resource_state(ctx, res, D3D12_RESOURCE_STATE_INDEX_BUFFER, D3D12_BIND_INVALIDATE_NONE);
       if (ctx->cmdlist_dirty & D3D12_DIRTY_INDEX_BUFFER ||
           memcmp(&ctx->ibv, &ibv, sizeof(D3D12_INDEX_BUFFER_VIEW)) != 0) {
          ctx->ibv = ibv;
-         d3d12_batch_reference_resource(batch, res);
+         d3d12_batch_reference_resource(batch, res, false);
          ctx->cmdlist->IASetIndexBuffer(&ibv);
       }
 
@@ -707,8 +714,8 @@ d3d12_draw_vbo(struct pipe_context *pctx,
       d3d12_resource_make_writeable(pctx, target->base.buffer);
 
       if (ctx->cmdlist_dirty & D3D12_DIRTY_STREAM_OUTPUT) {
-         d3d12_batch_reference_resource(batch, so_buffer);
-         d3d12_batch_reference_resource(batch, fill_buffer);
+         d3d12_batch_reference_resource(batch, so_buffer, true);
+         d3d12_batch_reference_resource(batch, fill_buffer, true);
       }
 
       d3d12_transition_resource_state(ctx, so_buffer, D3D12_RESOURCE_STATE_STREAM_OUT, D3D12_BIND_INVALIDATE_NONE);
@@ -759,7 +766,7 @@ d3d12_draw_vbo(struct pipe_context *pctx,
    for (int i = 0; i < ctx->fb.nr_cbufs; ++i) {
       if (ctx->fb.cbufs[i]) {
          struct d3d12_surface *surface = d3d12_surface(ctx->fb.cbufs[i]);
-         d3d12_surface_update_post_draw(surface, conversion_modes[i]);
+         d3d12_surface_update_post_draw(pctx, surface, conversion_modes[i]);
       }
    }
 }

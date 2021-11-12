@@ -1388,6 +1388,19 @@ blorp_emit_pipeline(struct blorp_batch *batch,
    /* Disable Primitive Replication. */
    blorp_emit(batch, GENX(3DSTATE_PRIMITIVE_REPLICATION), pr);
 #endif
+
+   if (batch->blorp->config.use_mesh_shading) {
+#if GFX_VERx10 >= 125
+      blorp_emit(batch, GENX(3DSTATE_URB_ALLOC_MESH), zero);
+      blorp_emit(batch, GENX(3DSTATE_URB_ALLOC_TASK), zero);
+
+      blorp_emit(batch, GENX(3DSTATE_MESH_SHADER), zero);
+      blorp_emit(batch, GENX(3DSTATE_TASK_SHADER), zero);
+
+      blorp_emit(batch, GENX(3DSTATE_MESH_CONTROL), zero);
+      blorp_emit(batch, GENX(3DSTATE_TASK_CONTROL), zero);
+#endif
+   }
 }
 
 /******** This is the end of the pipeline setup code ********/
@@ -2127,6 +2140,7 @@ blorp_exec_compute(struct blorp_batch *batch, const struct blorp_params *params)
       cw.ThreadGroupIDYDimension        = group_y1;
       cw.ThreadGroupIDZDimension        = group_z1;
       cw.ExecutionMask                  = 0xffffffff;
+      cw.PostSync.MOCS                  = isl_mocs(batch->blorp->isl_dev, 0, false);
 
       uint32_t surfaces_offset = blorp_setup_binding_table(batch, params);
 

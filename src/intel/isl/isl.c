@@ -99,11 +99,11 @@ static void
 isl_device_setup_mocs(struct isl_device *dev)
 {
    if (dev->info->ver >= 12) {
-      if (dev->info->is_dg2) {
+      if (dev->info->platform == INTEL_PLATFORM_DG2) {
          /* L3CC=WB; BSpec: 45101 */
          dev->mocs.internal = 3 << 1;
          dev->mocs.external = 3 << 1;
-      } else if (dev->info->is_dg1) {
+      } else if (dev->info->platform == INTEL_PLATFORM_DG1) {
          /* L3CC=WB */
          dev->mocs.internal = 5 << 1;
          /* Displayables on DG1 are free to cache in L3 since L3 is transient
@@ -138,7 +138,7 @@ isl_device_setup_mocs(struct isl_device *dev)
        */
       dev->mocs.internal = 0x78;
    } else if (dev->info->ver >= 7) {
-      if (dev->info->is_haswell) {
+      if (dev->info->platform == INTEL_PLATFORM_HSW) {
          /* MEMORY_OBJECT_CONTROL_STATE:
           * .LLCeLLCCacheabilityControlLLCCC             = 0,
           * .L3CacheabilityControlL3CC                   = 1,
@@ -170,7 +170,7 @@ isl_mocs(const struct isl_device *dev, isl_surf_usage_flags_t usage,
    if (external)
       return dev->mocs.external;
 
-   if (dev->info->ver >= 12 && !dev->info->is_dg1) {
+   if (dev->info->ver >= 12 && dev->info->platform != INTEL_PLATFORM_DG1) {
       if (usage & ISL_SURF_USAGE_STAGING_BIT)
          return dev->mocs.internal;
 
@@ -193,15 +193,14 @@ isl_mocs(const struct isl_device *dev, isl_surf_usage_flags_t usage,
 
 void
 isl_device_init(struct isl_device *dev,
-                const struct intel_device_info *info,
-                bool has_bit6_swizzling)
+                const struct intel_device_info *info)
 {
    /* Gfx8+ don't have bit6 swizzling, ensure callsite is not confused. */
-   assert(!(has_bit6_swizzling && info->ver >= 8));
+   assert(!(info->has_bit6_swizzle && info->ver >= 8));
 
    dev->info = info;
    dev->use_separate_stencil = ISL_GFX_VER(dev) >= 6;
-   dev->has_bit6_swizzling = has_bit6_swizzling;
+   dev->has_bit6_swizzling = info->has_bit6_swizzle;
 
    /* The ISL_DEV macros may be defined in the CFLAGS, thus hardcoding some
     * device properties at buildtime. Verify that the macros with the device
@@ -930,7 +929,7 @@ isl_surf_choose_dim_layout(const struct isl_device *dev,
           *
           * The cube face textures are stored in the same way as 3D surfaces
           * are stored (see section 6.17.5 for details).  For cube surfaces,
-          * however, the depth is equal to the number of faces (always 6) and 
+          * however, the depth is equal to the number of faces (always 6) and
           * is not reduced for each MIP.
           */
          if (ISL_GFX_VER(dev) == 4 && (usage & ISL_SURF_USAGE_CUBE_BIT))
@@ -2127,7 +2126,7 @@ isl_surf_supports_ccs(const struct isl_device *dev,
       return false;
 
    /* Wa_22011186057: Disable compression on ADL-P A0 */
-   if (dev->info->is_alderlake && dev->info->gt == 2 &&
+   if (dev->info->platform == INTEL_PLATFORM_ADL && dev->info->gt == 2 &&
        dev->info->revision == 0)
       return false;
 
@@ -3199,7 +3198,7 @@ bool
 isl_swizzle_supports_rendering(const struct intel_device_info *devinfo,
                                struct isl_swizzle swizzle)
 {
-   if (devinfo->is_haswell) {
+   if (devinfo->platform == INTEL_PLATFORM_HSW) {
       /* From the Haswell PRM,
        * RENDER_SURFACE_STATE::Shader Channel Select Red
        *

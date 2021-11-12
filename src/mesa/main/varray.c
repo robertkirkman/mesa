@@ -184,7 +184,11 @@ _mesa_vertex_attrib_binding(struct gl_context *ctx,
 
       array->BufferBindingIndex = bindingIndex;
 
-      vao->NewArrays |= vao->Enabled & array_bit;
+      if (vao->Enabled & array_bit) {
+         vao->NewVertexBuffers = true;
+         vao->NewVertexElements = true;
+      }
+
       vao->NonDefaultStateMask |= array_bit | BITFIELD_BIT(bindingIndex);
    }
 }
@@ -241,7 +245,13 @@ _mesa_bind_vertex_buffer(struct gl_context *ctx,
          vbo->UsageHistory |= USAGE_ARRAY_BUFFER;
       }
 
-      vao->NewArrays |= vao->Enabled & binding->_BoundArrays;
+      if (vao->Enabled & binding->_BoundArrays) {
+         vao->NewVertexBuffers = true;
+         /* Non-dynamic VAOs merge vertex buffers, which affects vertex elements. */
+         if (!vao->IsDynamic)
+            vao->NewVertexElements = true;
+      }
+
       vao->NonDefaultStateMask |= BITFIELD_BIT(index);
    }
 }
@@ -269,7 +279,11 @@ vertex_binding_divisor(struct gl_context *ctx,
       else
          vao->NonZeroDivisorMask &= ~binding->_BoundArrays;
 
-      vao->NewArrays |= vao->Enabled & binding->_BoundArrays;
+      if (vao->Enabled & binding->_BoundArrays) {
+         vao->NewVertexBuffers = true;
+         vao->NewVertexElements = true;
+      }
+
       vao->NonDefaultStateMask |= BITFIELD_BIT(bindingIndex);
    }
 }
@@ -652,7 +666,9 @@ _mesa_update_array_format(struct gl_context *ctx,
    array->RelativeOffset = relativeOffset;
    array->Format = new_format;
 
-   vao->NewArrays |= vao->Enabled & VERT_BIT(attrib);
+   if (vao->Enabled & VERT_BIT(attrib))
+      vao->NewVertexElements = true;
+
    vao->NonDefaultStateMask |= BITFIELD_BIT(attrib);
 }
 
@@ -912,7 +928,14 @@ update_array(struct gl_context *ctx,
    if ((array->Stride != stride) || (array->Ptr != ptr)) {
       array->Stride = stride;
       array->Ptr = ptr;
-      vao->NewArrays |= vao->Enabled & VERT_BIT(attrib);
+
+      if (vao->Enabled & VERT_BIT(attrib)) {
+         vao->NewVertexBuffers = true;
+         /* Non-dynamic VAOs merge vertex buffers, which affects vertex elements. */
+         if (!vao->IsDynamic)
+            vao->NewVertexElements = true;
+      }
+
       vao->NonDefaultStateMask |= BITFIELD_BIT(attrib);
    }
 
@@ -1884,7 +1907,8 @@ _mesa_enable_vertex_array_attribs(struct gl_context *ctx,
    if (attrib_bits) {
       /* was disabled, now being enabled */
       vao->Enabled |= attrib_bits;
-      vao->NewArrays |= attrib_bits;
+      vao->NewVertexBuffers = true;
+      vao->NewVertexElements = true;
       vao->NonDefaultStateMask |= attrib_bits;
 
       /* Update the map mode if needed */
@@ -1985,7 +2009,8 @@ _mesa_disable_vertex_array_attribs(struct gl_context *ctx,
    if (attrib_bits) {
       /* was enabled, now being disabled */
       vao->Enabled &= ~attrib_bits;
-      vao->NewArrays |= attrib_bits;
+      vao->NewVertexBuffers = true;
+      vao->NewVertexElements = true;
 
       /* Update the map mode if needed */
       if (attrib_bits & (VERT_BIT_POS|VERT_BIT_GENERIC0))

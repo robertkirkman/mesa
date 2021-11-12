@@ -1915,37 +1915,6 @@ brw_init_bufmgr(struct brw_screen *screen)
    return true;
 }
 
-static bool
-brw_detect_swizzling(struct brw_screen *screen)
-{
-   /* Broadwell PRM says:
-    *
-    *   "Before Gfx8, there was a historical configuration control field to
-    *    swizzle address bit[6] for in X/Y tiling modes. This was set in three
-    *    different places: TILECTL[1:0], ARB_MODE[5:4], and
-    *    DISP_ARB_CTL[14:13].
-    *
-    *    For Gfx8 and subsequent generations, the swizzle fields are all
-    *    reserved, and the CPU's memory controller performs all address
-    *    swizzling modifications."
-    */
-   if (screen->devinfo.ver >= 8)
-      return false;
-
-   uint32_t tiling = I915_TILING_X;
-   uint32_t swizzle_mode = 0;
-   struct brw_bo *buffer =
-      brw_bo_alloc_tiled(screen->bufmgr, "swizzle test", 32768,
-                         BRW_MEMZONE_OTHER, tiling, 512, 0);
-   if (buffer == NULL)
-      return false;
-
-   brw_bo_get_tiling(buffer, &tiling, &swizzle_mode);
-   brw_bo_unreference(buffer);
-
-   return swizzle_mode != I915_BIT_6_SWIZZLE_NONE;
-}
-
 static int
 brw_detect_timestamp(struct brw_screen *screen)
 {
@@ -2102,7 +2071,7 @@ brw_detect_pipelined_so(struct brw_screen *screen)
       return false;
 
    /* See the big explanation about command parser versions below */
-   if (screen->cmd_parser_version >= (devinfo->is_haswell ? 7 : 2))
+   if (screen->cmd_parser_version >= (devinfo->verx10 == 75 ? 7 : 2))
       return true;
 
    /* We use SO_WRITE_OFFSET0 since you're supposed to write it (unlike the
@@ -2419,14 +2388,14 @@ set_max_gl_versions(struct brw_screen *screen)
       dri_screen->max_gl_core_version = 33;
       if (can_do_pipelined_register_writes(screen)) {
          dri_screen->max_gl_core_version = 42;
-         if (screen->devinfo.is_haswell && can_do_compute_dispatch(screen))
+         if (screen->devinfo.platform == INTEL_PLATFORM_HSW && can_do_compute_dispatch(screen))
             dri_screen->max_gl_core_version = 43;
-         if (screen->devinfo.is_haswell && can_do_mi_math_and_lrr(screen))
+         if (screen->devinfo.platform == INTEL_PLATFORM_HSW && can_do_mi_math_and_lrr(screen))
             dri_screen->max_gl_core_version = 45;
       }
       dri_screen->max_gl_compat_version = 30;
       dri_screen->max_gl_es1_version = 11;
-      dri_screen->max_gl_es2_version = screen->devinfo.is_haswell ? 31 : 30;
+      dri_screen->max_gl_es2_version = screen->devinfo.platform == INTEL_PLATFORM_HSW ? 31 : 30;
       break;
    case 6:
       dri_screen->max_gl_core_version = 33;
@@ -2603,11 +2572,9 @@ __DRIconfig **brw_init_screen(__DRIscreen *dri_screen)
 
    screen->aperture_threshold = devinfo->aperture_bytes * 3 / 4;
 
-   screen->hw_has_swizzling = brw_detect_swizzling(screen);
    screen->hw_has_timestamp = brw_detect_timestamp(screen);
 
-   isl_device_init(&screen->isl_dev, &screen->devinfo,
-                   screen->hw_has_swizzling);
+   isl_device_init(&screen->isl_dev, &screen->devinfo);
 
    /* Gfx7-7.5 kernel requirements / command parser saga:
     *
@@ -2734,7 +2701,7 @@ __DRIconfig **brw_init_screen(__DRIscreen *dri_screen)
    /* Haswell requires command parser version 4 in order to have L3
     * atomic scratch1 and chicken3 bits
     */
-   if (devinfo->is_haswell && screen->cmd_parser_version >= 4) {
+   if (devinfo->verx10 == 75 && screen->cmd_parser_version >= 4) {
       screen->kernel_features |=
          KERNEL_ALLOWS_HSW_SCRATCH1_AND_ROW_CHICKEN3;
    }
@@ -2744,7 +2711,7 @@ __DRIconfig **brw_init_screen(__DRIscreen *dri_screen)
     * MI_LOAD_REGISTER_REG (which all users of MI_MATH use).
     */
    if (devinfo->ver >= 8 ||
-       (devinfo->is_haswell && screen->cmd_parser_version >= 7)) {
+       (devinfo->verx10 == 75 && screen->cmd_parser_version >= 7)) {
       screen->kernel_features |= KERNEL_ALLOWS_MI_MATH_AND_LRR;
    }
 

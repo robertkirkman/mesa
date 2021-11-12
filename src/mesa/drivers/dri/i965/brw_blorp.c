@@ -72,13 +72,13 @@ brw_blorp_init(struct brw_context *brw)
 {
    const struct intel_device_info *devinfo = &brw->screen->devinfo;
 
-   blorp_init(&brw->blorp, brw, &brw->isl_dev);
+   blorp_init(&brw->blorp, brw, &brw->isl_dev, NULL);
 
    brw->blorp.compiler = brw->screen->compiler;
 
    switch (devinfo->ver) {
    case 4:
-      if (devinfo->is_g4x) {
+      if (devinfo->verx10 == 45) {
          brw->blorp.exec = gfx45_blorp_exec;
       } else {
          brw->blorp.exec = gfx4_blorp_exec;
@@ -91,7 +91,7 @@ brw_blorp_init(struct brw_context *brw)
       brw->blorp.exec = gfx6_blorp_exec;
       break;
    case 7:
-      if (devinfo->is_haswell) {
+      if (devinfo->verx10 == 75) {
          brw->blorp.exec = gfx75_blorp_exec;
       } else {
          brw->blorp.exec = gfx7_blorp_exec;

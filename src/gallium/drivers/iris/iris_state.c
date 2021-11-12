@@ -1011,7 +1011,7 @@ iris_init_render_context(struct iris_batch *batch)
       reg.PartialResolveDisableInVCMask = true;
    }
 
-   if (devinfo->is_geminilake)
+   if (devinfo->platform == INTEL_PLATFORM_GLK)
       init_glk_barrier_mode(batch, GLK_BARRIER_MODE_3D_HULL);
 #endif
 
@@ -1112,7 +1112,7 @@ iris_init_compute_context(struct iris_batch *batch)
 #endif
 
 #if GFX_VER == 9
-   if (devinfo->is_geminilake)
+   if (devinfo->platform == INTEL_PLATFORM_GLK)
       init_glk_barrier_mode(batch, GLK_BARRIER_MODE_GPGPU);
 #endif
 
@@ -6929,18 +6929,14 @@ iris_load_indirect_location(struct iris_context *ice,
 
    struct iris_state_ref *grid_size = &ice->state.grid_size;
    struct iris_bo *bo = iris_resource_bo(grid_size->res);
-   iris_emit_cmd(batch, GENX(MI_LOAD_REGISTER_MEM), lrm) {
-      lrm.RegisterAddress = GPGPU_DISPATCHDIMX;
-      lrm.MemoryAddress = ro_bo(bo, grid_size->offset + 0);
-   }
-   iris_emit_cmd(batch, GENX(MI_LOAD_REGISTER_MEM), lrm) {
-      lrm.RegisterAddress = GPGPU_DISPATCHDIMY;
-      lrm.MemoryAddress = ro_bo(bo, grid_size->offset + 4);
-   }
-   iris_emit_cmd(batch, GENX(MI_LOAD_REGISTER_MEM), lrm) {
-      lrm.RegisterAddress = GPGPU_DISPATCHDIMZ;
-      lrm.MemoryAddress = ro_bo(bo, grid_size->offset + 8);
-   }
+   struct mi_builder b;
+   mi_builder_init(&b, &batch->screen->devinfo, batch);
+   struct mi_value size_x = mi_mem32(ro_bo(bo, grid_size->offset + 0));
+   struct mi_value size_y = mi_mem32(ro_bo(bo, grid_size->offset + 4));
+   struct mi_value size_z = mi_mem32(ro_bo(bo, grid_size->offset + 8));
+   mi_store(&b, mi_reg32(GPGPU_DISPATCHDIMX), size_x);
+   mi_store(&b, mi_reg32(GPGPU_DISPATCHDIMY), size_y);
+   mi_store(&b, mi_reg32(GPGPU_DISPATCHDIMZ), size_z);
 }
 
 #if GFX_VERx10 >= 125
@@ -6986,6 +6982,7 @@ iris_upload_compute_walker(struct iris_context *ice,
       cw.ThreadGroupIDYDimension        = grid->grid[1];
       cw.ThreadGroupIDZDimension        = grid->grid[2];
       cw.ExecutionMask                  = dispatch.right_mask;
+      cw.PostSync.MOCS                  = iris_mocs(NULL, &screen->isl_dev, 0);
 
       cw.InterfaceDescriptor = (struct GENX(INTERFACE_DESCRIPTOR_DATA)) {
          .KernelStartPointer = KSP(shader),

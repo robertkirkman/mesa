@@ -130,13 +130,18 @@ void st_init_limits(struct pipe_screen *screen,
    c->MaxLineWidthAA =
       _maxf(1.0f, screen->get_paramf(screen, PIPE_CAPF_MAX_LINE_WIDTH_AA));
 
-   c->MaxPointSize =
-      _maxf(1.0f, screen->get_paramf(screen, PIPE_CAPF_MAX_POINT_WIDTH));
-   c->MaxPointSizeAA =
-      _maxf(1.0f, screen->get_paramf(screen, PIPE_CAPF_MAX_POINT_WIDTH_AA));
+   c->MinLineWidth = screen->get_paramf(screen, PIPE_CAPF_MIN_LINE_WIDTH);
+   c->MinLineWidthAA = screen->get_paramf(screen, PIPE_CAPF_MIN_LINE_WIDTH_AA);
+   c->LineWidthGranularity = screen->get_paramf(screen, PIPE_CAPF_LINE_WIDTH_GRANULARITY);
 
-   c->MinPointSize = 1.0f;
-   c->MinPointSizeAA = 1.0f;
+   c->MaxPointSize =
+      _maxf(1.0f, screen->get_paramf(screen, PIPE_CAPF_MAX_POINT_SIZE));
+   c->MaxPointSizeAA =
+      _maxf(1.0f, screen->get_paramf(screen, PIPE_CAPF_MAX_POINT_SIZE_AA));
+
+   c->MinPointSize = MAX2(screen->get_paramf(screen, PIPE_CAPF_MIN_POINT_SIZE), 0.01);
+   c->MinPointSizeAA = MAX2(screen->get_paramf(screen, PIPE_CAPF_MIN_POINT_SIZE_AA), 0.01);
+   c->PointSizeGranularity = screen->get_paramf(screen, PIPE_CAPF_POINT_SIZE_GRANULARITY);
 
    c->MaxTextureMaxAnisotropy =
       _maxf(2.0f,
@@ -1852,6 +1857,7 @@ void st_init_extensions(struct pipe_screen *screen,
    if (prefer_nir &&
        screen->get_shader_param(screen, PIPE_SHADER_FRAGMENT, PIPE_SHADER_CAP_INTEGERS) &&
        extensions->ARB_stencil_texturing &&
+       screen->get_param(screen, PIPE_CAP_DOUBLES) &&
        !(nir_options->lower_doubles_options & nir_lower_fp64_full_software))
       extensions->NV_copy_depth_to_color = TRUE;
 

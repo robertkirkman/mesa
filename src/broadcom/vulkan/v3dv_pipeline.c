@@ -1198,8 +1198,9 @@ pipeline_populate_v3d_fs_key(struct v3d_fs_key *key,
        */
       if (key->logicop_func != PIPE_LOGICOP_COPY) {
          key->color_fmt[i].format = fb_pipe_format;
-         key->color_fmt[i].swizzle =
-            v3dv_get_format_swizzle(p_stage->pipeline->device, fb_format);
+         memcpy(key->color_fmt[i].swizzle,
+                v3dv_get_format_swizzle(p_stage->pipeline->device, fb_format),
+                sizeof(key->color_fmt[i].swizzle));
       }
 
       const struct util_format_description *desc =
@@ -2039,8 +2040,9 @@ pipeline_populate_graphics_key(struct v3dv_pipeline *pipeline,
        */
       if (key->logicop_func != PIPE_LOGICOP_COPY) {
          key->color_fmt[i].format = fb_pipe_format;
-         key->color_fmt[i].swizzle = v3dv_get_format_swizzle(pipeline->device,
-                                                             fb_format);
+         memcpy(key->color_fmt[i].swizzle,
+                v3dv_get_format_swizzle(pipeline->device, fb_format),
+                sizeof(key->color_fmt[i].swizzle));
       }
 
       const struct util_format_description *desc =
@@ -2692,8 +2694,15 @@ pipeline_init_dynamic_state(
    const VkPipelineRasterizationStateCreateInfo *pRasterizationState,
    const VkPipelineColorWriteCreateInfoEXT *pColorWriteState)
 {
-   pipeline->dynamic_state = default_dynamic_state;
+   /* Initialize to default values */
    struct v3dv_dynamic_state *dynamic = &pipeline->dynamic_state;
+   memset(dynamic, 0, sizeof(*dynamic));
+   dynamic->stencil_compare_mask.front = ~0;
+   dynamic->stencil_compare_mask.back = ~0;
+   dynamic->stencil_write_mask.front = ~0;
+   dynamic->stencil_write_mask.back = ~0;
+   dynamic->line_width = 1.0f;
+   dynamic->color_write_enable = (1ull << (4 * V3D_MAX_DRAW_BUFFERS)) - 1;
 
    /* Create a mask of enabled dynamic states */
    uint32_t dynamic_states = 0;

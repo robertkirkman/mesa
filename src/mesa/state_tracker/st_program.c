@@ -792,26 +792,31 @@ st_create_common_variant(struct st_context *st,
          finalize = true;
       }
 
-      if (key->lower_point_size) {
-         _mesa_add_state_reference(params, point_size_state);
-         NIR_PASS_V(state.ir.nir, nir_lower_point_size_mov,
-                    point_size_state);
+      if (key->export_point_size) {
+         /* if flag is set, shader must export psiz */
+         nir_shader *nir = state.ir.nir;
+         /* avoid clobbering existing psiz output */
+         if (!(nir->info.outputs_written & BITFIELD64_BIT(VARYING_SLOT_PSIZ))) {
+            _mesa_add_state_reference(params, point_size_state);
+            NIR_PASS_V(state.ir.nir, nir_lower_point_size_mov,
+                       point_size_state);
 
-         switch (stp->Base.info.stage) {
-         case MESA_SHADER_VERTEX:
-            stp->affected_states |= ST_NEW_VS_CONSTANTS;
-            break;
-         case MESA_SHADER_TESS_EVAL:
-            stp->affected_states |= ST_NEW_TES_CONSTANTS;
-            break;
-         case MESA_SHADER_GEOMETRY:
-            stp->affected_states |= ST_NEW_GS_CONSTANTS;
-            break;
-         default:
-            unreachable("bad shader stage");
+            switch (stp->Base.info.stage) {
+            case MESA_SHADER_VERTEX:
+               stp->affected_states |= ST_NEW_VS_CONSTANTS;
+               break;
+            case MESA_SHADER_TESS_EVAL:
+               stp->affected_states |= ST_NEW_TES_CONSTANTS;
+               break;
+            case MESA_SHADER_GEOMETRY:
+               stp->affected_states |= ST_NEW_GS_CONSTANTS;
+               break;
+            default:
+               unreachable("bad shader stage");
+            }
+
+            finalize = true;
          }
-
-         finalize = true;
       }
 
       if (key->lower_ucp) {
@@ -976,7 +981,7 @@ st_get_common_variant(struct st_context *st,
                           key->clamp_color ? "clamp_color," : "",
                           key->lower_depth_clamp ? "depth_clamp," : "",
                           key->clip_negative_one_to_one ? "clip_negative_one," : "",
-                          key->lower_point_size ? "point_size," : "",
+                          key->export_point_size ? "point_size," : "",
                           key->lower_ucp ? "ucp," : "",
                           key->is_draw_shader ? "draw," : "",
                           key->gl_clamp[0] || key->gl_clamp[1] || key->gl_clamp[2] ? "GL_CLAMP," : "");
@@ -1950,6 +1955,35 @@ st_destroy_program_variants(struct st_context *st)
                   destroy_shader_program_variants_cb, st);
 }
 
+static bool
+is_last_vertex_stage(struct gl_context *ctx, struct gl_program *prog)
+{
+   struct gl_program *last = NULL;
+   /* fixedfunc */
+   if (prog->Id == 0)
+      return true;
+
+   /* shader info accurately set */
+   if (prog->info.next_stage == MESA_SHADER_FRAGMENT)
+      return true;
+   if (prog->info.next_stage != MESA_SHADER_VERTEX)
+      return false;
+
+   /* check bound programs */
+   if (ctx->GeometryProgram._Current)
+      last = ctx->GeometryProgram._Current;
+   else if (ctx->TessEvalProgram._Current)
+      last = ctx->TessEvalProgram._Current;
+   else
+      last = ctx->VertexProgram._Current;
+   if (last)
+      return prog == last;
+
+   /* assume this will be the last vertex stage;
+    * at worst, another variant without psiz is created later
+    */
+   return true;
+}
 
 /**
  * Compile one shader variant.
@@ -1978,6 +2012,12 @@ st_precompile_shader_variant(struct st_context *st,
          key.clamp_color = true;
       }
 
+      if (prog->Target == GL_VERTEX_PROGRAM_ARB ||
+          prog->Target == GL_TESS_EVALUATION_PROGRAM_NV ||
+          prog->Target == GL_GEOMETRY_PROGRAM_NV) {
+         if (st->ctx->API == API_OPENGLES2 || !st->ctx->VertexProgram.PointSizeEnabled)
+            key.export_point_size = st->lower_point_size && is_last_vertex_stage(st->ctx, prog);
+      }
       key.st = st->has_shareable_shaders ? NULL : st;
       st_get_common_variant(st, p, &key);
       break;
@@ -2022,10 +2062,12 @@ void
 st_finalize_program(struct st_context *st, struct gl_program *prog)
 {
    if (st->current_program[prog->info.stage] == prog) {
-      if (prog->info.stage == MESA_SHADER_VERTEX)
+      if (prog->info.stage == MESA_SHADER_VERTEX) {
+         st->ctx->Array.NewVertexElements = true;
          st->dirty |= ST_NEW_VERTEX_PROGRAM(st, (struct st_program *)prog);
-      else
+      } else {
          st->dirty |= ((struct st_program *)prog)->affected_states;
+      }
    }
 
    if (prog->nir) {

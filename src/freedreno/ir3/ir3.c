@@ -275,7 +275,8 @@ ir3_collect_info(struct ir3_shader_variant *v)
                info->ldp_count += components;
          }
 
-         if ((instr->opc == OPC_BARY_F) && (instr->dsts[0]->flags & IR3_REG_EI))
+         if ((instr->opc == OPC_BARY_F || instr->opc == OPC_FLAT_B) &&
+             (instr->dsts[0]->flags & IR3_REG_EI))
             info->last_baryf = info->instrs_count;
 
          unsigned instrs_count = 1 + instr->repeat + instr->nop;
@@ -857,6 +858,11 @@ ir3_valid_flags(struct ir3_instruction *instr, unsigned n, unsigned flags)
 
       if (flags & ~valid_flags)
          return false;
+
+      /* Allow an immediate src1 for flat.b, since it's ignored */
+      if (instr->opc == OPC_FLAT_B &&
+          n == 1 && flags == IR3_REG_IMMED)
+         return true;
 
       if (flags & (IR3_REG_CONST | IR3_REG_IMMED | IR3_REG_SHARED)) {
          unsigned m = n ^ 1;

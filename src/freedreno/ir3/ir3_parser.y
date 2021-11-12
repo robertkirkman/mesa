@@ -458,6 +458,7 @@ static void print_token(FILE *file, int type, YYSTYPE value)
 %token <tok> T_OP_SHR_B
 %token <tok> T_OP_ASHR_B
 %token <tok> T_OP_BARY_F
+%token <tok> T_OP_FLAT_B
 %token <tok> T_OP_MGEN_B
 %token <tok> T_OP_GETBIT_B
 %token <tok> T_OP_SETRM
@@ -893,6 +894,7 @@ cat2_opc_2src:     T_OP_ADD_F     { new_instr(OPC_ADD_F); }
 |                  T_OP_SHR_B     { new_instr(OPC_SHR_B); }
 |                  T_OP_ASHR_B    { new_instr(OPC_ASHR_B); }
 |                  T_OP_BARY_F    { new_instr(OPC_BARY_F); }
+|                  T_OP_FLAT_B    { new_instr(OPC_FLAT_B); }
 |                  T_OP_MGEN_B    { new_instr(OPC_MGEN_B); }
 |                  T_OP_GETBIT_B  { new_instr(OPC_GETBIT_B); }
 |                  T_OP_SHB       { new_instr(OPC_SHB); }
@@ -978,6 +980,7 @@ cat5_flag:         '.' T_3D       { instr->flags |= IR3_INSTR_3D; }
 |                  '.' 'p'        { instr->flags |= IR3_INSTR_P; }
 |                  '.' 's'        { instr->flags |= IR3_INSTR_S; }
 |                  '.' T_S2EN     { instr->flags |= IR3_INSTR_S2EN; }
+|                  '.' T_UNIFORM  { }
 |                  '.' T_NONUNIFORM  { instr->flags |= IR3_INSTR_NONUNIF; }
 |                  '.' T_BASE     { instr->flags |= IR3_INSTR_B; instr->cat5.tex_base = $2; }
 cat5_flags:

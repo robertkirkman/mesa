@@ -65,6 +65,7 @@
 #include "vk_command_buffer.h"
 #include "vk_queue.h"
 #include "vk_util.h"
+#include "vk_image.h"
 
 #include "ac_binary.h"
 #include "ac_gpu_info.h"
@@ -343,21 +344,21 @@ struct radv_pipeline_cache {
 };
 
 struct radv_shader_binary;
-struct radv_shader_variant;
+struct radv_shader;
 struct radv_pipeline_shader_stack_size;
 
 void radv_pipeline_cache_init(struct radv_pipeline_cache *cache, struct radv_device *device);
 void radv_pipeline_cache_finish(struct radv_pipeline_cache *cache);
 bool radv_pipeline_cache_load(struct radv_pipeline_cache *cache, const void *data, size_t size);
 
-bool radv_create_shader_variants_from_pipeline_cache(
+bool radv_create_shaders_from_pipeline_cache(
    struct radv_device *device, struct radv_pipeline_cache *cache, const unsigned char *sha1,
-   struct radv_shader_variant **variants, struct radv_pipeline_shader_stack_size **stack_sizes,
+   struct radv_shader **shaders, struct radv_pipeline_shader_stack_size **stack_sizes,
    uint32_t *num_stack_sizes, bool *found_in_application_cache);
 
 void radv_pipeline_cache_insert_shaders(
    struct radv_device *device, struct radv_pipeline_cache *cache, const unsigned char *sha1,
-   struct radv_shader_variant **variants, struct radv_shader_binary *const *binaries,
+   struct radv_shader **shaders, struct radv_shader_binary *const *binaries,
    const struct radv_pipeline_shader_stack_size *stack_sizes, uint32_t num_stack_sizes);
 
 enum radv_blit_ds_layout {
@@ -811,7 +812,7 @@ struct radv_device {
    struct ac_thread_trace_data thread_trace;
 
    /* Trap handler. */
-   struct radv_shader_variant *trap_handler_shader;
+   struct radv_shader *trap_handler_shader;
    struct radeon_winsys_bo *tma_bo; /* Trap Memory Address */
    uint32_t *tma_ptr;
 
@@ -1701,7 +1702,7 @@ uint32_t radv_get_hash_flags(const struct radv_device *device, bool stats);
 
 bool radv_rt_pipeline_has_dynamic_stack_size(const VkRayTracingPipelineCreateInfoKHR *pCreateInfo);
 
-#define RADV_STAGE_MASK ((1 << MESA_SHADER_STAGES) - 1)
+#define RADV_STAGE_MASK ((1 << MESA_VULKAN_SHADER_STAGES) - 1)
 
 #define radv_foreach_stage(stage, stage_bits)                                                      \
    for (gl_shader_stage stage, __tmp = (gl_shader_stage)((stage_bits)&RADV_STAGE_MASK);            \
@@ -1768,8 +1769,8 @@ struct radv_pipeline {
    struct radv_dynamic_state dynamic_state;
 
    bool need_indirect_descriptor_sets;
-   struct radv_shader_variant *shaders[MESA_SHADER_STAGES];
-   struct radv_shader_variant *gs_copy_shader;
+   struct radv_shader *shaders[MESA_VULKAN_SHADER_STAGES];
+   struct radv_shader *gs_copy_shader;
    VkShaderStageFlags active_stages;
 
    struct radeon_cmdbuf cs;
@@ -1789,7 +1790,7 @@ struct radv_pipeline {
    uint32_t vb_desc_usage_mask;
    uint32_t vb_desc_alloc_size;
 
-   uint32_t user_data_0[MESA_SHADER_STAGES];
+   uint32_t user_data_0[MESA_VULKAN_SHADER_STAGES];
    union {
       struct {
          struct radv_multisample_state ms;
@@ -1843,7 +1844,7 @@ struct radv_pipeline {
    unsigned scratch_bytes_per_wave;
 
    /* Not NULL if graphics pipeline uses streamout. */
-   struct radv_shader_variant *streamout_shader;
+   struct radv_shader *streamout_shader;
 
    /* Unique pipeline hash identifier. */
    uint64_t pipeline_hash;
@@ -1872,8 +1873,7 @@ bool radv_pipeline_has_gs_copy_shader(const struct radv_pipeline *pipeline);
 struct radv_userdata_info *radv_lookup_user_sgpr(struct radv_pipeline *pipeline,
                                                  gl_shader_stage stage, int idx);
 
-struct radv_shader_variant *radv_get_shader(const struct radv_pipeline *pipeline,
-                                            gl_shader_stage stage);
+struct radv_shader *radv_get_shader(const struct radv_pipeline *pipeline, gl_shader_stage stage);
 
 struct radv_graphics_pipeline_create_info {
    bool use_rectlist;
@@ -2411,7 +2411,6 @@ struct radv_framebuffer {
    uint32_t height;
    uint32_t layers;
 
-   bool imageless;
 
    uint32_t attachment_count;
    struct radv_image_view *attachments[0];
@@ -2424,7 +2423,7 @@ struct radv_subpass_barrier {
 };
 
 void radv_emit_subpass_barrier(struct radv_cmd_buffer *cmd_buffer,
-                          const struct radv_subpass_barrier *barrier);
+                               const struct radv_subpass_barrier *barrier);
 
 struct radv_subpass_attachment {
    uint32_t attachment;
@@ -2578,17 +2577,17 @@ bool radv_queue_internal_submit(struct radv_queue *queue, struct radeon_cmdbuf *
 void radv_set_descriptor_set(struct radv_cmd_buffer *cmd_buffer, VkPipelineBindPoint bind_point,
                              struct radv_descriptor_set *set, unsigned idx);
 
-void radv_update_descriptor_sets(struct radv_device *device, struct radv_cmd_buffer *cmd_buffer,
-                                 VkDescriptorSet overrideSet, uint32_t descriptorWriteCount,
-                                 const VkWriteDescriptorSet *pDescriptorWrites,
-                                 uint32_t descriptorCopyCount,
-                                 const VkCopyDescriptorSet *pDescriptorCopies);
+void radv_cmd_update_descriptor_sets(struct radv_device *device, struct radv_cmd_buffer *cmd_buffer,
+                                     VkDescriptorSet overrideSet, uint32_t descriptorWriteCount,
+                                     const VkWriteDescriptorSet *pDescriptorWrites,
+                                     uint32_t descriptorCopyCount,
+                                     const VkCopyDescriptorSet *pDescriptorCopies);
 
-void radv_update_descriptor_set_with_template(struct radv_device *device,
-                                              struct radv_cmd_buffer *cmd_buffer,
-                                              struct radv_descriptor_set *set,
-                                              VkDescriptorUpdateTemplate descriptorUpdateTemplate,
-                                              const void *pData);
+void radv_cmd_update_descriptor_set_with_template(struct radv_device *device,
+                                                  struct radv_cmd_buffer *cmd_buffer,
+                                                  struct radv_descriptor_set *set,
+                                                  VkDescriptorUpdateTemplate descriptorUpdateTemplate,
+                                                  const void *pData);
 
 void radv_meta_push_descriptor_set(struct radv_cmd_buffer *cmd_buffer,
                                    VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout _layout,

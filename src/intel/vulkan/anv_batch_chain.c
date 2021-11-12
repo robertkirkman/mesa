@@ -181,7 +181,7 @@ anv_reloc_list_add_bo(struct anv_reloc_list *list,
                       struct anv_bo *target_bo)
 {
    assert(!target_bo->is_wrapper);
-   assert(target_bo->flags & EXEC_OBJECT_PINNED);
+   assert(anv_bo_is_pinned(target_bo));
 
    uint32_t idx = target_bo->gem_handle;
    VkResult result = anv_reloc_list_grow_deps(list, alloc,
@@ -211,7 +211,7 @@ anv_reloc_list_add(struct anv_reloc_list *list,
    assert(unwrapped_target_bo->gem_handle > 0);
    assert(unwrapped_target_bo->refcount > 0);
 
-   if (unwrapped_target_bo->flags & EXEC_OBJECT_PINNED)
+   if (anv_bo_is_pinned(unwrapped_target_bo))
       return anv_reloc_list_add_bo(list, alloc, unwrapped_target_bo);
 
    VkResult result = anv_reloc_list_grow(list, alloc, 1);
@@ -482,14 +482,7 @@ anv_batch_bo_link(struct anv_cmd_buffer *cmd_buffer,
    assert(((*bb_start >> 29) & 0x07) == 0);
    assert(((*bb_start >> 23) & 0x3f) == 49);
 
-   if (cmd_buffer->device->physical->use_softpin) {
-      assert(prev_bbo->bo->flags & EXEC_OBJECT_PINNED);
-      assert(next_bbo->bo->flags & EXEC_OBJECT_PINNED);
-
-      write_reloc(cmd_buffer->device,
-                  prev_bbo->bo->map + bb_start_offset + 4,
-                  next_bbo->bo->offset + next_bbo_offset, true);
-   } else {
+   if (anv_use_relocations(cmd_buffer->device->physical)) {
       uint32_t reloc_idx = prev_bbo->relocs.num_relocs - 1;
       assert(prev_bbo->relocs.relocs[reloc_idx].offset == bb_start_offset + 4);
 
@@ -498,6 +491,13 @@ anv_batch_bo_link(struct anv_cmd_buffer *cmd_buffer,
 
       /* Use a bogus presumed offset to force a relocation */
       prev_bbo->relocs.relocs[reloc_idx].presumed_offset = -1;
+   } else {
+      assert(anv_bo_is_pinned(prev_bbo->bo));
+      assert(anv_bo_is_pinned(next_bbo->bo));
+
+      write_reloc(cmd_buffer->device,
+                  prev_bbo->bo->map + bb_start_offset + 4,
+                  next_bbo->bo->offset + next_bbo_offset, true);
    }
 }
 
@@ -617,7 +617,7 @@ static void
 anv_cmd_buffer_record_chain_submit(struct anv_cmd_buffer *cmd_buffer_from,
                                    struct anv_cmd_buffer *cmd_buffer_to)
 {
-   assert(cmd_buffer_from->device->physical->use_softpin);
+   assert(!anv_use_relocations(cmd_buffer_from->device->physical));
 
    uint32_t *bb_start = cmd_buffer_from->batch_end;
 
@@ -647,7 +647,7 @@ anv_cmd_buffer_record_chain_submit(struct anv_cmd_buffer *cmd_buffer_from,
 static void
 anv_cmd_buffer_record_end_submit(struct anv_cmd_buffer *cmd_buffer)
 {
-   assert(cmd_buffer->device->physical->use_softpin);
+   assert(!anv_use_relocations(cmd_buffer->device->physical));
 
    struct anv_batch_bo *last_bbo =
       list_last_entry(&cmd_buffer->batch_bos, struct anv_batch_bo, link);
@@ -1248,8 +1248,9 @@ anv_execbuf_add_bo(struct anv_device *device,
 
    bo = anv_bo_unwrap(bo);
 
-   if (bo->index < exec->bo_count && exec->bos[bo->index] == bo)
-      obj = &exec->objects[bo->index];
+   if (bo->exec_obj_index < exec->bo_count &&
+       exec->bos[bo->exec_obj_index] == bo)
+      obj = &exec->objects[bo->exec_obj_index];
 
    if (obj == NULL) {
       /* We've never seen this one before.  Add it to the list and assign
@@ -1287,9 +1288,9 @@ anv_execbuf_add_bo(struct anv_device *device,
 
       assert(exec->bo_count < exec->array_length);
 
-      bo->index = exec->bo_count++;
-      obj = &exec->objects[bo->index];
-      exec->bos[bo->index] = bo;
+      bo->exec_obj_index = exec->bo_count++;
+      obj = &exec->objects[bo->exec_obj_index];
+      exec->bos[bo->exec_obj_index] = bo;
 
       obj->handle = bo->gem_handle;
       obj->relocation_count = 0;
@@ -1366,8 +1367,10 @@ static void
 anv_cmd_buffer_process_relocs(struct anv_cmd_buffer *cmd_buffer,
                               struct anv_reloc_list *list)
 {
-   for (size_t i = 0; i < list->num_relocs; i++)
-      list->relocs[i].target_handle = anv_bo_unwrap(list->reloc_bos[i])->index;
+   for (size_t i = 0; i < list->num_relocs; i++) {
+      list->relocs[i].target_handle =
+         anv_bo_unwrap(list->reloc_bos[i])->exec_obj_index;
+   }
 }
 
 static void
@@ -1566,12 +1569,7 @@ setup_execbuf_for_cmd_buffer(struct anv_execbuf *execbuf,
    adjust_relocations_from_state_pool(ss_pool, &cmd_buffer->surface_relocs,
                                       cmd_buffer->last_ss_pool_center);
    VkResult result;
-   if (cmd_buffer->device->physical->use_softpin) {
-      /* Add surface dependencies (BOs) to the execbuf */
-      anv_execbuf_add_bo_bitset(cmd_buffer->device, execbuf,
-                                cmd_buffer->surface_relocs.dep_words,
-                                cmd_buffer->surface_relocs.deps, 0);
-   } else {
+   if (anv_use_relocations(cmd_buffer->device->physical)) {
       /* Since we aren't in the softpin case, all of our STATE_BASE_ADDRESS BOs
        * will get added automatically by processing relocations on the batch
        * buffer.  We have to add the surface state BO manually because it has
@@ -1582,6 +1580,11 @@ setup_execbuf_for_cmd_buffer(struct anv_execbuf *execbuf,
                                   &cmd_buffer->surface_relocs, 0);
       if (result != VK_SUCCESS)
          return result;
+   } else {
+      /* Add surface dependencies (BOs) to the execbuf */
+      anv_execbuf_add_bo_bitset(cmd_buffer->device, execbuf,
+                                cmd_buffer->surface_relocs.dep_words,
+                                cmd_buffer->surface_relocs.deps, 0);
    }
 
    /* First, we walk over all of the bos we've seen and add them and their
@@ -1646,7 +1649,7 @@ setup_execbuf_for_cmd_buffers(struct anv_execbuf *execbuf,
    }
 
    /* Add all the global BOs to the object list for softpin case. */
-   if (device->physical->use_softpin) {
+   if (!anv_use_relocations(device->physical)) {
       anv_block_pool_foreach_bo(bo, &ss_pool->block_pool) {
          result = anv_execbuf_add_bo(device, execbuf, bo, NULL, 0);
          if (result != VK_SUCCESS)
@@ -1757,8 +1760,8 @@ setup_execbuf_for_cmd_buffers(struct anv_execbuf *execbuf,
     * corresponding to the first batch_bo in the chain with the last
     * element in the list.
     */
-   if (first_batch_bo->bo->index != execbuf->bo_count - 1) {
-      uint32_t idx = first_batch_bo->bo->index;
+   if (first_batch_bo->bo->exec_obj_index != execbuf->bo_count - 1) {
+      uint32_t idx = first_batch_bo->bo->exec_obj_index;
       uint32_t last_idx = execbuf->bo_count - 1;
 
       struct drm_i915_gem_exec_object2 tmp_obj = execbuf->objects[idx];
@@ -1766,15 +1769,15 @@ setup_execbuf_for_cmd_buffers(struct anv_execbuf *execbuf,
 
       execbuf->objects[idx] = execbuf->objects[last_idx];
       execbuf->bos[idx] = execbuf->bos[last_idx];
-      execbuf->bos[idx]->index = idx;
+      execbuf->bos[idx]->exec_obj_index = idx;
 
       execbuf->objects[last_idx] = tmp_obj;
       execbuf->bos[last_idx] = first_batch_bo->bo;
-      first_batch_bo->bo->index = last_idx;
+      first_batch_bo->bo->exec_obj_index = last_idx;
    }
 
    /* If we are pinning our BOs, we shouldn't have to relocate anything */
-   if (device->physical->use_softpin)
+   if (!anv_use_relocations(device->physical))
       assert(!execbuf->has_relocs);
 
    /* Now we go through and fixup all of the relocation lists to point to the
@@ -2050,7 +2053,7 @@ anv_queue_execbuf_locked(struct anv_queue *queue,
 
    struct drm_i915_gem_exec_object2 *objects = execbuf.objects;
    for (uint32_t k = 0; k < execbuf.bo_count; k++) {
-      if (execbuf.bos[k]->flags & EXEC_OBJECT_PINNED)
+      if (anv_bo_is_pinned(execbuf.bos[k]))
          assert(execbuf.bos[k]->offset == objects[k].offset);
       execbuf.bos[k]->offset = objects[k].offset;
    }

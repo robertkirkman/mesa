@@ -71,7 +71,7 @@ struct brw_image_param;
 #endif
 
 #ifndef ISL_DEV_IS_G4X
-#define ISL_DEV_IS_G4X(__dev) ((__dev)->info->is_g4x)
+#define ISL_DEV_IS_G4X(__dev) ((__dev)->info->platform == INTEL_PLATFORM_G4X)
 #endif
 
 #ifndef ISL_DEV_IS_HASWELL
@@ -81,11 +81,11 @@ struct brw_image_param;
  * You can define this as a compile-time constant in the CFLAGS. For example,
  * `gcc -DISL_GFX_VER(dev)=9 ...`.
  */
-#define ISL_DEV_IS_HASWELL(__dev) ((__dev)->info->is_haswell)
+#define ISL_DEV_IS_HASWELL(__dev) ((__dev)->info->platform == INTEL_PLATFORM_HSW)
 #endif
 
 #ifndef ISL_DEV_IS_BAYTRAIL
-#define ISL_DEV_IS_BAYTRAIL(__dev) ((__dev)->info->is_baytrail)
+#define ISL_DEV_IS_BAYTRAIL(__dev) ((__dev)->info->platform == INTEL_PLATFORM_BYT)
 #endif
 
 #ifndef ISL_DEV_USE_SEPARATE_STENCIL
@@ -1766,8 +1766,7 @@ extern const uint16_t isl_format_name_offsets[];
 
 void
 isl_device_init(struct isl_device *dev,
-                const struct intel_device_info *info,
-                bool has_bit6_swizzling);
+                const struct intel_device_info *info);
 
 isl_sample_count_mask_t ATTRIBUTE_CONST
 isl_device_get_sample_counts(struct isl_device *dev);
@@ -2018,7 +2017,7 @@ isl_tiling_is_std_y(enum isl_tiling tiling)
 uint32_t
 isl_tiling_to_i915_tiling(enum isl_tiling tiling);
 
-enum isl_tiling 
+enum isl_tiling
 isl_tiling_from_i915_tiling(uint32_t tiling);
 
 /**

@@ -223,11 +223,11 @@ free_unknown_extensions_strings(void)
 
 
 /**
- * \brief Initialize extension override tables based on \c MESA_EXTENSION_OVERRIDE
+ * \brief Initialize extension override tables based on \c override
  *
  * This should be called one time early during first context initialization.
 
- * \c MESA_EXTENSION_OVERRIDE is a space-separated list of extensions to
+ * \c override is a space-separated list of extensions to
  * enable or disable. The list is processed thus:
  *    - Enable recognized extension names that are prefixed with '+'.
  *    - Disable recognized extension names that are prefixed with '-'.
@@ -235,9 +235,8 @@ free_unknown_extensions_strings(void)
  *    - Collect unrecognized extension names in a new string.
  */
 void
-_mesa_one_time_init_extension_overrides(void)
+_mesa_one_time_init_extension_overrides(const char *override)
 {
-   const char *env_const = os_get_option("MESA_EXTENSION_OVERRIDE");
    char *env;
    char *ext;
    size_t offset;
@@ -246,12 +245,12 @@ _mesa_one_time_init_extension_overrides(void)
    memset(&_mesa_extension_override_enables, 0, sizeof(struct gl_extensions));
    memset(&_mesa_extension_override_disables, 0, sizeof(struct gl_extensions));
 
-   if (env_const == NULL) {
+   if (override == NULL || override[0] == '\0') {
       return;
    }
 
-   /* Copy env_const because strtok() is destructive. */
-   env = strdup(env_const);
+   /* Copy 'override' because strtok() is destructive. */
+   env = strdup(override);
 
    if (env == NULL)
       return;
@@ -281,6 +280,11 @@ _mesa_one_time_init_extension_overrides(void)
          recognized = true;
       else
          recognized = false;
+
+      if (!enable && recognized && offset <= 1) {
+         printf("Warning: extension '%s' cannot be disabled\n", ext);
+         offset = set_extension(&_mesa_extension_override_disables, i, 0);
+      }
 
       if (!recognized && enable) {
          if (unknown_ext >= MAX_UNRECOGNIZED_EXTENSIONS) {
@@ -328,6 +332,14 @@ _mesa_init_extensions(struct gl_extensions *extensions)
 
    /* Then, selectively turn default extensions on. */
    extensions->dummy_true = GL_TRUE;
+
+   /* Always enable these extensions for all drivers.
+    * We can't use dummy_true in extensions_table.h for these
+    * because this would make them non-disablable using
+    * _mesa_override_extensions.
+    */
+   extensions->MESA_pack_invert = GL_TRUE;
+   extensions->MESA_window_pos = GL_TRUE;
 }
 
 

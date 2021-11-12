@@ -37,6 +37,8 @@ extern const struct vk_physical_device_entrypoint_table wsi_physical_device_entr
 extern const struct vk_device_entrypoint_table wsi_device_entrypoints;
 #endif
 
+#include <util/list.h>
+
 /* This is guaranteed to not collide with anything because it's in the
  * VK_KHR_swapchain namespace but not actually used by the extension.
  */
@@ -113,6 +115,9 @@ struct wsi_device {
    /* Whether to enable adaptive sync for a swapchain if implemented and
     * available. Not all window systems might support this. */
    bool enable_adaptive_sync;
+
+   /* List of fences to signal when hotplug event happens. */
+   struct list_head hotplug_fences;
 
    struct {
       /* Override the minimum number of images on the swapchain.
@@ -225,6 +230,11 @@ wsi_device_init(struct wsi_device *wsi,
 void
 wsi_device_finish(struct wsi_device *wsi,
                   const VkAllocationCallbacks *alloc);
+
+/* Setup file descriptor to be used with imported sync_fd's in wsi fences. */
+void
+wsi_device_setup_syncobj_fd(struct wsi_device *wsi_device,
+                            int fd);
 
 #define ICD_DEFINE_NONDISP_HANDLE_CASTS(__VkIcdType, __VkType)             \
                                                                            \

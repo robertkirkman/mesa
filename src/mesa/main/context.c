@@ -268,7 +268,7 @@ one_time_fini(void)
  */
 
 static void
-one_time_init(void)
+one_time_init(const char *extensions_override)
 {
    GLuint i;
 
@@ -281,7 +281,16 @@ one_time_init(void)
 
    _mesa_locale_init();
 
-   _mesa_one_time_init_extension_overrides();
+   const char *env_const = os_get_option("MESA_EXTENSION_OVERRIDE");
+   if (env_const) {
+      if (extensions_override &&
+          strcmp(extensions_override, env_const)) {
+         printf("Warning: MESA_EXTENSION_OVERRIDE used instead of driconf setting\n");
+      }
+      extensions_override = env_const;
+   }
+
+   _mesa_one_time_init_extension_overrides(extensions_override);
 
    _mesa_get_cpu_features();
 
@@ -310,7 +319,13 @@ one_time_init(void)
  *
  * \sa Used by _mesa_initialize().
  */
+static bool init_done = false;
+static mtx_t init_once_lock;
 static once_flag init_once = ONCE_FLAG_INIT;
+
+static void init_lock(void) {
+   mtx_init(&init_once_lock, mtx_plain);
+}
 
 
 /**
@@ -319,13 +334,18 @@ static once_flag init_once = ONCE_FLAG_INIT;
  * While holding a global mutex lock, calls several initialization functions,
  * and sets the glapi callbacks if the \c MESA_DEBUG environment variable is
  * defined.
- *
- * \sa _math_init().
  */
 void
-_mesa_initialize(void)
+_mesa_initialize(const char *extensions_override)
 {
-   call_once(&init_once, one_time_init);
+   call_once(&init_once, init_lock);
+
+   mtx_lock(&init_once_lock);
+   if (!init_done) {
+      one_time_init(extensions_override);
+      init_done = true;
+   }
+   mtx_unlock(&init_once_lock);
 }
 
 
@@ -1109,7 +1129,7 @@ _mesa_initialize_context(struct gl_context *ctx,
    _mesa_override_gl_version(ctx);
 
    /* misc one-time initializations */
-   _mesa_initialize();
+   _mesa_initialize(NULL);
 
    /* Plug in driver functions and context pointer here.
     * This is important because when we call alloc_shared_state() below

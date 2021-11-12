@@ -51,7 +51,7 @@ void ir3_assert_handler(const char *expr, const char *file, int line,
       }                                                                        \
    } while (0)
 /* size of largest OPC field of all the instruction categories: */
-#define NOPC_BITS 6
+#define NOPC_BITS 7
 
 #define _OPC(cat, opc) (((cat) << NOPC_BITS) | opc)
 
@@ -178,6 +178,7 @@ typedef enum {
    OPC_CBITS_B         = _OPC(2, 61),
    OPC_SHB             = _OPC(2, 62),
    OPC_MSAD            = _OPC(2, 63),
+   OPC_FLAT_B          = _OPC(2, 64),
 
    /* category 3: */
    OPC_MAD_U16         = _OPC(3, 0),
@@ -469,12 +470,11 @@ typedef enum {
  * for the texture.
  */
 typedef enum {
-   /* Use traditional GL binding model, get texture and sampler index
-    * from src3 which is not presumed to be uniform. This is
-    * backwards-compatible with earlier generations, where this field was
-    * always 0 and nonuniform-indexed sampling always worked.
+   /* Use traditional GL binding model, get texture and sampler index from src3
+    * which is presumed to be uniform on a4xx+ (a3xx doesn't have the other
+    * modes, but does handle non-uniform indexing).
     */
-   CAT5_NONUNIFORM = 0,
+   CAT5_UNIFORM = 0,
 
    /* The sampler base comes from the low 3 bits of a1.x, and the sampler
     * and texture index come from src3 which is presumed to be uniform.
@@ -493,9 +493,9 @@ typedef enum {
    CAT5_BINDLESS_A1_NONUNIFORM = 3,
 
    /* Use traditional GL binding model, get texture and sampler index
-    * from src3 which is presumed to be uniform.
+    * from src3 which is *not* presumed to be uniform.
     */
-   CAT5_UNIFORM = 4,
+   CAT5_NONUNIFORM = 4,
 
    /* The texture and sampler share the same base, and the sampler and
     * texture index come from src3 which is presumed to be uniform.

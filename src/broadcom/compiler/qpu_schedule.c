@@ -891,6 +891,13 @@ qpu_convert_add_to_mul(struct v3d_qpu_instr *inst)
         inst->flags.ac = V3D_QPU_COND_NONE;
         inst->flags.apf = V3D_QPU_PF_NONE;
         inst->flags.auf = V3D_QPU_UF_NONE;
+
+        inst->alu.mul.output_pack = inst->alu.add.output_pack;
+        inst->alu.mul.a_unpack = inst->alu.add.a_unpack;
+        inst->alu.mul.b_unpack = inst->alu.add.b_unpack;
+        inst->alu.add.output_pack = V3D_QPU_PACK_NONE;
+        inst->alu.add.a_unpack = V3D_QPU_UNPACK_NONE;
+        inst->alu.add.b_unpack = V3D_QPU_UNPACK_NONE;
 }
 
 static bool
@@ -2032,6 +2039,12 @@ fixup_pipelined_ldvary(struct v3d_compile *c,
 
         /* The previous instruction cannot have a conflicting signal */
         if (v3d_qpu_sig_writes_address(c->devinfo, &prev->qpu.sig))
+                return false;
+
+        uint32_t sig;
+        struct v3d_qpu_sig new_sig = prev->qpu.sig;
+        new_sig.ldvary = true;
+        if (!v3d_qpu_sig_pack(c->devinfo, &new_sig, &sig))
                 return false;
 
         /* The previous instruction cannot use flags since ldvary uses the

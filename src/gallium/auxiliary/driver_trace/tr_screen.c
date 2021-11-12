@@ -252,6 +252,7 @@ trace_screen_is_format_supported(struct pipe_screen *_screen,
    trace_dump_arg(format, format);
    trace_dump_arg(int, target);
    trace_dump_arg(uint, sample_count);
+   trace_dump_arg(uint, storage_sample_count);
    trace_dump_arg(uint, tex_usage);
 
    result = screen->is_format_supported(screen, format, target, sample_count,
@@ -1055,7 +1056,9 @@ trace_screen_create_vertex_state(struct pipe_screen *_screen,
    trace_dump_arg(ptr, screen);
    trace_dump_arg(ptr, buffer->buffer.resource);
    trace_dump_arg(vertex_buffer, buffer);
+   trace_dump_arg_begin("elements");
    trace_dump_struct_array(vertex_element, elements, num_elements);
+   trace_dump_arg_end();
    trace_dump_arg(uint, num_elements);
    trace_dump_arg(ptr, indexbuf);
    trace_dump_arg(uint, full_velem_mask);

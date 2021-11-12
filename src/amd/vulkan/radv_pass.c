@@ -310,71 +310,7 @@ radv_num_subpass_attachments2(const VkSubpassDescription2 *desc)
           (vrs && vrs->pFragmentShadingRateAttachment);
 }
 
-static bool
-vk_image_layout_depth_only(VkImageLayout layout)
-{
-   switch (layout) {
-   case VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL:
-   case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL:
-      return true;
-   default:
-      return false;
-   }
-}
-
-/* From the Vulkan Specification 1.2.166 - VkAttachmentReference2:
- *
- * "If layout only specifies the layout of the depth aspect of the attachment,
- *  the layout of the stencil aspect is specified by the stencilLayout member
- *  of a VkAttachmentReferenceStencilLayout structure included in the pNext
- *  chain. Otherwise, layout describes the layout for all relevant image
- *  aspects."
- */
-static VkImageLayout
-stencil_ref_layout(const VkAttachmentReference2 *att_ref)
-{
-   if (!vk_image_layout_depth_only(att_ref->layout))
-      return att_ref->layout;
-
-   const VkAttachmentReferenceStencilLayoutKHR *stencil_ref =
-      vk_find_struct_const(att_ref->pNext, ATTACHMENT_REFERENCE_STENCIL_LAYOUT_KHR);
-   if (!stencil_ref)
-      return VK_IMAGE_LAYOUT_UNDEFINED;
-
-   return stencil_ref->stencilLayout;
-}
-
-/* From the Vulkan Specification 1.2.184:
- *
- * "If the pNext chain includes a VkAttachmentDescriptionStencilLayout structure, then the
- *  stencilInitialLayout and stencilFinalLayout members specify the initial and final layouts of the
- *  stencil aspect of a depth/stencil format, and initialLayout and finalLayout only apply to the
- *  depth aspect. For depth-only formats, the VkAttachmentDescriptionStencilLayout structure is
- *  ignored. For stencil-only formats, the initial and final layouts of the stencil aspect are taken
- *  from the VkAttachmentDescriptionStencilLayout structure if present, or initialLayout and
- *  finalLayout if not present."
- *
- * "If format is a depth/stencil format, and either initialLayout or finalLayout does not specify a
- *  layout for the stencil aspect, then the application must specify the initial and final layouts
- *  of the stencil aspect by including a VkAttachmentDescriptionStencilLayout structure in the pNext
- *  chain."
- */
-static VkImageLayout
-stencil_desc_layout(const VkAttachmentDescription2KHR *att_desc, bool final)
-{
-   const struct util_format_description *desc = vk_format_description(att_desc->format);
-   if (!util_format_has_stencil(desc))
-      return VK_IMAGE_LAYOUT_UNDEFINED;
-
-   const VkAttachmentDescriptionStencilLayoutKHR *stencil_desc =
-      vk_find_struct_const(att_desc->pNext, ATTACHMENT_DESCRIPTION_STENCIL_LAYOUT_KHR);
-
-   if (stencil_desc)
-      return final ? stencil_desc->stencilFinalLayout : stencil_desc->stencilInitialLayout;
-   return final ? att_desc->finalLayout : att_desc->initialLayout;
-}
-
-VkResult
+VKAPI_ATTR VkResult VKAPI_CALL
 radv_CreateRenderPass2(VkDevice _device, const VkRenderPassCreateInfo2 *pCreateInfo,
                        const VkAllocationCallbacks *pAllocator, VkRenderPass *pRenderPass)
 {
@@ -411,8 +347,8 @@ radv_CreateRenderPass2(VkDevice _device, const VkRenderPassCreateInfo2 *pCreateI
       att->stencil_load_op = pCreateInfo->pAttachments[i].stencilLoadOp;
       att->initial_layout = pCreateInfo->pAttachments[i].initialLayout;
       att->final_layout = pCreateInfo->pAttachments[i].finalLayout;
-      att->stencil_initial_layout = stencil_desc_layout(&pCreateInfo->pAttachments[i], false);
-      att->stencil_final_layout = stencil_desc_layout(&pCreateInfo->pAttachments[i], true);
+      att->stencil_initial_layout = vk_att_desc_stencil_layout(&pCreateInfo->pAttachments[i], false);
+      att->stencil_final_layout = vk_att_desc_stencil_layout(&pCreateInfo->pAttachments[i], true);
       // att->store_op = pCreateInfo->pAttachments[i].storeOp;
       // att->stencil_store_op = pCreateInfo->pAttachments[i].stencilStoreOp;
    }
@@ -453,7 +389,8 @@ radv_CreateRenderPass2(VkDevice _device, const VkRenderPassCreateInfo2 *pCreateI
             subpass->input_attachments[j] = (struct radv_subpass_attachment){
                .attachment = desc->pInputAttachments[j].attachment,
                .layout = desc->pInputAttachments[j].layout,
-               .stencil_layout = stencil_ref_layout(&desc->pInputAttachments[j]),
+               .stencil_layout = vk_att_ref_stencil_layout(&desc->pInputAttachments[j],
+                                                           pCreateInfo->pAttachments),
             };
          }
       }
@@ -488,7 +425,8 @@ radv_CreateRenderPass2(VkDevice _device, const VkRenderPassCreateInfo2 *pCreateI
          *subpass->depth_stencil_attachment = (struct radv_subpass_attachment){
             .attachment = desc->pDepthStencilAttachment->attachment,
             .layout = desc->pDepthStencilAttachment->layout,
-            .stencil_layout = stencil_ref_layout(desc->pDepthStencilAttachment),
+            .stencil_layout = vk_att_ref_stencil_layout(desc->pDepthStencilAttachment,
+                                                        pCreateInfo->pAttachments),
          };
       }
 
@@ -501,7 +439,8 @@ radv_CreateRenderPass2(VkDevice _device, const VkRenderPassCreateInfo2 *pCreateI
          *subpass->ds_resolve_attachment = (struct radv_subpass_attachment){
             .attachment = ds_resolve->pDepthStencilResolveAttachment->attachment,
             .layout = ds_resolve->pDepthStencilResolveAttachment->layout,
-            .stencil_layout = stencil_ref_layout(ds_resolve->pDepthStencilResolveAttachment),
+            .stencil_layout = vk_att_ref_stencil_layout(ds_resolve->pDepthStencilResolveAttachment,
+                                                        pCreateInfo->pAttachments),
          };
 
          subpass->depth_resolve_mode = ds_resolve->depthResolveMode;
@@ -547,7 +486,7 @@ radv_CreateRenderPass2(VkDevice _device, const VkRenderPassCreateInfo2 *pCreateI
    return VK_SUCCESS;
 }
 
-void
+VKAPI_ATTR void VKAPI_CALL
 radv_DestroyRenderPass(VkDevice _device, VkRenderPass _pass,
                        const VkAllocationCallbacks *pAllocator)
 {
@@ -560,7 +499,7 @@ radv_DestroyRenderPass(VkDevice _device, VkRenderPass _pass,
    radv_destroy_render_pass(device, pAllocator, pass);
 }
 
-void
+VKAPI_ATTR void VKAPI_CALL
 radv_GetRenderAreaGranularity(VkDevice device, VkRenderPass renderPass, VkExtent2D *pGranularity)
 {
    pGranularity->width = 1;

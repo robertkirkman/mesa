@@ -241,8 +241,11 @@ st_invalidate_state(struct gl_context *ctx)
    if (new_state & _NEW_PIXEL)
       st->dirty |= ST_NEW_PIXEL_TRANSFER;
 
-   if (new_state & _NEW_CURRENT_ATTRIB && st_vp_uses_current_values(ctx))
+   if (new_state & _NEW_CURRENT_ATTRIB && st_vp_uses_current_values(ctx)) {
       st->dirty |= ST_NEW_VERTEX_ARRAYS;
+      /* glColor3f -> glColor4f changes the vertex format. */
+      ctx->Array.NewVertexElements = true;
+   }
 
    if (st->clamp_frag_depth_in_shader && (new_state & _NEW_VIEWPORT)) {
       if (ctx->GeometryProgram._Current)
@@ -584,6 +587,8 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
    uint i;
    struct st_context *st = ST_CALLOC_STRUCT( st_context);
 
+   util_cpu_detect();
+
    st->options = *options;
 
    ctx->st = st;
@@ -841,8 +846,6 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
          !st->lower_point_size &&
          !st->lower_ucp;
    st->shader_has_one_variant[MESA_SHADER_COMPUTE] = st->has_shareable_shaders;
-
-   util_cpu_detect();
 
    if (util_get_cpu_caps()->num_L3_caches == 1 ||
        !st->pipe->set_context_param)

@@ -1453,23 +1453,24 @@ ASSERTED static bool is_dcc_supported_by_L2(const struct radeon_info *info,
              surf->u.gfx9.color.dcc.max_compressed_block_size <= V_028C78_MAX_BLOCK_SIZE_128B;
    }
 
+   bool valid_64b = surf->u.gfx9.color.dcc.independent_64B_blocks &&
+                    surf->u.gfx9.color.dcc.max_compressed_block_size == V_028C78_MAX_BLOCK_SIZE_64B;
+   bool valid_128b = surf->u.gfx9.color.dcc.independent_128B_blocks &&
+                     surf->u.gfx9.color.dcc.max_compressed_block_size == V_028C78_MAX_BLOCK_SIZE_128B;
+
    if (info->family == CHIP_NAVI12 || info->family == CHIP_NAVI14) {
       /* Either 64B or 128B can be used, but not both.
        * If 64B is used, DCC image stores are unsupported.
        */
       return surf->u.gfx9.color.dcc.independent_64B_blocks != surf->u.gfx9.color.dcc.independent_128B_blocks &&
-             (!surf->u.gfx9.color.dcc.independent_64B_blocks ||
-              surf->u.gfx9.color.dcc.max_compressed_block_size == V_028C78_MAX_BLOCK_SIZE_64B) &&
-             (!surf->u.gfx9.color.dcc.independent_128B_blocks ||
-              surf->u.gfx9.color.dcc.max_compressed_block_size <= V_028C78_MAX_BLOCK_SIZE_128B);
+             (valid_64b || valid_128b);
    }
 
-   /* 128B is recommended, but 64B can be set too if needed for 4K by DCN.
-    * Since there is no reason to ever disable 128B, require it.
-    * If 64B is used, DCC image stores are unsupported.
-    */
-   return surf->u.gfx9.color.dcc.independent_128B_blocks &&
-          surf->u.gfx9.color.dcc.max_compressed_block_size <= V_028C78_MAX_BLOCK_SIZE_128B;
+   /* Valid settings are the same as NAVI14 + (64B && 128B && max_compressed_block_size == 64B) */
+   return (surf->u.gfx9.color.dcc.independent_64B_blocks != surf->u.gfx9.color.dcc.independent_128B_blocks &&
+           (valid_64b || valid_128b)) ||
+          (surf->u.gfx9.color.dcc.independent_64B_blocks &&
+           surf->u.gfx9.color.dcc.max_compressed_block_size == V_028C78_MAX_BLOCK_SIZE_64B);
 }
 
 static bool gfx10_DCN_requires_independent_64B_blocks(const struct radeon_info *info,
@@ -2303,7 +2304,9 @@ static int gfx9_compute_surface(struct ac_addrlib *addrlib, const struct radeon_
        !(surf->flags & (RADEON_SURF_DISABLE_DCC | RADEON_SURF_FORCE_SWIZZLE_MODE |
                         RADEON_SURF_FORCE_MICRO_TILE_MODE)) &&
        (surf->modifier == DRM_FORMAT_MOD_INVALID ||
-        ac_modifier_has_dcc(surf->modifier))) {
+        ac_modifier_has_dcc(surf->modifier)) &&
+       is_dcc_supported_by_DCN(info, config, surf, surf->u.gfx9.color.dcc.rb_aligned,
+                               surf->u.gfx9.color.dcc.pipe_aligned)) {
       /* Validate that DCC is enabled if DCN can do it. */
       if ((info->use_display_dcc_unaligned || info->use_display_dcc_with_retile_blit) &&
           AddrSurfInfoIn.flags.display && surf->bpe == 4) {

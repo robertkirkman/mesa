@@ -690,7 +690,8 @@ add_aux_surface_if_supported(struct anv_device *device,
          return VK_SUCCESS;
       }
 
-      if (device->info.ver >= 12 && image->vk.array_layers > 1) {
+      if (device->info.ver >= 12 &&
+          (image->vk.array_layers > 1 || image->vk.mip_levels)) {
          /* HSD 14010672564: On TGL, if a block of fragment shader outputs
           * match the surface's clear color, the HW may convert them to
           * fast-clears. Anv only does clear color tracking for the first
@@ -1569,30 +1570,14 @@ resolve_ahw_image(struct anv_device *device,
    VkResult result;
 
    /* Check tiling. */
-   int i915_tiling = anv_gem_get_tiling(device, mem->bo->gem_handle);
-   VkImageTiling vk_tiling;
-   isl_tiling_flags_t isl_tiling_flags = 0;
+   enum isl_tiling tiling;
+   result = anv_device_get_bo_tiling(device, mem->bo, &tiling);
+   assert(result == VK_SUCCESS);
 
-   switch (i915_tiling) {
-   case I915_TILING_NONE:
-      vk_tiling = VK_IMAGE_TILING_LINEAR;
-      isl_tiling_flags = ISL_TILING_LINEAR_BIT;
-      break;
-   case I915_TILING_X:
-      vk_tiling = VK_IMAGE_TILING_OPTIMAL;
-      isl_tiling_flags = ISL_TILING_X_BIT;
-      break;
-   case I915_TILING_Y:
-      vk_tiling = VK_IMAGE_TILING_OPTIMAL;
-      isl_tiling_flags = ISL_TILING_Y0_BIT;
-      break;
-   case -1:
-   default:
-      unreachable("Invalid tiling flags.");
-   }
-
-   assert(vk_tiling == VK_IMAGE_TILING_LINEAR ||
-          vk_tiling == VK_IMAGE_TILING_OPTIMAL);
+   VkImageTiling vk_tiling =
+      tiling == ISL_TILING_LINEAR ? VK_IMAGE_TILING_LINEAR :
+                                    VK_IMAGE_TILING_OPTIMAL;
+   isl_tiling_flags_t isl_tiling_flags = (1u << tiling);
 
    /* Check format. */
    VkFormat vk_format = vk_format_from_android(desc.format, desc.usage);

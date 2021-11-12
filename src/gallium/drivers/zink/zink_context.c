@@ -301,8 +301,12 @@ zink_create_sampler_state(struct pipe_context *pctx,
    VkSamplerCreateInfo sci = {0};
    VkSamplerCustomBorderColorCreateInfoEXT cbci = {0};
    sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+   sci.unnormalizedCoordinates = !state->normalized_coords;
    sci.magFilter = zink_filter(state->mag_img_filter);
-   sci.minFilter = zink_filter(state->min_img_filter);
+   if (sci.unnormalizedCoordinates)
+      sci.minFilter = sci.magFilter;
+   else
+      sci.minFilter = zink_filter(state->min_img_filter);
 
    VkSamplerReductionModeCreateInfo rci;
    rci.sType = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO;
@@ -321,7 +325,9 @@ zink_create_sampler_state(struct pipe_context *pctx,
    if (state->reduction_mode)
       sci.pNext = &rci;
 
-   if (state->min_mip_filter != PIPE_TEX_MIPFILTER_NONE) {
+   if (sci.unnormalizedCoordinates) {
+      sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+   } else if (state->min_mip_filter != PIPE_TEX_MIPFILTER_NONE) {
       sci.mipmapMode = sampler_mipmap_mode(state->min_mip_filter);
       sci.minLod = state->min_lod;
       sci.maxLod = state->max_lod;
@@ -331,9 +337,13 @@ zink_create_sampler_state(struct pipe_context *pctx,
       sci.maxLod = 0.25f;
    }
 
-   sci.addressModeU = sampler_address_mode(state->wrap_s);
-   sci.addressModeV = sampler_address_mode(state->wrap_t);
-   sci.addressModeW = sampler_address_mode(state->wrap_r);
+   if (!sci.unnormalizedCoordinates) {
+      sci.addressModeU = sampler_address_mode(state->wrap_s);
+      sci.addressModeV = sampler_address_mode(state->wrap_t);
+      sci.addressModeW = sampler_address_mode(state->wrap_r);
+   } else {
+      sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+   }
    sci.mipLodBias = state->lod_bias;
 
    need_custom |= wrap_needs_border_color(state->wrap_s);
@@ -363,9 +373,9 @@ zink_create_sampler_state(struct pipe_context *pctx,
          assert(check <= screen->info.border_color_props.maxCustomBorderColorSamplers);
       } else
          sci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK; // TODO with custom shader if we're super interested?
+      if (sci.unnormalizedCoordinates)
+         sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
    }
-
-   sci.unnormalizedCoordinates = !state->normalized_coords;
 
    if (state->max_anisotropy > 1) {
       sci.maxAnisotropy = state->max_anisotropy;
@@ -1037,18 +1047,17 @@ zink_set_inlinable_constants(struct pipe_context *pctx,
    struct zink_shader_key *key = NULL;
 
    if (shader == PIPE_SHADER_COMPUTE) {
-      inlinable_uniforms = ctx->compute_inlinable_uniforms;
+      key = &ctx->compute_pipeline_state.key;
    } else {
       key = &ctx->gfx_pipeline_state.shader_keys.key[shader];
-      inlinable_uniforms = key->base.inlined_uniform_values;
    }
+   inlinable_uniforms = key->base.inlined_uniform_values;
    if (!(ctx->inlinable_uniforms_valid_mask & bit) ||
        memcmp(inlinable_uniforms, values, num_values * 4)) {
       memcpy(inlinable_uniforms, values, num_values * 4);
       ctx->dirty_shader_stages |= bit;
       ctx->inlinable_uniforms_valid_mask |= bit;
-      if (key)
-         key->inline_uniforms = true;
+      key->inline_uniforms = true;
    }
 }
 
@@ -1832,6 +1841,8 @@ zink_update_fbfetch(struct zink_context *ctx)
        !ctx->gfx_stages[PIPE_SHADER_FRAGMENT]->nir->info.fs.uses_fbfetch_output) {
       if (!had_fbfetch)
          return;
+      ctx->rp_changed = true;
+      zink_batch_no_rp(ctx);
       ctx->di.fbfetch.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
       ctx->di.fbfetch.imageView = zink_screen(ctx->base.screen)->info.rb2_feats.nullDescriptor ?
                                   VK_NULL_HANDLE :
@@ -1847,8 +1858,11 @@ zink_update_fbfetch(struct zink_context *ctx)
       ctx->di.fbfetch.imageView = zink_csurface(ctx->fb_state.cbufs[0])->image_view;
    }
    ctx->di.fbfetch.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-   if (changed)
+   if (changed) {
       zink_screen(ctx->base.screen)->context_invalidate_descriptor_state(ctx, PIPE_SHADER_FRAGMENT, ZINK_DESCRIPTOR_TYPE_UBO, 0, 1);
+      ctx->rp_changed = true;
+      zink_batch_no_rp(ctx);
+   }
 }
 
 static size_t
@@ -3383,7 +3397,10 @@ zink_copy_image_buffer(struct zink_context *ctx, struct zink_resource *dst, stru
    region.bufferRowLength = 0;
    region.bufferImageHeight = 0;
    region.imageSubresource.mipLevel = buf2img ? dst_level : src_level;
-   switch (img->base.b.target) {
+   enum pipe_texture_target img_target = img->base.b.target;
+   if (img->need_2D_zs)
+      img_target = img_target == PIPE_TEXTURE_1D ? PIPE_TEXTURE_2D : PIPE_TEXTURE_2D_ARRAY;
+   switch (img_target) {
    case PIPE_TEXTURE_CUBE:
    case PIPE_TEXTURE_CUBE_ARRAY:
    case PIPE_TEXTURE_2D_ARRAY:
@@ -3479,7 +3496,10 @@ zink_resource_copy_region(struct pipe_context *pctx,
 
       region.srcSubresource.aspectMask = src->aspect;
       region.srcSubresource.mipLevel = src_level;
-      switch (src->base.b.target) {
+      enum pipe_texture_target src_target = src->base.b.target;
+      if (src->need_2D_zs)
+         src_target = src_target == PIPE_TEXTURE_1D ? PIPE_TEXTURE_2D : PIPE_TEXTURE_2D_ARRAY;
+      switch (src_target) {
       case PIPE_TEXTURE_CUBE:
       case PIPE_TEXTURE_CUBE_ARRAY:
       case PIPE_TEXTURE_2D_ARRAY:
@@ -3510,7 +3530,10 @@ zink_resource_copy_region(struct pipe_context *pctx,
 
       region.dstSubresource.aspectMask = dst->aspect;
       region.dstSubresource.mipLevel = dst_level;
-      switch (dst->base.b.target) {
+      enum pipe_texture_target dst_target = dst->base.b.target;
+      if (dst->need_2D_zs)
+         dst_target = dst_target == PIPE_TEXTURE_1D ? PIPE_TEXTURE_2D : PIPE_TEXTURE_2D_ARRAY;
+      switch (dst_target) {
       case PIPE_TEXTURE_CUBE:
       case PIPE_TEXTURE_CUBE_ARRAY:
       case PIPE_TEXTURE_2D_ARRAY:

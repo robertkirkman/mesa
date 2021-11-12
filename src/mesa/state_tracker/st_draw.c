@@ -362,8 +362,10 @@ st_draw_gallium_vertex_state(struct gl_context *ctx,
     *  just flag ST_NEW_VERTEX_ARRAY, which will also completely revalidate
     * edge flags in st_validate_state.
     */
-   if (st->vertdata_edgeflags != old_vertdata_edgeflags)
+   if (st->vertdata_edgeflags != old_vertdata_edgeflags) {
+      ctx->Array.NewVertexElements = true;
       st->dirty |= ST_NEW_VERTEX_ARRAYS;
+   }
 }
 
 void
@@ -483,7 +485,7 @@ st_draw_quad(struct st_context *st,
 
    u_upload_unmap(st->pipe->stream_uploader);
 
-   cso_set_vertex_buffers(st->cso_context, 0, 1, &vb);
+   cso_set_vertex_buffers(st->cso_context, 0, 1, 0, false, &vb);
    st->last_num_vbuffers = MAX2(st->last_num_vbuffers, 1);
 
    if (num_instances > 1) {

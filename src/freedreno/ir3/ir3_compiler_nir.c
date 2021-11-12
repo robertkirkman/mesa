@@ -86,9 +86,13 @@ create_frag_input(struct ir3_context *ctx, struct ir3_instruction *coord,
    if (coord) {
       instr = ir3_BARY_F(block, inloc, 0, coord, 0);
    } else if (ctx->compiler->flat_bypass) {
-      instr = ir3_LDLV(block, inloc, 0, create_immed(block, 1), 0);
-      instr->cat6.type = TYPE_U32;
-      instr->cat6.iim_val = 1;
+      if (ctx->compiler->gen >= 6) {
+         instr = ir3_FLAT_B(block, inloc, 0, inloc, 0);
+      } else {
+         instr = ir3_LDLV(block, inloc, 0, create_immed(block, 1), 0);
+         instr->cat6.type = TYPE_U32;
+         instr->cat6.iim_val = 1;
+      }
    } else {
       instr = ir3_BARY_F(block, inloc, 0, ctx->ij[IJ_PERSP_PIXEL], 0);
       instr->srcs[1]->wrmask = 0x3;
@@ -1297,6 +1301,16 @@ emit_intrinsic_load_image(struct ir3_context *ctx, nir_intrinsic_instr *intr,
       return;
    }
 
+   /* The sparse set of texture descriptors for non-coherent load_images means we can't do indirection, so
+    * fall back to coherent load.
+    */
+   if (ctx->compiler->gen >= 5 &&
+       !ir3_bindless_resource(intr->src[0]) &&
+       !nir_src_is_const(intr->src[0])) {
+      ctx->funcs->emit_intrinsic_load_image(ctx, intr, dst);
+      return;
+   }
+
    struct ir3_block *b = ctx->block;
    struct tex_src_info info = get_image_samp_tex_src(ctx, intr);
    struct ir3_instruction *sam;
@@ -1412,6 +1426,12 @@ emit_intrinsic_barrier(struct ir3_context *ctx, nir_intrinsic_instr *intr)
    case nir_intrinsic_scoped_barrier: {
       nir_scope exec_scope = nir_intrinsic_execution_scope(intr);
       nir_variable_mode modes = nir_intrinsic_memory_modes(intr);
+      /* loads/stores are always cache-coherent so we can filter out
+       * available/visible.
+       */
+      nir_memory_semantics semantics =
+         nir_intrinsic_memory_semantics(intr) & (NIR_MEMORY_ACQUIRE |
+                                                 NIR_MEMORY_RELEASE);
 
       if (ctx->so->type == MESA_SHADER_TESS_CTRL) {
          /* Remove mode corresponding to nir_intrinsic_memory_barrier_tcs_patch,
@@ -1429,7 +1449,7 @@ emit_intrinsic_barrier(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 
       if ((modes &
            (nir_var_mem_shared | nir_var_mem_ssbo | nir_var_mem_global |
-            nir_var_image))) {
+            nir_var_image)) && semantics) {
          barrier = ir3_FENCE(b);
          barrier->cat7.r = true;
          barrier->cat7.w = true;
@@ -4043,7 +4063,7 @@ collect_tex_prefetches(struct ir3_context *ctx, struct ir3 *ir)
              */
             assert(fetch->dst <= 0x3f);
             assert(fetch->tex_id <= 0x1f);
-            assert(fetch->samp_id < 0xf);
+            assert(fetch->samp_id <= 0xf);
 
             ctx->so->total_in =
                MAX2(ctx->so->total_in, instr->prefetch.input_offset + 2);

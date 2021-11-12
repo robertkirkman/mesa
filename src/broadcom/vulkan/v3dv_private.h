@@ -274,7 +274,7 @@ struct v3dv_pipeline_key {
    uint8_t cbufs;
    struct {
       enum pipe_format format;
-      const uint8_t *swizzle;
+      uint8_t swizzle[4];
    } color_fmt[V3D_MAX_DRAW_BUFFERS];
    uint8_t f32_color_rb;
    uint32_t va_swap_rb_mask;
@@ -637,7 +637,7 @@ struct v3dv_subpass {
 };
 
 struct v3dv_render_pass_attachment {
-   VkAttachmentDescription desc;
+   VkAttachmentDescription2 desc;
 
    uint32_t first_subpass;
    uint32_t last_subpass;
@@ -842,8 +842,6 @@ struct v3dv_dynamic_state {
 
    uint32_t color_write_enable;
 };
-
-extern const struct v3dv_dynamic_state default_dynamic_state;
 
 void v3dv_viewport_compute_xform(const VkViewport *viewport,
                                  float scale[3],

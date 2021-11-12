@@ -28,6 +28,7 @@ struct pipe_screen;
 #include "d3d12_bufmgr.h"
 #include "util/u_range.h"
 #include "util/u_transfer.h"
+#include "util/u_threaded_context.h"
 
 #include <directx/d3d12.h>
 
@@ -38,7 +39,7 @@ enum d3d12_resource_binding_type {
 };
 
 struct d3d12_resource {
-   struct pipe_resource base;
+   struct threaded_resource base;
    struct d3d12_bo *bo;
    DXGI_FORMAT dxgi_format;
    unsigned mip_levels;
@@ -46,10 +47,11 @@ struct d3d12_resource {
    unsigned dt_stride;
    struct util_range valid_buffer_range;
    uint32_t bind_counts[PIPE_SHADER_TYPES][D3D12_RESOURCE_BINDING_TYPES];
+   unsigned generation_id;
 };
 
 struct d3d12_transfer {
-   struct pipe_transfer base;
+   struct threaded_transfer base;
    struct pipe_resource *staging_res;
    void *data;
 };
@@ -110,7 +112,8 @@ d3d12_resource_release(struct d3d12_resource *res);
 
 void
 d3d12_resource_wait_idle(struct d3d12_context *ctx,
-                         struct d3d12_resource *res);
+                         struct d3d12_resource *res,
+                         bool want_to_write);
 
 void
 d3d12_resource_make_writeable(struct pipe_context *pctx,

@@ -136,7 +136,7 @@ endif
 libvulkan_radeon_ld_args = []
 libvulkan_radeon_link_depends = []
 
-if with_llvm and with_ld_version_script
+if with_ld_version_script
   libvulkan_radeon_ld_args += ['-Wl,--version-script', join_paths(meson.current_source_dir(), 'vulkan.sym')]
   libvulkan_radeon_link_depends += files('vulkan.sym')
 endif
@@ -157,7 +157,7 @@ libvulkan_radeon = shared_library(
     dep_llvm, dep_libdrm_amdgpu, dep_thread, dep_elf, dep_dl, dep_m,
     dep_valgrind, radv_deps, idep_aco,
     idep_mesautil, idep_nir, idep_vulkan_util, idep_vulkan_wsi,
-    idep_amdgfxregs_h, idep_xmlconfig,
+    idep_vulkan_runtime, idep_amdgfxregs_h, idep_xmlconfig,
   ],
   c_args : [no_override_init_args, radv_flags, c_msvc_compat_args],
   cpp_args : [radv_flags, cpp_msvc_compat_args],
@@ -190,16 +190,21 @@ if with_platform_windows
   icd_file_name = 'vulkan_radeon.dll'
 endif
 
+icd_command = [
+  prog_python, '@INPUT0@',
+  '--api-version', '1.2', '--xml', '@INPUT1@',
+  '--lib-path', join_paths(icd_lib_path, icd_file_name),
+  '--out', '@OUTPUT@',
+]
+if with_platform_windows
+  icd_command += '--use-backslash'
+endif
+
 radeon_icd = custom_target(
   'radeon_icd',
   input : [vk_icd_gen, vk_api_xml],
   output : 'radeon_icd.@0@.json'.format(host_machine.cpu()),
-  command : [
-    prog_python, '@INPUT0@',
-    '--api-version', '1.2', '--xml', '@INPUT1@',
-    '--lib-path', join_paths(icd_lib_path, icd_file_name),
-    '--out', '@OUTPUT@',
-  ],
+  command : icd_command,
   build_by_default : true,
   install_dir : with_vulkan_icd_dir,
   install : true,

@@ -489,7 +489,7 @@ static void si_reallocate_texture_inplace(struct si_context *sctx, struct si_tex
    memcpy(tex->stencil_clear_value, new_tex->stencil_clear_value, sizeof(tex->stencil_clear_value));
    tex->tc_compatible_htile = new_tex->tc_compatible_htile;
    tex->depth_cleared_level_mask_once = new_tex->depth_cleared_level_mask_once;
-   tex->stencil_cleared_level_mask = new_tex->stencil_cleared_level_mask;
+   tex->stencil_cleared_level_mask_once = new_tex->stencil_cleared_level_mask_once;
    tex->upgraded_depth = new_tex->upgraded_depth;
    tex->db_compatible = new_tex->db_compatible;
    tex->can_sample_z = new_tex->can_sample_z;
@@ -1232,7 +1232,6 @@ si_texture_create_with_modifier(struct pipe_screen *screen,
       sscreen->info.family != CHIP_TONGA && sscreen->info.family != CHIP_ICELAND &&
       (templ->flags & PIPE_RESOURCE_FLAG_TEXTURING_MORE_LIKELY) &&
       !(sscreen->debug_flags & DBG(NO_HYPERZ)) && !is_flushed_depth &&
-      templ->nr_samples <= 1 && /* TC-compat HTILE is less efficient with MSAA */
       is_zs;
    enum radeon_surf_mode tile_mode = si_choose_tiling(sscreen, templ, tc_compatible_htile);
 

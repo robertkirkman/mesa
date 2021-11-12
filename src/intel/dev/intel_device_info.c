@@ -86,12 +86,19 @@ intel_device_name_to_pci_device_id(const char *name)
 
 static const struct intel_device_info intel_device_info_gfx3 = {
    .ver = 3,
+   .platform = INTEL_PLATFORM_GFX3,
    .simulator_id = -1,
+   .num_slices = 1,
+   .num_subslices = { 1, },
+   .num_eu_per_subslice = 8,
+   .num_thread_per_eu = 4,
+   .timestamp_frequency = 12500000,
    .cs_prefetch_size = 512,
 };
 
 static const struct intel_device_info intel_device_info_i965 = {
    .ver = 4,
+   .platform = INTEL_PLATFORM_I965,
    .has_negative_rhw_bug = true,
    .num_slices = 1,
    .num_subslices = { 1, },
@@ -114,7 +121,7 @@ static const struct intel_device_info intel_device_info_g4x = {
    .has_pln = true,
    .has_compr4 = true,
    .has_surface_tile_offset = true,
-   .is_g4x = true,
+   .platform = INTEL_PLATFORM_G4X,
    .num_slices = 1,
    .num_subslices = { 1, },
    .num_eu_per_subslice = 10,
@@ -132,6 +139,7 @@ static const struct intel_device_info intel_device_info_g4x = {
 
 static const struct intel_device_info intel_device_info_ilk = {
    .ver = 5,
+   .platform = INTEL_PLATFORM_ILK,
    .has_pln = true,
    .has_compr4 = true,
    .has_surface_tile_offset = true,
@@ -153,6 +161,7 @@ static const struct intel_device_info intel_device_info_ilk = {
 static const struct intel_device_info intel_device_info_snb_gt1 = {
    .ver = 6,
    .gt = 1,
+   .platform = INTEL_PLATFORM_SNB,
    .has_hiz_and_separate_stencil = true,
    .has_llc = true,
    .has_pln = true,
@@ -183,6 +192,7 @@ static const struct intel_device_info intel_device_info_snb_gt1 = {
 static const struct intel_device_info intel_device_info_snb_gt2 = {
    .ver = 6,
    .gt = 2,
+   .platform = INTEL_PLATFORM_SNB,
    .has_hiz_and_separate_stencil = true,
    .has_llc = true,
    .has_pln = true,
@@ -223,7 +233,7 @@ static const struct intel_device_info intel_device_info_snb_gt2 = {
    .cs_prefetch_size = 512
 
 static const struct intel_device_info intel_device_info_ivb_gt1 = {
-   GFX7_FEATURES, .is_ivybridge = true, .gt = 1,
+   GFX7_FEATURES, .platform = INTEL_PLATFORM_IVB, .gt = 1,
    .num_slices = 1,
    .num_subslices = { 1, },
    .num_eu_per_subslice = 6,
@@ -251,7 +261,7 @@ static const struct intel_device_info intel_device_info_ivb_gt1 = {
 };
 
 static const struct intel_device_info intel_device_info_ivb_gt2 = {
-   GFX7_FEATURES, .is_ivybridge = true, .gt = 2,
+   GFX7_FEATURES, .platform = INTEL_PLATFORM_IVB, .gt = 2,
    .num_slices = 1,
    .num_subslices = { 1, },
    .num_eu_per_subslice = 12,
@@ -280,7 +290,7 @@ static const struct intel_device_info intel_device_info_ivb_gt2 = {
 };
 
 static const struct intel_device_info intel_device_info_byt = {
-   GFX7_FEATURES, .is_baytrail = true, .gt = 1,
+   GFX7_FEATURES, .platform = INTEL_PLATFORM_BYT, .gt = 1,
    .num_slices = 1,
    .num_subslices = { 1, },
    .num_eu_per_subslice = 4,
@@ -308,10 +318,10 @@ static const struct intel_device_info intel_device_info_byt = {
    .simulator_id = 10,
 };
 
-#define HSW_FEATURES             \
-   GFX7_FEATURES,                \
-   .is_haswell = true,           \
-   .verx10 = 75,                 \
+#define HSW_FEATURES \
+   GFX7_FEATURES, \
+   .platform = INTEL_PLATFORM_HSW, \
+   .verx10 = 75, \
    .supports_simd16_3src = true
 
 static const struct intel_device_info intel_device_info_hsw_gt1 = {
@@ -373,7 +383,7 @@ static const struct intel_device_info intel_device_info_hsw_gt2 = {
 static const struct intel_device_info intel_device_info_hsw_gt3 = {
    HSW_FEATURES, .gt = 3,
    .num_slices = 2,
-   .num_subslices = { 2, },
+   .num_subslices = { 2, 2, },
    .num_eu_per_subslice = 10,
    .num_thread_per_eu = 7,
    .l3_banks = 8,
@@ -426,7 +436,7 @@ static const struct intel_device_info intel_device_info_hsw_gt3 = {
 
 static const struct intel_device_info intel_device_info_bdw_gt1 = {
    GFX8_FEATURES, .gt = 1,
-   .is_broadwell = true,
+   .platform = INTEL_PLATFORM_BDW,
    .num_slices = 1,
    .num_subslices = { 2, },
    .num_eu_per_subslice = 6,
@@ -450,7 +460,7 @@ static const struct intel_device_info intel_device_info_bdw_gt1 = {
 
 static const struct intel_device_info intel_device_info_bdw_gt2 = {
    GFX8_FEATURES, .gt = 2,
-   .is_broadwell = true,
+   .platform = INTEL_PLATFORM_BDW,
    .num_slices = 1,
    .num_subslices = { 3, },
    .num_eu_per_subslice = 8,
@@ -473,7 +483,7 @@ static const struct intel_device_info intel_device_info_bdw_gt2 = {
 
 static const struct intel_device_info intel_device_info_bdw_gt3 = {
    GFX8_FEATURES, .gt = 3,
-   .is_broadwell = true,
+   .platform = INTEL_PLATFORM_BDW,
    .num_slices = 2,
    .num_subslices = { 3, 3, },
    .num_eu_per_subslice = 8,
@@ -495,7 +505,7 @@ static const struct intel_device_info intel_device_info_bdw_gt3 = {
 };
 
 static const struct intel_device_info intel_device_info_chv = {
-   GFX8_FEATURES, .is_cherryview = 1, .gt = 1,
+   GFX8_FEATURES, .platform = INTEL_PLATFORM_CHV, .gt = 1,
    .has_llc = false,
    .has_integer_dword_mul = false,
    .num_slices = 1,
@@ -607,7 +617,7 @@ static const struct intel_device_info intel_device_info_chv = {
 
 static const struct intel_device_info intel_device_info_skl_gt1 = {
    GFX9_FEATURES, .gt = 1,
-   .is_skylake = true,
+   .platform = INTEL_PLATFORM_SKL,
    .num_slices = 1,
    .num_subslices = { 2, },
    .num_eu_per_subslice = 6,
@@ -621,7 +631,7 @@ static const struct intel_device_info intel_device_info_skl_gt1 = {
 
 static const struct intel_device_info intel_device_info_skl_gt2 = {
    GFX9_FEATURES, .gt = 2,
-   .is_skylake = true,
+   .platform = INTEL_PLATFORM_SKL,
    .num_slices = 1,
    .num_subslices = { 3, },
    .num_eu_per_subslice = 8,
@@ -631,7 +641,7 @@ static const struct intel_device_info intel_device_info_skl_gt2 = {
 
 static const struct intel_device_info intel_device_info_skl_gt3 = {
    GFX9_FEATURES, .gt = 3,
-   .is_skylake = true,
+   .platform = INTEL_PLATFORM_SKL,
    .num_slices = 2,
    .num_subslices = { 3, 3, },
    .num_eu_per_subslice = 8,
@@ -641,7 +651,7 @@ static const struct intel_device_info intel_device_info_skl_gt3 = {
 
 static const struct intel_device_info intel_device_info_skl_gt4 = {
    GFX9_FEATURES, .gt = 4,
-   .is_skylake = true,
+   .platform = INTEL_PLATFORM_SKL,
    .num_slices = 3,
    .num_subslices = { 3, 3, 3, },
    .num_eu_per_subslice = 8,
@@ -659,14 +669,14 @@ static const struct intel_device_info intel_device_info_skl_gt4 = {
 
 static const struct intel_device_info intel_device_info_bxt = {
    GFX9_LP_FEATURES_3X6,
-   .is_broxton = true,
+   .platform = INTEL_PLATFORM_BXT,
    .l3_banks = 2,
    .simulator_id = 14,
 };
 
 static const struct intel_device_info intel_device_info_bxt_2x6 = {
    GFX9_LP_FEATURES_2X6,
-   .is_broxton = true,
+   .platform = INTEL_PLATFORM_BXT,
    .l3_banks = 1,
    .simulator_id = 14,
 };
@@ -677,7 +687,7 @@ static const struct intel_device_info intel_device_info_bxt_2x6 = {
 
 static const struct intel_device_info intel_device_info_kbl_gt1 = {
    GFX9_FEATURES,
-   .is_kabylake = true,
+   .platform = INTEL_PLATFORM_KBL,
    .gt = 1,
 
    .max_cs_threads = 7 * 6,
@@ -695,7 +705,7 @@ static const struct intel_device_info intel_device_info_kbl_gt1 = {
 
 static const struct intel_device_info intel_device_info_kbl_gt1_5 = {
    GFX9_FEATURES,
-   .is_kabylake = true,
+   .platform = INTEL_PLATFORM_KBL,
    .gt = 1,
 
    .max_cs_threads = 7 * 6,
@@ -708,7 +718,7 @@ static const struct intel_device_info intel_device_info_kbl_gt1_5 = {
 
 static const struct intel_device_info intel_device_info_kbl_gt2 = {
    GFX9_FEATURES,
-   .is_kabylake = true,
+   .platform = INTEL_PLATFORM_KBL,
    .gt = 2,
 
    .num_slices = 1,
@@ -720,7 +730,7 @@ static const struct intel_device_info intel_device_info_kbl_gt2 = {
 
 static const struct intel_device_info intel_device_info_kbl_gt3 = {
    GFX9_FEATURES,
-   .is_kabylake = true,
+   .platform = INTEL_PLATFORM_KBL,
    .gt = 3,
 
    .num_slices = 2,
@@ -732,7 +742,7 @@ static const struct intel_device_info intel_device_info_kbl_gt3 = {
 
 static const struct intel_device_info intel_device_info_kbl_gt4 = {
    GFX9_FEATURES,
-   .is_kabylake = true,
+   .platform = INTEL_PLATFORM_KBL,
    .gt = 4,
 
    /*
@@ -754,21 +764,21 @@ static const struct intel_device_info intel_device_info_kbl_gt4 = {
 
 static const struct intel_device_info intel_device_info_glk = {
    GFX9_LP_FEATURES_3X6,
-   .is_geminilake = true,
+   .platform = INTEL_PLATFORM_GLK,
    .l3_banks = 2,
    .simulator_id = 17,
 };
 
 static const struct intel_device_info intel_device_info_glk_2x6 = {
    GFX9_LP_FEATURES_2X6,
-   .is_geminilake = true,
+   .platform = INTEL_PLATFORM_GLK,
    .l3_banks = 2,
    .simulator_id = 17,
 };
 
 static const struct intel_device_info intel_device_info_cfl_gt1 = {
    GFX9_FEATURES,
-   .is_coffeelake = true,
+   .platform = INTEL_PLATFORM_CFL,
    .gt = 1,
 
    .num_slices = 1,
@@ -784,7 +794,7 @@ static const struct intel_device_info intel_device_info_cfl_gt1 = {
 };
 static const struct intel_device_info intel_device_info_cfl_gt2 = {
    GFX9_FEATURES,
-   .is_coffeelake = true,
+   .platform = INTEL_PLATFORM_CFL,
    .gt = 2,
 
    .num_slices = 1,
@@ -796,7 +806,7 @@ static const struct intel_device_info intel_device_info_cfl_gt2 = {
 
 static const struct intel_device_info intel_device_info_cfl_gt3 = {
    GFX9_FEATURES,
-   .is_coffeelake = true,
+   .platform = INTEL_PLATFORM_CFL,
    .gt = 3,
 
    .num_slices = 2,
@@ -818,9 +828,10 @@ static const struct intel_device_info intel_device_info_cfl_gt3 = {
    .max_cs_threads = 56,                            \
    .cs_prefetch_size = 512
 
-#define GFX11_FEATURES(_gt, _slices, _subslices, _l3) \
+#define GFX11_FEATURES(_gt, _slices, _subslices, _l3, _platform)  \
    GFX8_FEATURES,                                     \
    GFX11_HW_INFO,                                     \
+   .platform = _platform,                             \
    .has_64bit_float = false,                          \
    .has_64bit_int = false,                            \
    .has_integer_dword_mul = false,                    \
@@ -842,7 +853,7 @@ static const struct intel_device_info intel_device_info_cfl_gt3 = {
    }
 
 static const struct intel_device_info intel_device_info_icl_gt2 = {
-   GFX11_FEATURES(2, 1, subslices(8), 8),
+   GFX11_FEATURES(2, 1, subslices(8), 8, INTEL_PLATFORM_ICL),
    .urb = {
       GFX11_URB_MIN_MAX_ENTRIES,
    },
@@ -850,7 +861,7 @@ static const struct intel_device_info intel_device_info_icl_gt2 = {
 };
 
 static const struct intel_device_info intel_device_info_icl_gt1_5 = {
-   GFX11_FEATURES(1, 1, subslices(6), 6),
+   GFX11_FEATURES(1, 1, subslices(6), 6, INTEL_PLATFORM_ICL),
    .urb = {
       GFX11_URB_MIN_MAX_ENTRIES,
    },
@@ -858,7 +869,7 @@ static const struct intel_device_info intel_device_info_icl_gt1_5 = {
 };
 
 static const struct intel_device_info intel_device_info_icl_gt1 = {
-   GFX11_FEATURES(1, 1, subslices(4), 6),
+   GFX11_FEATURES(1, 1, subslices(4), 6, INTEL_PLATFORM_ICL),
    .urb = {
       GFX11_URB_MIN_MAX_ENTRIES,
    },
@@ -866,7 +877,7 @@ static const struct intel_device_info intel_device_info_icl_gt1 = {
 };
 
 static const struct intel_device_info intel_device_info_icl_gt0_5 = {
-   GFX11_FEATURES(1, 1, subslices(1), 6),
+   GFX11_FEATURES(1, 1, subslices(1), 6, INTEL_PLATFORM_ICL),
    .urb = {
       GFX11_URB_MIN_MAX_ENTRIES,
    },
@@ -874,7 +885,6 @@ static const struct intel_device_info intel_device_info_icl_gt0_5 = {
 };
 
 #define GFX11_LP_FEATURES                           \
-   .is_elkhartlake = true,                          \
    .urb = {                                         \
       GFX11_URB_MIN_MAX_ENTRIES,                    \
    },                                               \
@@ -882,35 +892,35 @@ static const struct intel_device_info intel_device_info_icl_gt0_5 = {
    .simulator_id = 28
 
 static const struct intel_device_info intel_device_info_ehl_4x8 = {
-   GFX11_FEATURES(1, 1, subslices(4), 4),
+   GFX11_FEATURES(1, 1, subslices(4), 4, INTEL_PLATFORM_EHL),
    GFX11_LP_FEATURES,
 };
 
 static const struct intel_device_info intel_device_info_ehl_4x6 = {
-   GFX11_FEATURES(1, 1, subslices(4), 4),
+   GFX11_FEATURES(1, 1, subslices(4), 4, INTEL_PLATFORM_EHL),
    GFX11_LP_FEATURES,
    .num_eu_per_subslice = 6,
 };
 
 static const struct intel_device_info intel_device_info_ehl_4x5 = {
-   GFX11_FEATURES(1, 1, subslices(4), 4),
+   GFX11_FEATURES(1, 1, subslices(4), 4, INTEL_PLATFORM_EHL),
    GFX11_LP_FEATURES,
    .num_eu_per_subslice = 5,
 };
 
 static const struct intel_device_info intel_device_info_ehl_4x4 = {
-   GFX11_FEATURES(1, 1, subslices(4), 4),
+   GFX11_FEATURES(1, 1, subslices(4), 4, INTEL_PLATFORM_EHL),
    GFX11_LP_FEATURES,
    .num_eu_per_subslice = 4,
 };
 
 static const struct intel_device_info intel_device_info_ehl_2x8 = {
-   GFX11_FEATURES(1, 1, subslices(2), 4),
+   GFX11_FEATURES(1, 1, subslices(2), 4, INTEL_PLATFORM_EHL),
    GFX11_LP_FEATURES,
 };
 
 static const struct intel_device_info intel_device_info_ehl_2x4 = {
-   GFX11_FEATURES(1, 1, subslices(2), 4),
+   GFX11_FEATURES(1, 1, subslices(2), 4, INTEL_PLATFORM_EHL),
    GFX11_LP_FEATURES,
    .num_eu_per_subslice =4,
 };
@@ -965,43 +975,43 @@ static const struct intel_device_info intel_device_info_ehl_2x4 = {
 
 static const struct intel_device_info intel_device_info_tgl_gt1 = {
    GFX12_GT_FEATURES(1),
-   .is_tigerlake = true,
+   .platform = INTEL_PLATFORM_TGL,
 };
 
 static const struct intel_device_info intel_device_info_tgl_gt2 = {
    GFX12_GT_FEATURES(2),
-   .is_tigerlake = true,
+   .platform = INTEL_PLATFORM_TGL,
 };
 
 static const struct intel_device_info intel_device_info_rkl_gt05 = {
    GFX12_GT05_FEATURES,
-   .is_rocketlake = true,
+   .platform = INTEL_PLATFORM_RKL,
 };
 
 static const struct intel_device_info intel_device_info_rkl_gt1 = {
    GFX12_GT_FEATURES(1),
-   .is_rocketlake = true,
+   .platform = INTEL_PLATFORM_RKL,
 };
 
 static const struct intel_device_info intel_device_info_adl_gt05 = {
    GFX12_GT05_FEATURES,
-   .is_alderlake = true,
+   .platform = INTEL_PLATFORM_ADL,
 };
 
 static const struct intel_device_info intel_device_info_adl_gt1 = {
    GFX12_GT_FEATURES(1),
-   .is_alderlake = true,
+   .platform = INTEL_PLATFORM_ADL,
 };
 
 static const struct intel_device_info intel_device_info_adl_gt2 = {
    GFX12_GT_FEATURES(2),
-   .is_alderlake = true,
+   .platform = INTEL_PLATFORM_ADL,
    .display_ver = 13,
 };
 
 #define GFX12_DG1_SG1_FEATURES                  \
    GFX12_GT_FEATURES(2),                        \
-   .is_dg1 = true,                              \
+   .platform = INTEL_PLATFORM_DG1,              \
    .has_llc = false,                            \
    .has_local_mem = true,                       \
    .urb.size = 768,                             \
@@ -1014,57 +1024,6 @@ static const struct intel_device_info intel_device_info_dg1 = {
 static const struct intel_device_info intel_device_info_sg1 = {
    GFX12_DG1_SG1_FEATURES,
 };
-
-static void
-intel_device_info_set_eu_mask(struct intel_device_info *devinfo,
-                            unsigned slice,
-                            unsigned subslice,
-                            unsigned eu_mask)
-{
-   unsigned subslice_offset = slice * devinfo->eu_slice_stride +
-      subslice * devinfo->eu_subslice_stride;
-
-   for (unsigned b_eu = 0; b_eu < devinfo->eu_subslice_stride; b_eu++) {
-      devinfo->eu_masks[subslice_offset + b_eu] =
-         (((1U << devinfo->num_eu_per_subslice) - 1) >> (b_eu * 8)) & 0xff;
-   }
-}
-
-/* Generate slice/subslice/eu masks from number of
- * slices/subslices/eu_per_subslices in the per generation/gt intel_device_info
- * structure.
- *
- * These can be overridden with values reported by the kernel either from
- * getparam SLICE_MASK/SUBSLICE_MASK values or from the kernel version 4.17+
- * through the i915 query uapi.
- */
-static void
-fill_masks(struct intel_device_info *devinfo)
-{
-   devinfo->slice_masks = (1U << devinfo->num_slices) - 1;
-
-   /* Subslice masks */
-   unsigned max_subslices = 0;
-   for (int s = 0; s < devinfo->num_slices; s++)
-      max_subslices = MAX2(devinfo->num_subslices[s], max_subslices);
-   devinfo->subslice_slice_stride = DIV_ROUND_UP(max_subslices, 8);
-
-   for (int s = 0; s < devinfo->num_slices; s++) {
-      devinfo->subslice_masks[s * devinfo->subslice_slice_stride] =
-         (1U << devinfo->num_subslices[s]) - 1;
-   }
-
-   /* EU masks */
-   devinfo->eu_subslice_stride = DIV_ROUND_UP(devinfo->num_eu_per_subslice, 8);
-   devinfo->eu_slice_stride = max_subslices * devinfo->eu_subslice_stride;
-
-   for (int s = 0; s < devinfo->num_slices; s++) {
-      for (int ss = 0; ss < devinfo->num_subslices[s]; ss++) {
-         intel_device_info_set_eu_mask(devinfo, s, ss,
-                                     (1U << devinfo->num_eu_per_subslice) - 1);
-      }
-   }
-}
 
 static void
 reset_masks(struct intel_device_info *devinfo)
@@ -1089,6 +1048,10 @@ update_from_topology(struct intel_device_info *devinfo,
 {
    reset_masks(devinfo);
 
+   assert(topology->max_slices > 0);
+   assert(topology->max_subslices > 0);
+   assert(topology->max_eus_per_subslice > 0);
+
    devinfo->subslice_slice_stride = topology->subslice_stride;
 
    devinfo->eu_subslice_stride = DIV_ROUND_UP(topology->max_eus_per_subslice, 8);
@@ -1097,6 +1060,9 @@ update_from_topology(struct intel_device_info *devinfo,
    assert(sizeof(devinfo->slice_masks) >= DIV_ROUND_UP(topology->max_slices, 8));
    memcpy(&devinfo->slice_masks, topology->data, DIV_ROUND_UP(topology->max_slices, 8));
    devinfo->num_slices = __builtin_popcount(devinfo->slice_masks);
+   devinfo->max_slices = topology->max_slices;
+   devinfo->max_subslices_per_slice = topology->max_subslices;
+   devinfo->max_eu_per_subslice = topology->max_eus_per_subslice;
 
    uint32_t subslice_mask_len =
       topology->max_slices * topology->subslice_stride;
@@ -1159,6 +1125,9 @@ update_from_topology(struct intel_device_info *devinfo,
    devinfo->num_eu_per_subslice = DIV_ROUND_UP(n_eus, n_subslices);
 }
 
+/* Generate detailed mask from the I915_PARAM_SLICE_MASK,
+ * I915_PARAM_SUBSLICE_MASK & I915_PARAM_EU_TOTAL getparam.
+ */
 static bool
 update_from_masks(struct intel_device_info *devinfo, uint32_t slice_mask,
                   uint32_t subslice_mask, uint32_t n_eus)
@@ -1184,8 +1153,9 @@ update_from_masks(struct intel_device_info *devinfo, uint32_t slice_mask,
    uint32_t num_eu_per_subslice = DIV_ROUND_UP(n_eus, n_subslices);
    uint32_t eu_mask = (1U << num_eu_per_subslice) - 1;
 
+   topology->max_eus_per_subslice = num_eu_per_subslice;
    topology->eu_offset = topology->subslice_offset +
-      DIV_ROUND_UP(topology->max_subslices, 8);
+      topology->max_slices * DIV_ROUND_UP(topology->max_subslices, 8);
    topology->eu_stride = DIV_ROUND_UP(num_eu_per_subslice, 8);
 
    /* Set slice mask in topology */
@@ -1217,6 +1187,23 @@ update_from_masks(struct intel_device_info *devinfo, uint32_t slice_mask,
    free(topology);
 
    return true;
+}
+
+/* Generate mask from the device data. */
+static void
+fill_masks(struct intel_device_info *devinfo)
+{
+   /* All of our internal device descriptions assign the same number of
+    * subslices for each slice. Just verify that this is true.
+    */
+   for (int s = 1; s < devinfo->num_slices; s++)
+      assert(devinfo->num_subslices[0] == devinfo->num_subslices[s]);
+
+   update_from_masks(devinfo,
+                     (1U << devinfo->num_slices) - 1,
+                     (1U << devinfo->num_subslices[0]) - 1,
+                     devinfo->num_slices * devinfo->num_subslices[0] *
+                     devinfo->num_eu_per_subslice);
 }
 
 static bool
@@ -1385,7 +1372,7 @@ query_topology(struct intel_device_info *devinfo, int fd)
 
 }
 
-int
+static int
 intel_get_aperture_size(int fd, uint64_t *size)
 {
    struct drm_i915_gem_get_aperture aperture = { 0 };
@@ -1395,6 +1382,61 @@ intel_get_aperture_size(int fd, uint64_t *size)
       *size = aperture.aper_size;
 
    return ret;
+}
+
+static bool
+has_bit6_swizzle(int fd)
+{
+   struct drm_gem_close close;
+   int ret;
+
+   struct drm_i915_gem_create gem_create = {
+      .size = 4096,
+   };
+
+   if (intel_ioctl(fd, DRM_IOCTL_I915_GEM_CREATE, &gem_create)) {
+      unreachable("Failed to create GEM BO");
+      return false;
+   }
+
+   bool swizzled = false;
+
+   /* set_tiling overwrites the input on the error path, so we have to open
+    * code intel_ioctl.
+    */
+   do {
+      struct drm_i915_gem_set_tiling set_tiling = {
+         .handle = gem_create.handle,
+         .tiling_mode = I915_TILING_X,
+         .stride = 512,
+      };
+
+      ret = ioctl(fd, DRM_IOCTL_I915_GEM_SET_TILING, &set_tiling);
+   } while (ret == -1 && (errno == EINTR || errno == EAGAIN));
+
+   if (ret != 0) {
+      unreachable("Failed to set BO tiling");
+      goto close_and_return;
+   }
+
+   struct drm_i915_gem_get_tiling get_tiling = {
+      .handle = gem_create.handle,
+   };
+
+   if (intel_ioctl(fd, DRM_IOCTL_I915_GEM_GET_TILING, &get_tiling)) {
+      unreachable("Failed to get BO tiling");
+      goto close_and_return;
+   }
+
+   assert(get_tiling.tiling_mode == I915_TILING_X);
+   swizzled = get_tiling.swizzle_mode != I915_BIT_6_SWIZZLE_NONE;
+
+close_and_return:
+   memset(&close, 0, sizeof(close));
+   close.handle = gem_create.handle;
+   intel_ioctl(fd, DRM_IOCTL_GEM_CLOSE, &close);
+
+   return swizzled;
 }
 
 static bool
@@ -1427,7 +1469,7 @@ has_get_tiling(int fd)
 static void
 fixup_chv_device_info(struct intel_device_info *devinfo)
 {
-   assert(devinfo->is_cherryview);
+   assert(devinfo->platform == INTEL_PLATFORM_CHV);
 
    /* Cherryview is annoying.  The number of EUs is depending on fusing and
     * isn't determinable from the PCI ID alone.  We default to the minimum
@@ -1493,7 +1535,7 @@ init_max_scratch_ids(struct intel_device_info *devinfo)
    if (devinfo->verx10 == 125)
       subslices = 32;
    else if (devinfo->ver == 12)
-      subslices = (devinfo->is_dg1 || devinfo->gt == 2 ? 6 : 2);
+      subslices = (devinfo->platform == INTEL_PLATFORM_DG1 || devinfo->gt == 2 ? 6 : 2);
    else if (devinfo->ver == 11)
       subslices = 8;
    else if (devinfo->ver >= 9 && devinfo->ver < 11)
@@ -1518,7 +1560,7 @@ init_max_scratch_ids(struct intel_device_info *devinfo)
        *     allocated by the driver."
        */
       scratch_ids_per_subslice = 8 * 8;
-   } else if (devinfo->is_haswell) {
+   } else if (devinfo->platform == INTEL_PLATFORM_HSW) {
       /* WaCSScratchSize:hsw
        *
        * Haswell's scratch space address calculation appears to be sparse
@@ -1535,7 +1577,7 @@ init_max_scratch_ids(struct intel_device_info *devinfo)
        * number of threads per subslice.
        */
       scratch_ids_per_subslice = 16 * 8;
-   } else if (devinfo->is_cherryview) {
+   } else if (devinfo->platform == INTEL_PLATFORM_CHV) {
       /* Cherryview devices have either 6 or 8 EUs per subslice, and each
        * EU has 7 threads. The 6 EU devices appear to calculate thread IDs
        * as if it had 8 EUs.
@@ -1642,14 +1684,27 @@ intel_get_device_info_from_fd(int fd, struct intel_device_info *devinfo)
       getparam_topology(devinfo, fd);
    }
 
-   if (devinfo->is_cherryview)
+   if (devinfo->platform == INTEL_PLATFORM_CHV)
       fixup_chv_device_info(devinfo);
+
+   /* Broadwell PRM says:
+    *
+    *   "Before Gfx8, there was a historical configuration control field to
+    *    swizzle address bit[6] for in X/Y tiling modes. This was set in three
+    *    different places: TILECTL[1:0], ARB_MODE[5:4], and
+    *    DISP_ARB_CTL[14:13].
+    *
+    *    For Gfx8 and subsequent generations, the swizzle fields are all
+    *    reserved, and the CPU's memory controller performs all address
+    *    swizzling modifications."
+    */
+   devinfo->has_bit6_swizzle = devinfo->ver < 8 && has_bit6_swizzle(fd);
 
    intel_get_aperture_size(fd, &devinfo->aperture_bytes);
    devinfo->has_tiling_uapi = has_get_tiling(fd);
 
    devinfo->subslice_total = 0;
-   for (uint32_t i = 0; i < devinfo->num_slices; i++)
+   for (uint32_t i = 0; i < devinfo->max_slices; i++)
       devinfo->subslice_total += __builtin_popcount(devinfo->subslice_masks[i]);
 
    /* Gfx7 and older do not support EU/Subslice info */
