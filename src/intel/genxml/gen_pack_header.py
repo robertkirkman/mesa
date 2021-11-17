@@ -333,13 +333,14 @@ class Field(object):
 
         print("   %-36s %s%s;" % (type, self.name, dim))
 
-        prefix = ""
-        if self.values and self.default is None:
-            if self.prefix:
-                prefix = self.prefix + "_"
+        prefix = self.prefix + '_' if self.prefix else ''
 
         for value in self.values:
-            print("#define %-40s %d" % (prefix + value.name, value.value))
+            name = value.name
+            if self.prefix and value.name[0] == '_':
+                name = name[1:]
+
+            print("#define %-40s %d" % (prefix + name, value.value))
 
 class Group(object):
     def __init__(self, parser, parent, start, count, size):

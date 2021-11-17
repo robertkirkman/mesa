@@ -315,7 +315,6 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_FBFETCH:
       return 8;
    case PIPE_CAP_FBFETCH_COHERENT:
-      return 0;
    case PIPE_CAP_MULTI_DRAW_INDIRECT:
    case PIPE_CAP_MULTI_DRAW_INDIRECT_PARAMS:
       return 1;
@@ -757,6 +756,16 @@ llvmpipe_is_format_supported( struct pipe_screen *_screen,
           format_desc->block.bits != 96) {
          return false;
       }
+
+      /* Disable 64-bit integer formats for RT/samplers.
+       * VK CTS crashes with these and they don't make much sense.
+       */
+      int c = util_format_get_first_non_void_channel(format_desc->format);
+      if (c >= 0) {
+         if (format_desc->channel[c].pure_integer && format_desc->channel[c].size == 64)
+            return false;
+      }
+
    }
 
    if (!(bind & PIPE_BIND_VERTEX_BUFFER) &&

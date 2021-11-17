@@ -72,7 +72,7 @@ tu_device_get_cache_uuid(uint16_t family, void *uuid)
    return 0;
 }
 
-#define TU_API_VERSION VK_MAKE_VERSION(1, 1, VK_HEADER_VERSION)
+#define TU_API_VERSION VK_MAKE_VERSION(1, 2, VK_HEADER_VERSION)
 
 VKAPI_ATTR VkResult VKAPI_CALL
 tu_EnumerateInstanceVersion(uint32_t *pApiVersion)
@@ -568,7 +568,7 @@ tu_get_physical_device_features_1_2(struct tu_physical_device *pdevice,
    features->vulkanMemoryModelAvailabilityVisibilityChains = true;
    features->shaderOutputViewportIndex           = true;
    features->shaderOutputLayer                   = true;
-   features->subgroupBroadcastDynamicId          = false;
+   features->subgroupBroadcastDynamicId          = true;
 }
 
 void
@@ -2568,4 +2568,28 @@ tu_GetPhysicalDeviceMultisamplePropertiesEXT(
       pMultisampleProperties->maxSampleLocationGridSize = (VkExtent2D){ 1, 1 };
    else
       pMultisampleProperties->maxSampleLocationGridSize = (VkExtent2D){ 0, 0 };
+}
+
+VkDeviceAddress
+tu_GetBufferDeviceAddress(VkDevice _device,
+                          const VkBufferDeviceAddressInfoKHR* pInfo)
+{
+   tu_stub();
+   return 0;
+}
+
+uint64_t tu_GetBufferOpaqueCaptureAddress(
+    VkDevice                                    device,
+    const VkBufferDeviceAddressInfoKHR*         pInfo)
+{
+   tu_stub();
+   return 0;
+}
+
+uint64_t tu_GetDeviceMemoryOpaqueCaptureAddress(
+    VkDevice                                    device,
+    const VkDeviceMemoryOpaqueCaptureAddressInfoKHR* pInfo)
+{
+   tu_stub();
+   return 0;
 }

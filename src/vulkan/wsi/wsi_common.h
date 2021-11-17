@@ -82,15 +82,6 @@ struct wsi_memory_signal_submit_info {
     VkDeviceMemory memory;
 };
 
-struct wsi_fence {
-   VkDevice                     device;
-   const struct wsi_device      *wsi_device;
-   VkDisplayKHR                 display;
-   const VkAllocationCallbacks  *alloc;
-   VkResult                     (*wait)(struct wsi_fence *fence, uint64_t abs_timeout);
-   void                         (*destroy)(struct wsi_fence *fence);
-};
-
 struct wsi_interface;
 
 struct driOptionCache;
@@ -272,8 +263,5 @@ wsi_common_queue_present(const struct wsi_device *wsi,
                          VkQueue queue_h,
                          int queue_family_index,
                          const VkPresentInfoKHR *pPresentInfo);
-
-uint64_t
-wsi_common_get_current_time(void);
 
 #endif

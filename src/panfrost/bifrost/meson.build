@@ -34,6 +34,7 @@ libpanfrost_bifrost_files = files(
   'bi_opt_cse.c',
   'bi_opt_push_ubo.c',
   'bi_opt_mod_props.c',
+  'bi_opt_dual_tex.c',
   'bi_pack.c',
   'bi_ra.c',
   'bi_schedule.c',
@@ -148,6 +149,7 @@ if with_tests
       'bifrost_tests',
       files(
         'test/test-constant-fold.cpp',
+        'test/test-dual-texture.cpp',
 	'test/test-optimizer.cpp',
 	'test/test-pack-formats.cpp',
 	'test/test-packing.cpp',

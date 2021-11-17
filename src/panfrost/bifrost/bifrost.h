@@ -28,6 +28,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 #include <assert.h>
 
 #ifdef __cplusplus
@@ -409,6 +410,14 @@ static const struct bifrost_reg_ctrl_23 bifrost_reg_ctrl_lut[32] = {
 /* Texture operator descriptors in various states. Usually packed in the
  * compiler and stored as a constant */
 
+enum bifrost_texture_operation_mode {
+        /* Dual texturing */
+        BIFROST_TEXTURE_OPERATION_DUAL = 1,
+
+        /* Single texturing */
+        BIFROST_TEXTURE_OPERATION_SINGLE = 3,
+};
+
 enum bifrost_index {
         /* Both texture/sampler index immediate */
         BIFROST_INDEX_IMMEDIATE_SHARED = 0,
@@ -541,6 +550,37 @@ struct bifrost_texture_operation {
         /* Write mask for the result */
         unsigned mask : 4;
 } __attribute__((packed));
+
+struct bifrost_dual_texture_operation {
+        unsigned primary_sampler_index : 2;
+        unsigned mode : 2; /* 0x1 for dual */
+        unsigned primary_texture_index : 2;
+        unsigned secondary_sampler_index : 2;
+        unsigned secondary_texture_index : 2;
+
+        /* Leave zero for dual texturing */
+        unsigned reserved : 1;
+        unsigned index_mode_zero : 1;
+
+        /* Base staging register to write the secondary results to */
+        unsigned secondary_register : 6;
+
+        /* Format/mask for each texture */
+        enum bifrost_texture_format secondary_format : 3;
+        unsigned secondary_mask : 4;
+
+        enum bifrost_texture_format primary_format : 3;
+        unsigned primary_mask : 4;
+} __attribute__((packed));
+
+static inline uint32_t
+bi_dual_tex_as_u32(struct bifrost_dual_texture_operation desc)
+{
+        uint32_t desc_u;
+        memcpy(&desc_u, &desc, sizeof(desc));
+
+        return desc_u;
+}
 
 #define BIFROST_MEGA_SAMPLE 128
 #define BIFROST_ALL_SAMPLES 255

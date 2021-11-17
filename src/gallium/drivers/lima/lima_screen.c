@@ -161,6 +161,13 @@ lima_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
       return 1;
 
+   /* Mali4x0 PP doesn't have a swizzle for load_input, so use POT-aligned
+    * varyings to avoid unnecessary movs for vec3 and precision downgrade
+    * in case if this vec3 is coordinates for a sampler
+    */
+   case PIPE_CAP_PREFER_POT_ALIGNED_VARYINGS:
+      return 1;
+
    default:
       return u_pipe_screen_get_param_defaults(pscreen, param);
    }
@@ -318,6 +325,7 @@ lima_screen_is_format_supported(struct pipe_screen *pscreen,
    case PIPE_BUFFER:
    case PIPE_TEXTURE_1D:
    case PIPE_TEXTURE_2D:
+   case PIPE_TEXTURE_3D:
    case PIPE_TEXTURE_RECT:
    case PIPE_TEXTURE_CUBE:
       break;
@@ -695,7 +703,7 @@ lima_screen_create(int fd, struct renderonly *ro)
           pp_clear_program, sizeof(pp_clear_program));
 
    /* copy texture to framebuffer, used to reload gpu tile buffer
-    * load.v $1 0.xy, texld_2d 0, mov.v0 $0 ^tex_sampler, sync, stop
+    * load.v $1 0.xy, texld 0, mov.v0 $0 ^tex_sampler, sync, stop
     */
    static const uint32_t pp_reload_program[] = {
       0x000005e6, 0xf1003c20, 0x00000000, 0x39001000,

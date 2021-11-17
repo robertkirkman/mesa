@@ -114,8 +114,8 @@ fd4_sampler_state_create(struct pipe_context *pctx,
        * LOD clamp so the HW can decide between min and mag filtering of
        * level 0.
        */
-      so->texsamp1 |= A4XX_TEX_SAMP_1_MIN_LOD(MIN2(cso->min_lod, 0.125)) |
-                      A4XX_TEX_SAMP_1_MAX_LOD(MIN2(cso->max_lod, 0.125));
+      so->texsamp1 |= A4XX_TEX_SAMP_1_MIN_LOD(MIN2(cso->min_lod, 0.125f)) |
+                      A4XX_TEX_SAMP_1_MAX_LOD(MIN2(cso->max_lod, 0.125f));
    }
 
    if (cso->compare_mode)
@@ -132,6 +132,7 @@ tex_type(unsigned target)
    default:
       assert(0);
    case PIPE_BUFFER:
+      return A4XX_TEX_BUFFER;
    case PIPE_TEXTURE_1D:
    case PIPE_TEXTURE_1D_ARRAY:
       return A4XX_TEX_1D;
@@ -193,8 +194,9 @@ fd4_sampler_view_create(struct pipe_context *pctx, struct pipe_resource *prsc,
 
       lvl = 0;
       so->texconst1 =
-         A4XX_TEX_CONST_1_WIDTH(elements) | A4XX_TEX_CONST_1_HEIGHT(1);
-      so->texconst2 = A4XX_TEX_CONST_2_PITCH(elements * rsc->layout.cpp);
+         A4XX_TEX_CONST_1_WIDTH(elements & MASK(15)) |
+         A4XX_TEX_CONST_1_HEIGHT(elements >> 15);
+      so->texconst2 = A4XX_TEX_CONST_2_BUFFER;
       so->offset = cso->u.buf.offset;
    } else {
       unsigned miplevels;

@@ -1632,14 +1632,11 @@ void ir3_print_instr_stream(struct log_stream *stream, struct ir3_instruction *i
 /* delay calculation: */
 int ir3_delayslots(struct ir3_instruction *assigner,
                    struct ir3_instruction *consumer, unsigned n, bool soft);
-unsigned ir3_delay_calc_prera(struct ir3_block *block,
-                              struct ir3_instruction *instr);
-unsigned ir3_delay_calc_postra(struct ir3_block *block,
-                               struct ir3_instruction *instr, bool soft,
-                               bool mergedregs);
-unsigned ir3_delay_calc_exact(struct ir3_block *block,
-                              struct ir3_instruction *instr, bool mergedregs);
-void ir3_remove_nops(struct ir3 *ir);
+unsigned ir3_delayslots_with_repeat(struct ir3_instruction *assigner,
+                                    struct ir3_instruction *consumer,
+                                    unsigned assigner_n, unsigned consumer_n);
+unsigned ir3_delay_calc(struct ir3_block *block,
+                        struct ir3_instruction *instr, bool mergedregs);
 
 /* unreachable block elimination: */
 bool ir3_remove_unreachable(struct ir3 *ir);
@@ -2340,6 +2337,20 @@ regmask_set(regmask_t *regmask, struct ir3_register *reg)
       for (unsigned mask = reg->wrmask, n = reg->num; mask; mask >>= 1, n++)
          if (mask & 1)
             __regmask_set(regmask, half, n);
+   }
+}
+
+static inline void
+regmask_clear(regmask_t *regmask, struct ir3_register *reg)
+{
+   bool half = reg->flags & IR3_REG_HALF;
+   if (reg->flags & IR3_REG_RELATIV) {
+      for (unsigned i = 0; i < reg->size; i++)
+         __regmask_clear(regmask, half, reg->array.base + i);
+   } else {
+      for (unsigned mask = reg->wrmask, n = reg->num; mask; mask >>= 1, n++)
+         if (mask & 1)
+            __regmask_clear(regmask, half, n);
    }
 }
 

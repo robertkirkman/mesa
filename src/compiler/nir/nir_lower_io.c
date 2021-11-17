@@ -152,6 +152,12 @@ nir_is_arrayed_io(const nir_variable *var, gl_shader_stage stage)
    if (var->data.patch || !glsl_type_is_array(var->type))
       return false;
 
+   if (stage == MESA_SHADER_MESH) {
+      /* NV_mesh_shader: this is flat array for the whole workgroup. */
+      if (var->data.location == VARYING_SLOT_PRIMITIVE_INDICES)
+         return false;
+   }
+
    if (var->data.mode == nir_var_shader_in)
       return stage == MESA_SHADER_GEOMETRY ||
              stage == MESA_SHADER_TESS_CTRL ||
@@ -438,6 +444,13 @@ emit_store(struct lower_io_state *state, nir_ssa_def *data,
       var->data.precision == GLSL_PRECISION_MEDIUM ||
       var->data.precision == GLSL_PRECISION_LOW;
    semantics.per_view = var->data.per_view;
+
+   /* NV_mesh_shader: prevent assigning several slots to primitive indices. */
+   if (b->shader->info.stage == MESA_SHADER_MESH &&
+       var->data.location == VARYING_SLOT_PRIMITIVE_INDICES &&
+       !nir_is_arrayed_io(var, b->shader->info.stage))
+      semantics.num_slots = 1;
+
    nir_intrinsic_set_io_semantics(store, semantics);
 
    nir_builder_instr_insert(b, &store->instr);
@@ -2513,13 +2526,15 @@ nir_get_io_offset_src(nir_intrinsic_instr *instr)
  * Return the vertex index source for a load/store per_vertex intrinsic.
  */
 nir_src *
-nir_get_io_vertex_index_src(nir_intrinsic_instr *instr)
+nir_get_io_arrayed_index_src(nir_intrinsic_instr *instr)
 {
    switch (instr->intrinsic) {
    case nir_intrinsic_load_per_vertex_input:
    case nir_intrinsic_load_per_vertex_output:
+   case nir_intrinsic_load_per_primitive_output:
       return &instr->src[0];
    case nir_intrinsic_store_per_vertex_output:
+   case nir_intrinsic_store_per_primitive_output:
       return &instr->src[1];
    default:
       return NULL;
@@ -2650,7 +2665,8 @@ is_output(nir_intrinsic_instr *intrin)
 static bool is_dual_slot(nir_intrinsic_instr *intrin)
 {
    if (intrin->intrinsic == nir_intrinsic_store_output ||
-       intrin->intrinsic == nir_intrinsic_store_per_vertex_output) {
+       intrin->intrinsic == nir_intrinsic_store_per_vertex_output ||
+       intrin->intrinsic == nir_intrinsic_store_per_primitive_output) {
       return nir_src_bit_size(intrin->src[0]) == 64 &&
              nir_src_num_components(intrin->src[0]) >= 3;
    }
@@ -2681,6 +2697,15 @@ add_const_offset_to_base_block(nir_block *block, nir_builder *b,
 
       if (((modes & nir_var_shader_in) && is_input(intrin)) ||
           ((modes & nir_var_shader_out) && is_output(intrin))) {
+         nir_io_semantics sem = nir_intrinsic_io_semantics(intrin);
+
+         /* NV_mesh_shader: ignore MS primitive indices. */
+         if (b->shader->info.stage == MESA_SHADER_MESH &&
+             sem.location == VARYING_SLOT_PRIMITIVE_INDICES &&
+             !(b->shader->info.per_primitive_outputs &
+               BITFIELD64_BIT(VARYING_SLOT_PRIMITIVE_INDICES)))
+            continue;
+
          nir_src *offset = nir_get_io_offset_src(intrin);
 
          /* TODO: Better handling of per-view variables here */
@@ -2690,7 +2715,6 @@ add_const_offset_to_base_block(nir_block *block, nir_builder *b,
 
             nir_intrinsic_set_base(intrin, nir_intrinsic_base(intrin) + off);
 
-            nir_io_semantics sem = nir_intrinsic_io_semantics(intrin);
             sem.location += off;
             /* non-indirect indexing should reduce num_slots */
             sem.num_slots = is_dual_slot(intrin) ? 2 : 1;

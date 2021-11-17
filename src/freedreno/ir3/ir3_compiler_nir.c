@@ -1293,10 +1293,10 @@ static void
 emit_intrinsic_load_image(struct ir3_context *ctx, nir_intrinsic_instr *intr,
                           struct ir3_instruction **dst)
 {
-   /* Coherent accesses have to go directly to memory, rather than through
-    * ISAM's texture cache (which isn't coherent with image stores).
+   /* If the image can be written, must use LDIB to retrieve data, rather than
+    * through ISAM (which uses the texture cache and won't get previous writes).
     */
-   if (nir_intrinsic_access(intr) & ACCESS_COHERENT && ctx->compiler->gen >= 5) {
+   if (!(nir_intrinsic_access(intr) & ACCESS_NON_WRITEABLE) && ctx->compiler->gen >= 5) {
       ctx->funcs->emit_intrinsic_load_image(ctx, intr, dst);
       return;
    }
@@ -1319,13 +1319,6 @@ emit_intrinsic_load_image(struct ir3_context *ctx, nir_intrinsic_instr *intr,
    unsigned flags, ncoords = ir3_get_image_coords(intr, &flags);
    type_t type = ir3_get_type_for_image_intrinsic(intr);
 
-   /* hmm, this seems a bit odd, but it is what blob does and (at least
-    * a5xx) just faults on bogus addresses otherwise:
-    */
-   if (flags & IR3_INSTR_3D) {
-      flags &= ~IR3_INSTR_3D;
-      flags |= IR3_INSTR_A;
-   }
    info.flags |= flags;
 
    for (unsigned i = 0; i < ncoords; i++)
@@ -3717,7 +3710,7 @@ setup_output(struct ir3_context *ctx, nir_intrinsic_instr *intr)
    }
 
    so->outputs_count = MAX2(so->outputs_count, n + 1);
-   compile_assert(ctx, so->outputs_count < ARRAY_SIZE(so->outputs));
+   compile_assert(ctx, so->outputs_count <= ARRAY_SIZE(so->outputs));
 
    so->outputs[n].slot = slot;
    if (io.per_view)

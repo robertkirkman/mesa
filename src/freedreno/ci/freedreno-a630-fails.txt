@@ -1,6 +1,9 @@
-# New in VK-GL-CTS 1.2.7.0
+# Test bug, using GLSL 4.20 on a 3.3 context.
+# Broken in VK-GL-CTS e5c45899ed7e90fb616ccd1d3c66e6eded120684
 KHR-GL33.cull_distance.coverage,Fail
 
+# Framework bug, missing getProcAddress method.
+# https://gerrit.khronos.org/c/vk-gl-cts/+/8405
 KHR-GL33.transform_feedback.capture_vertex_interleaved_test,Fail
 KHR-GL33.transform_feedback.capture_vertex_separate_test,Fail
 KHR-GL33.transform_feedback.discard_vertex_test,Fail
@@ -22,7 +25,7 @@ KHR-GLES31.core.tessellation_shader.tessellation_shader_point_mode.point_renderi
 #  Invalid rendering result at esextcTessellationShaderBarrier.cpp:504"
 KHR-GLES31.core.tessellation_shader.tessellation_shader_tc_barriers.barrier_guarded_read_calls,Fail
 
-# no debug info in the qpa
+# https://gitlab.freedesktop.org/mesa/mesa/-/issues/5582
 KHR-GLES31.core.texture_cube_map_array.color_depth_attachments,Fail
 
 # rendering errors in ~4x4 blocks around the bottom side of the diagonal for the quad
@@ -101,10 +104,14 @@ spec@arb_depth_texture@texwrap formats bordercolor-swizzled@GL_DEPTH_COMPONENT32
 # "arb_direct_state_access-gettextureimage-formats: ../src/mesa/main/texstore.c:413: _mesa_texstore_s8_z24: Assertion `srcFormat == GL_DEPTH_STENCIL_EXT || srcFormat == GL_DEPTH_COMPONENT || srcFormat == GL_STENCIL_INDEX' failed."
 spec@arb_direct_state_access@gettextureimage-formats,Crash
 
+# "0 primitives generated:
+#  Incorrect number of prims generated.
+#  Found 0, expected 4"
 spec@arb_direct_state_access@transformfeedback-bufferbase,Fail
 spec@arb_direct_state_access@transformfeedback-bufferbase@general test,Fail
 spec@arb_direct_state_access@transformfeedback-bufferrange,Fail
 spec@arb_direct_state_access@transformfeedback-bufferrange@general test,Fail
+
 spec@arb_es2_compatibility@texwrap formats bordercolor-swizzled,Fail
 spec@arb_es2_compatibility@texwrap formats bordercolor-swizzled@GL_RGB565- swizzled- border color only,Fail
 spec@arb_occlusion_query@occlusion_query_order,Fail
@@ -143,33 +150,49 @@ spec@arb_sample_shading@samplemask 4@sample mask_in_one,Fail
 spec@arb_shader_storage_buffer_object@array-ssbo-auto-binding,Fail
 spec@arb_shader_storage_buffer_object@linker@instance-matching-shader-storage-blocks-member-array-size-mismatch,Fail
 spec@arb_tessellation_shader@execution@gs-primitiveid-instanced,Fail
+
+# Test bug: https://gitlab.freedesktop.org/mesa/piglit/-/merge_requests/601#note_1154259
+# "Failed to link:
+#  error: Too many tessellation control shader atomic counters"
 spec@arb_tessellation_shader@execution@invocation-counting-even,Fail
 spec@arb_tessellation_shader@execution@invocation-counting-odd,Fail
+
+# "ir3_nir_lower_tess.c:585: lower_tess_ctrl_block: Assertion `util_is_power_of_two_nonzero(nir_intrinsic_write_mask(intr) + 1)' failed."
 spec@arb_tessellation_shader@execution@patch-partial-write,Crash
+
+# Test bug: https://gitlab.freedesktop.org/mesa/piglit/-/merge_requests/601#note_1154259
+# "Failed to link:
+#  error: Too many tessellation control shader atomic counters"
 spec@arb_tessellation_shader@execution@tcs-output-unmatched,Fail
 spec@arb_tessellation_shader@execution@tcs-primitiveid,Fail
+
 spec@arb_tessellation_shader@execution@tes-no-tcs-primitiveid-instanced,Fail
+
+# Test bug: https://gitlab.freedesktop.org/mesa/piglit/-/merge_requests/601#note_1154259
+# "Failed to link:
+#  error: Too many tessellation control shader atomic counters"
 spec@arb_tessellation_shader@execution@tes-primitiveid,Fail
+
 spec@arb_tessellation_shader@execution@tes-read-texture,Fail
 spec@arb_tessellation_shader@execution@tess_with_geometry,Fail
 spec@arb_tessellation_shader@execution@trivial-tess-gs,Fail
 spec@arb_tessellation_shader@execution@trivial-tess-gs_no-gs-inputs,Fail
 spec@arb_tessellation_shader@execution@trivial-tess-gs_no-tes-inputs,Fail
-spec@arb_tessellation_shader@execution@variable-indexing@tcs-input-array-float-index-rd,Crash
-spec@arb_tessellation_shader@execution@variable-indexing@tcs-input-array-vec2-index-rd,Crash
-spec@arb_tessellation_shader@execution@variable-indexing@tcs-input-array-vec3-index-rd,Crash
-spec@arb_tessellation_shader@execution@variable-indexing@tcs-input-array-vec4-index-rd,Crash
+
+# ir3_nir_lower_tess.c:251: lower_block_to_explicit_output: Assertion `util_is_power_of_two_nonzero(nir_intrinsic_write_mask(intr) + 1)' failed.
+spec@arb_tessellation_shader@execution@tcs-input-read-mat,Crash
+
+# "ir3_nir_lower_tess.c:585: lower_tess_ctrl_block: Assertion `util_is_power_of_two_nonzero(nir_intrinsic_write_mask(intr) + 1)' failed."
 spec@arb_tessellation_shader@execution@variable-indexing@tcs-patch-vec4-index-wr,Crash
 spec@arb_tessellation_shader@execution@variable-indexing@tcs-patch-vec4-swiz-index-wr,Crash
-spec@arb_tessellation_shader@execution@variable-indexing@tes-input-array-float-index-rd,Crash
-spec@arb_tessellation_shader@execution@variable-indexing@tes-input-array-vec2-index-rd,Crash
-spec@arb_tessellation_shader@execution@variable-indexing@tes-input-array-vec3-index-rd,Crash
-spec@arb_tessellation_shader@execution@variable-indexing@tes-input-array-vec4-index-rd,Crash
 spec@arb_tessellation_shader@execution@vertex-partial-write,Crash
+
+
 spec@arb_tessellation_shader@execution@vs-tes-max-in-out-components,Fail
 spec@arb_tessellation_shader@execution@vs-tes-tessinner-tessouter-inputs-quads,Fail
 spec@arb_tessellation_shader@execution@vs-tes-tessinner-tessouter-inputs-tris,Fail
 spec@arb_tessellation_shader@execution@vs-tes-vertex,Fail
+
 spec@arb_texture_compression_bptc@texwrap formats bordercolor-swizzled,Fail
 spec@arb_texture_compression_bptc@texwrap formats bordercolor-swizzled@GL_COMPRESSED_RGBA_BPTC_UNORM- swizzled- border color only,Fail
 spec@arb_texture_compression_bptc@texwrap formats bordercolor-swizzled@GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT- swizzled- border color only,Fail
@@ -213,7 +236,11 @@ spec@arb_texture_rg@texwrap formats-int bordercolor-swizzled@GL_RG8UI- swizzled-
 spec@arb_texture_view@rendering-layers-image,Fail
 spec@arb_texture_view@rendering-layers-image@layers rendering of image1DArray,Fail
 spec@arb_timer_query@timestamp-get,Fail
+
+# "Expected 1 primitives written, got 0"
+# Note: no FS, rasterizer discard enabled.
 spec@arb_transform_feedback3@arb_transform_feedback3-ext_interleaved_two_bufs_vs,Fail
+
 spec@arb_transform_feedback3@gl_skipcomponents1-1,Fail
 spec@arb_transform_feedback3@gl_skipcomponents1234,Fail
 spec@arb_transform_feedback3@gl_skipcomponents1-2,Fail
@@ -350,7 +377,6 @@ spec@ext_transform_feedback@structs struct-array-elem run interface,Fail
 spec@ext_transform_feedback@tessellation triangle_fan flat_first,Fail
 spec@ext_transform_feedback@tessellation triangle_strip flat_first,Fail
 spec@glsl-1.30@execution@texelfetch fs sampler3d 1x129x9-98x129x9,Fail
-spec@glsl-1.30@execution@texelfetch fs sampler3d 98x129x1-98x129x9,Fail
 spec@glsl-1.30@execution@texelfetch fs sampler3d 98x1x9-98x129x9,Fail
 spec@glsl-1.50@execution@compatibility@clipping@gs-clip-vertex-const-accept,Fail
 spec@glsl-1.50@execution@compatibility@clipping@gs-clip-vertex-different-from-position,Fail
@@ -360,6 +386,11 @@ spec@glsl-1.50@execution@compatibility@clipping@gs-clip-vertex-homogeneity,Fail
 spec@glsl-1.50@execution@compatibility@clipping@gs-clip-vertex-primitives-lines,Fail
 spec@glsl-1.50@execution@compatibility@clipping@gs-clip-vertex-primitives-points,Fail
 spec@glsl-1.50@execution@compatibility@clipping@gs-clip-vertex-primitives-triangle-strip,Fail
+
+# The precompile without UCP lowering triggers an assertion failure:
+# "shader_io_get_unique_index: Assertion `!"illegal slot in get unique index\n"'
+# failed." We shouldn't crash if clipvertex is written without actually doing
+# clipping, we should just drop the output on the floor.
 spec@glsl-1.50@execution@compatibility@clipping@vs-gs-clip-vertex-const-accept,Crash
 spec@glsl-1.50@execution@compatibility@clipping@vs-gs-clip-vertex-const-reject,Crash
 spec@glsl-1.50@execution@compatibility@clipping@vs-gs-clip-vertex-different-from-position,Crash
@@ -367,13 +398,21 @@ spec@glsl-1.50@execution@compatibility@clipping@vs-gs-clip-vertex-enables,Crash
 spec@glsl-1.50@execution@compatibility@clipping@vs-gs-clip-vertex-equal-to-position,Crash
 spec@glsl-1.50@execution@compatibility@clipping@vs-gs-clip-vertex-homogeneity,Crash
 spec@glsl-1.50@execution@compatibility@clipping@vs-gs-clip-vertex-primitives-triangle-strip,Crash
+
+# "src/freedreno/ir3/ir3_shader.h:864:ir3_find_output: Assertion `0' failed."
+# Reading undefined vertex outputs should be undefined, not crash.
 spec@glsl-1.50@execution@compatibility@gs-clamp-vertex-color,Crash
 spec@glsl-1.50@execution@compatibility@gs-ff-frag,Crash
+
 spec@glsl-1.50@execution@compatibility@gs-texcoord-array-2,Fail
 spec@glsl-1.50@execution@compatibility@gs-texcoord-array,Fail
+
+# "ir3_nir_lower_tess.c:111: shader_io_get_unique_index: Assertion `!"illegal slot in get unique index\n"' failed."
+# I think on VARYING_SLOT_COL0 from the VS.
 spec@glsl-1.50@execution@compatibility@vs-gs-ff-frag,Crash
 spec@glsl-1.50@execution@compatibility@vs-gs-texcoord-array-2,Crash
 spec@glsl-1.50@execution@compatibility@vs-gs-texcoord-array,Crash
+
 spec@glsl-1.50@execution@geometry@end-primitive 0,Fail
 spec@glsl-1.50@execution@geometry@primitive-id-restart gl_line_loop ffs,Fail
 spec@glsl-1.50@execution@geometry@primitive-id-restart gl_line_loop other,Fail
@@ -414,7 +453,10 @@ spec@glsl-1.50@execution@geometry@tri-strip-ordering-with-prim-restart gl_triang
 spec@glsl-1.50@execution@geometry@tri-strip-ordering-with-prim-restart gl_triangle_strip other,Fail
 spec@glsl-1.50@execution@primitive-id-no-gs-quads,Fail
 spec@glsl-1.50@execution@primitive-id-no-gs-quad-strip,Fail
+
+# "ir3_shader.h:923:ir3_link_add: Assertion `i < ARRAY_SIZE(l->var)' failed"
 spec@glsl-1.50@execution@variable-indexing@gs-output-array-vec4-index-wr,Crash
+
 spec@glsl-1.50@gs-max-output-components,Fail
 spec@intel_performance_query@intel_performance_query-issue_2235,Fail
 spec@khr_texture_compression_astc@array-gl@12x12 Block Dim,Fail

@@ -3804,6 +3804,11 @@ struct gl_program_constants
  */
 struct gl_constants
 {
+   /**
+    * Bitmask of valid primitive types supported by the driver,
+    */
+   GLbitfield DriverSupportedPrimMask;
+
    GLuint MaxTextureMbytes;      /**< Max memory per image, in MB */
    GLuint MaxTextureSize;        /**< Max 1D/2D texture size, in pixels*/
    GLuint Max3DTextureLevels;    /**< Max mipmap levels for 3D textures */
@@ -4154,6 +4159,14 @@ struct gl_constants
     * This variable is mutually exlusive with DisableVaryingPacking.
     */
    GLboolean DisableTransformFeedbackPacking;
+
+   /**
+    * Align varyings to POT in a slot
+    *
+    * Drivers that prefer varyings to be aligned to POT must set this value to GL_TRUE
+    */
+   GLboolean PreferPOTAlignedVaryings;
+
 
    /**
     * UBOs and SSBOs can be packed tightly by the OpenGL implementation when
@@ -5158,7 +5171,7 @@ struct gl_texture_attrib_node
    /* For saving per texture object state (wrap modes, filters, etc),
     * SavedObj[][].Target is unused, so the value is invalid.
     */
-   struct gl_texture_object SavedObj[MAX_TEXTURE_UNITS][NUM_TEXTURE_TARGETS];
+   struct gl_texture_object SavedObj[MAX_COMBINED_TEXTURE_IMAGE_UNITS][NUM_TEXTURE_TARGETS];
 };
 
 

@@ -211,9 +211,10 @@ enum
 
    /* GS limits */
    GFX6_GS_NUM_USER_SGPR = SI_NUM_RESOURCE_SGPRS,
-   GFX9_VSGS_NUM_USER_SGPR = SI_VS_NUM_USER_SGPR,
-   GFX9_TESGS_NUM_USER_SGPR = SI_TES_NUM_USER_SGPR,
    SI_GSCOPY_NUM_USER_SGPR = SI_NUM_VS_STATE_RESOURCE_SGPRS,
+
+   GFX9_SGPR_SMALL_PRIM_CULL_INFO = MAX2(SI_VS_NUM_USER_SGPR, SI_TES_NUM_USER_SGPR),
+   GFX9_GS_NUM_USER_SGPR,
 
    /* PS only */
    SI_SGPR_ALPHA_REF = SI_NUM_RESOURCE_SGPRS,
@@ -279,10 +280,13 @@ enum
    SI_VS_BLIT_SGPRS_POS_TEXCOORD = 9,
 };
 
-#define SI_NGG_CULL_ENABLED                  (1 << 0)   /* this implies W, view.xy, and small prim culling */
+#define SI_NGG_CULL_TRIANGLES                (1 << 0)   /* this implies W, view.xy, and small prim culling */
 #define SI_NGG_CULL_BACK_FACE                (1 << 1)   /* back faces */
 #define SI_NGG_CULL_FRONT_FACE               (1 << 2)   /* front faces */
 #define SI_NGG_CULL_LINES                    (1 << 3)   /* the primitive type is lines */
+#define SI_NGG_CULL_SMALL_LINES_DIAMOND_EXIT (1 << 4)   /* cull small lines according to the diamond exit rule */
+#define SI_NGG_CULL_CLIP_PLANE_ENABLE(enable) (((enable) & 0xff) << 5)
+#define SI_NGG_CULL_GET_CLIP_PLANE_ENABLE(x)  (((x) >> 5) & 0xff)
 
 /**
  * For VS shader keys, describe any fixups required for vertex fetch.
@@ -660,7 +664,7 @@ struct si_shader_key_ge {
       unsigned kill_pointsize : 1;
 
       /* For NGG VS and TES. */
-      unsigned ngg_culling : 4; /* SI_NGG_CULL_* */
+      unsigned ngg_culling : 13; /* SI_NGG_CULL_* */
 
       /* For shaders where monolithic variants have better code.
        *

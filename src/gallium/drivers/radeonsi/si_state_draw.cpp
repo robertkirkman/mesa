@@ -1862,8 +1862,8 @@ static bool si_upload_and_prefetch_VB_descriptors(struct si_context *sctx,
          if (GFX_VERSION >= GFX9) {
             if (HAS_TESS)
                sh_dw_offset = GFX9_TCS_NUM_USER_SGPR;
-            else if (HAS_GS)
-               sh_dw_offset = GFX9_VSGS_NUM_USER_SGPR;
+            else if (HAS_GS || NGG)
+               sh_dw_offset = GFX9_GS_NUM_USER_SGPR;
          }
 
          radeon_set_sh_reg(sh_base + sh_dw_offset * 4,
@@ -2263,7 +2263,7 @@ static void si_draw(struct pipe_context *ctx,
    }
 
    /* Update NGG culling settings. */
-   uint8_t old_ngg_culling = sctx->ngg_culling;
+   uint16_t old_ngg_culling = sctx->ngg_culling;
    if (GFX_VERSION >= GFX10) {
       struct si_shader_selector *hw_vs = si_get_vs_inline(sctx, HAS_TESS, HAS_GS)->cso;
 
@@ -2278,13 +2278,15 @@ static void si_draw(struct pipe_context *ctx,
          /* Check that the current shader allows culling. */
          assert(hw_vs->ngg_cull_vert_threshold != UINT_MAX);
 
-         uint8_t ngg_culling = sctx->viewport0_y_inverted ? rs->ngg_cull_flags_y_inverted :
-                                                            rs->ngg_cull_flags;
-         assert(ngg_culling); /* rasterizer state should always set this to non-zero */
+         uint16_t ngg_culling;
 
          if (util_prim_is_lines(sctx->current_rast_prim)) {
             /* Overwrite it to mask out face cull flags. */
-            ngg_culling = SI_NGG_CULL_ENABLED | SI_NGG_CULL_LINES;
+            ngg_culling = rs->ngg_cull_flags_lines;
+         } else {
+            ngg_culling = sctx->viewport0_y_inverted ? rs->ngg_cull_flags_tris_y_inverted :
+                                                       rs->ngg_cull_flags_tris;
+            assert(ngg_culling); /* rasterizer state should always set this to non-zero */
          }
 
          if (ngg_culling != old_ngg_culling) {

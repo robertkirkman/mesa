@@ -2727,7 +2727,7 @@ bi_emit_texc(bi_builder *b, nir_tex_instr *instr)
                 desc.sampler_index_or_mode = instr->sampler_index;
                 desc.index = instr->texture_index;
         } else {
-                enum bifrost_index mode = 0;
+                unsigned mode = 0;
 
                 if (direct && instr->sampler_index == instr->texture_index) {
                         mode = BIFROST_INDEX_IMMEDIATE_SHARED;
@@ -2749,7 +2749,8 @@ bi_emit_texc(bi_builder *b, nir_tex_instr *instr)
                         mode = BIFROST_INDEX_REGISTER;
                 }
 
-                desc.sampler_index_or_mode = mode | (0x3 << 2);
+                mode |= (BIFROST_TEXTURE_OPERATION_SINGLE << 2);
+                desc.sampler_index_or_mode = mode;
         }
 
         /* Allocate staging registers contiguously by compacting the array.
@@ -2769,9 +2770,9 @@ bi_emit_texc(bi_builder *b, nir_tex_instr *instr)
 
         uint32_t desc_u = 0;
         memcpy(&desc_u, &desc, sizeof(desc_u));
-        bi_texc_to(b, sr_count ? idx : bi_dest_index(&instr->dest),
+        bi_texc_to(b, sr_count ? idx : bi_dest_index(&instr->dest), bi_null(),
                         idx, cx, cy, bi_imm_u32(desc_u), !computed_lod,
-                        sr_count);
+                        sr_count, 0);
 
         /* Explicit copy to facilitate tied operands */
         if (sr_count) {
@@ -3805,6 +3806,13 @@ bifrost_compile_shader_nir(nir_shader *nir,
          * skip bit is a function of only the data flow graph and is invariant
          * under valid scheduling. */
         bi_analyze_helper_requirements(ctx);
+
+        /* Fuse TEXC after analyzing helper requirements so the analysis
+         * doesn't have to know about dual textures */
+        if (likely(optimize)) {
+                bi_opt_fuse_dual_texture(ctx);
+        }
+
         bi_validate(ctx, "Late lowering");
 
         bi_register_allocate(ctx);

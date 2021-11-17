@@ -275,7 +275,8 @@ lower_compute_system_value_instr(nir_builder *b,
       /* If lower_cs_local_id_from_index is true, then we derive the local
        * index from the local id.
        */
-      if (b->shader->options->lower_cs_local_id_from_index) {
+      if (b->shader->options->lower_cs_local_id_from_index ||
+          (options && options->lower_cs_local_id_from_index)) {
          /* We lower gl_LocalInvocationID from gl_LocalInvocationIndex based
           * on this formula:
           *
@@ -387,6 +388,21 @@ lower_compute_system_value_instr(nir_builder *b,
 
          return nir_vec3(b, x, y, z);
       }
+
+      /* If a workgroup size dimension is 1, then the local invocation id must be zero. */
+      nir_component_mask_t is_zero = 0;
+      is_zero |= b->shader->info.workgroup_size[0] == 1 ? 0x1 : 0x0;
+      is_zero |= b->shader->info.workgroup_size[1] == 1 ? 0x2 : 0x0;
+      is_zero |= b->shader->info.workgroup_size[2] == 1 ? 0x4 : 0x0;
+      if (!b->shader->info.workgroup_size_variable && is_zero) {
+         nir_ssa_def *defs[3];
+         for (unsigned i = 0; i < 3; i++) {
+            defs[i] = is_zero & (1 << i) ? nir_imm_zero(b, 1, 32) :
+                                           nir_channel(b, &intrin->dest.ssa, i);
+         }
+         return nir_vec(b, defs, 3);
+      }
+
       return NULL;
 
    case nir_intrinsic_load_local_invocation_index:

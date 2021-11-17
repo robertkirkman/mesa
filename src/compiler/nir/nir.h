@@ -4974,7 +4974,7 @@ nir_lower_shader_calls(nir_shader *shader,
                        void *mem_ctx);
 
 nir_src *nir_get_io_offset_src(nir_intrinsic_instr *instr);
-nir_src *nir_get_io_vertex_index_src(nir_intrinsic_instr *instr);
+nir_src *nir_get_io_arrayed_index_src(nir_intrinsic_instr *instr);
 nir_src *nir_get_shader_call_payload_src(nir_intrinsic_instr *call);
 
 bool nir_is_arrayed_io(const nir_variable *var, gl_shader_stage stage);
@@ -5067,6 +5067,7 @@ typedef struct nir_lower_compute_system_values_options {
    bool has_base_workgroup_id:1;
    bool shuffle_local_ids_for_quad_derivatives:1;
    bool lower_local_invocation_index:1;
+   bool lower_cs_local_id_from_index:1;
 } nir_lower_compute_system_values_options;
 
 bool nir_lower_compute_system_values(nir_shader *shader,

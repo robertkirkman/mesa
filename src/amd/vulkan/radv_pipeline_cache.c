@@ -109,6 +109,7 @@ entry_size(struct cache_entry *entry)
    for (int i = 0; i < MESA_VULKAN_SHADER_STAGES; ++i)
       if (entry->binary_sizes[i])
          ret += entry->binary_sizes[i];
+   ret += sizeof(struct radv_pipeline_shader_stack_size) * entry->num_stack_sizes;
    ret = align(ret, alignof(struct cache_entry));
    return ret;
 }
@@ -368,7 +369,11 @@ radv_create_shaders_from_pipeline_cache(
          *stack_sizes = malloc(entry->num_stack_sizes * sizeof(**stack_sizes));
          memcpy(*stack_sizes, p, entry->num_stack_sizes * sizeof(**stack_sizes));
       }
+   } else {
+      assert(!entry->num_stack_sizes);
    }
+
+   p += entry->num_stack_sizes * sizeof(**stack_sizes);
 
    if (device->instance->debug_flags & RADV_DEBUG_NO_MEMORY_CACHE && cache == device->mem_cache)
       vk_free(&cache->alloc, entry);
@@ -378,6 +383,7 @@ radv_create_shaders_from_pipeline_cache(
             p_atomic_inc(&entry->shaders[i]->ref_count);
    }
 
+   assert((uintptr_t)p <= (uintptr_t)entry + entry_size(entry));
    radv_pipeline_cache_unlock(cache);
    return true;
 }
@@ -396,14 +402,13 @@ radv_pipeline_cache_insert_shaders(struct radv_device *device, struct radv_pipel
    struct cache_entry *entry = radv_pipeline_cache_search_unlocked(cache, sha1);
    if (entry) {
       for (int i = 0; i < MESA_VULKAN_SHADER_STAGES; ++i) {
-         if (entry->shaders[i]) {
-            radv_shader_destroy(cache->device, shaders[i]);
-            shaders[i] = entry->shaders[i];
-         } else {
-            entry->shaders[i] = shaders[i];
-         }
-         if (shaders[i])
-            p_atomic_inc(&shaders[i]->ref_count);
+         if (!entry->shaders[i])
+            continue;
+
+         radv_shader_destroy(cache->device, shaders[i]);
+
+         shaders[i] = entry->shaders[i];
+         p_atomic_inc(&shaders[i]->ref_count);
       }
       radv_pipeline_cache_unlock(cache);
       return;

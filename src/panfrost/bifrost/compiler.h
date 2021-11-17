@@ -132,6 +132,9 @@ typedef struct {
         uint32_t offset : 2;
         bool reg : 1;
         enum bi_index_type type : 3;
+
+        /* Must be zeroed so we can hash the whole 64-bits at a time */
+        unsigned padding : (32 - 13);
 } bi_index;
 
 static inline bi_index
@@ -406,7 +409,10 @@ typedef struct {
                 };
 
                 /* TEXC, ATOM_CX: # of staging registers used */
-                uint32_t sr_count;
+                struct {
+                        uint32_t sr_count;
+                        uint32_t sr_count_2;
+                };
         };
 
         /* Modifiers specific to particular instructions are thrown in a union */
@@ -899,6 +905,7 @@ void bi_opt_cse(bi_context *ctx);
 void bi_opt_mod_prop_forward(bi_context *ctx);
 void bi_opt_mod_prop_backward(bi_context *ctx);
 void bi_opt_dead_code_eliminate(bi_context *ctx);
+void bi_opt_fuse_dual_texture(bi_context *ctx);
 void bi_opt_dce_post_ra(bi_context *ctx);
 void bi_opt_push_ubo(bi_context *ctx);
 void bi_lower_swizzle(bi_context *ctx);

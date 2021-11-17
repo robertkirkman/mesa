@@ -53,6 +53,7 @@
 #include "git_sha1.h"
 #include "vk_util.h"
 #include "vk_deferred_operation.h"
+#include "vk_drm_syncobj.h"
 #include "common/intel_aux_map.h"
 #include "common/intel_defines.h"
 #include "common/intel_uuid.h"
@@ -171,6 +172,9 @@ static void
 get_device_extensions(const struct anv_physical_device *device,
                       struct vk_device_extension_table *ext)
 {
+   const bool has_syncobj_wait =
+      (device->sync_syncobj_type.features & VK_SYNC_FEATURE_CPU_WAIT) != 0;
+
    *ext = (struct vk_device_extension_table) {
       .KHR_8bit_storage                      = device->info.ver >= 8,
       .KHR_16bit_storage                     = device->info.ver >= 8,
@@ -185,8 +189,8 @@ get_device_extensions(const struct anv_physical_device *device,
       .KHR_device_group                      = true,
       .KHR_draw_indirect_count               = true,
       .KHR_driver_properties                 = true,
-      .KHR_external_fence                    = device->has_syncobj_wait,
-      .KHR_external_fence_fd                 = device->has_syncobj_wait,
+      .KHR_external_fence                    = has_syncobj_wait,
+      .KHR_external_fence_fd                 = has_syncobj_wait,
       .KHR_external_memory                   = true,
       .KHR_external_memory_fd                = true,
       .KHR_external_semaphore                = true,
@@ -870,9 +874,6 @@ anv_physical_device_try_create(struct anv_instance *instance,
 
    device->has_exec_async = anv_gem_get_param(fd, I915_PARAM_HAS_EXEC_ASYNC);
    device->has_exec_capture = anv_gem_get_param(fd, I915_PARAM_HAS_EXEC_CAPTURE);
-   device->has_syncobj_wait = anv_gem_supports_syncobj_wait(fd);
-   device->has_syncobj_wait_available =
-      anv_gem_get_drm_cap(fd, DRM_CAP_SYNCOBJ_TIMELINE) != 0;
 
    /* Start with medium; sorted low to high */
    const int priorities[] = {
@@ -906,8 +907,24 @@ anv_physical_device_try_create(struct anv_instance *instance,
    if (env_var_as_boolean("ANV_QUEUE_THREAD_DISABLE", false))
       device->has_exec_timeline = false;
 
-   device->has_thread_submit =
-      device->has_syncobj_wait_available && device->has_exec_timeline;
+   unsigned st_idx = 0;
+
+   device->sync_syncobj_type = vk_drm_syncobj_get_type(fd);
+   if (!device->has_exec_timeline)
+      device->sync_syncobj_type.features &= ~VK_SYNC_FEATURE_TIMELINE;
+   device->sync_types[st_idx++] = &device->sync_syncobj_type;
+
+   if (!(device->sync_syncobj_type.features & VK_SYNC_FEATURE_CPU_WAIT))
+      device->sync_types[st_idx++] = &anv_bo_sync_type;
+
+   if (!(device->sync_syncobj_type.features & VK_SYNC_FEATURE_TIMELINE)) {
+      device->sync_timeline_type = vk_sync_timeline_get_type(&anv_bo_sync_type);
+      device->sync_types[st_idx++] = &device->sync_timeline_type.sync;
+   }
+
+   device->sync_types[st_idx++] = NULL;
+   assert(st_idx <= ARRAY_SIZE(device->sync_types));
+   device->vk.supported_sync_types = device->sync_types;
 
    device->always_use_bindless =
       env_var_as_boolean("ANV_ALWAYS_BINDLESS", false);
@@ -2925,6 +2942,8 @@ static struct intel_mapped_pinned_buffer_alloc aux_map_allocator = {
    .free = intel_aux_map_buffer_free,
 };
 
+static VkResult anv_device_check_status(struct vk_device *vk_device);
+
 VkResult anv_CreateDevice(
     VkPhysicalDevice                            physicalDevice,
     const VkDeviceCreateInfo*                   pCreateInfo,
@@ -3010,7 +3029,6 @@ VkResult anv_CreateDevice(
    }
 
    device->physical = physical_device;
-   device->_lost = false;
 
    /* XXX(chadv): Can we dup() physicalDevice->fd here? */
    device->fd = open(physical_device->path, O_RDWR | O_CLOEXEC);
@@ -3018,6 +3036,9 @@ VkResult anv_CreateDevice(
       result = vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
       goto fail_device;
    }
+
+   device->vk.check_status = anv_device_check_status;
+   vk_device_set_drm_fd(&device->vk, device->fd);
 
    uint32_t num_queues = 0;
    for (uint32_t i = 0; i < pCreateInfo->queueCreateInfoCount; i++)
@@ -3061,8 +3082,6 @@ VkResult anv_CreateDevice(
     */
    anv_gem_set_context_param(device->fd, device->context_id,
                              I915_CONTEXT_PARAM_RECOVERABLE, false);
-
-   device->has_thread_submit = physical_device->has_thread_submit;
 
    device->queues =
       vk_zalloc(&device->vk.alloc, num_queues * sizeof(*device->queues), 8,
@@ -3439,123 +3458,26 @@ VkResult anv_EnumerateInstanceLayerProperties(
    return vk_error(NULL, VK_ERROR_LAYER_NOT_PRESENT);
 }
 
-void
-_anv_device_report_lost(struct anv_device *device)
+static VkResult
+anv_device_check_status(struct vk_device *vk_device)
 {
-   assert(p_atomic_read(&device->_lost) > 0);
-
-   device->lost_reported = true;
-
-   for (uint32_t i = 0; i < device->queue_count; i++) {
-      struct anv_queue *queue = &device->queues[i];
-      if (queue->lost) {
-         __vk_errorf(queue, VK_ERROR_DEVICE_LOST,
-                     queue->error_file, queue->error_line,
-                     "%s", queue->error_msg);
-      }
-   }
-}
-
-VkResult
-_anv_device_set_lost(struct anv_device *device,
-                     const char *file, int line,
-                     const char *msg, ...)
-{
-   VkResult err;
-   va_list ap;
-
-   if (p_atomic_read(&device->_lost) > 0)
-      return VK_ERROR_DEVICE_LOST;
-
-   p_atomic_inc(&device->_lost);
-   device->lost_reported = true;
-
-   va_start(ap, msg);
-   err = __vk_errorv(device, VK_ERROR_DEVICE_LOST, file, line, msg, ap);
-   va_end(ap);
-
-   if (env_var_as_boolean("ANV_ABORT_ON_DEVICE_LOSS", false))
-      abort();
-
-   return err;
-}
-
-VkResult
-_anv_queue_set_lost(struct anv_queue *queue,
-                     const char *file, int line,
-                     const char *msg, ...)
-{
-   va_list ap;
-
-   if (queue->lost)
-      return VK_ERROR_DEVICE_LOST;
-
-   queue->lost = true;
-
-   queue->error_file = file;
-   queue->error_line = line;
-   va_start(ap, msg);
-   vsnprintf(queue->error_msg, sizeof(queue->error_msg),
-             msg, ap);
-   va_end(ap);
-
-   p_atomic_inc(&queue->device->_lost);
-
-   if (env_var_as_boolean("ANV_ABORT_ON_DEVICE_LOSS", false))
-      abort();
-
-   return VK_ERROR_DEVICE_LOST;
-}
-
-VkResult
-anv_device_query_status(struct anv_device *device)
-{
-   /* This isn't likely as most of the callers of this function already check
-    * for it.  However, it doesn't hurt to check and it potentially lets us
-    * avoid an ioctl.
-    */
-   if (anv_device_is_lost(device))
-      return VK_ERROR_DEVICE_LOST;
+   struct anv_device *device = container_of(vk_device, struct anv_device, vk);
 
    uint32_t active, pending;
    int ret = anv_gem_context_get_reset_stats(device->fd, device->context_id,
                                              &active, &pending);
    if (ret == -1) {
       /* We don't know the real error. */
-      return anv_device_set_lost(device, "get_reset_stats failed: %m");
+      return vk_device_set_lost(&device->vk, "get_reset_stats failed: %m");
    }
 
    if (active) {
-      return anv_device_set_lost(device, "GPU hung on one of our command buffers");
+      return vk_device_set_lost(&device->vk, "GPU hung on one of our command buffers");
    } else if (pending) {
-      return anv_device_set_lost(device, "GPU hung with commands in-flight");
+      return vk_device_set_lost(&device->vk, "GPU hung with commands in-flight");
    }
 
    return VK_SUCCESS;
-}
-
-VkResult
-anv_device_bo_busy(struct anv_device *device, struct anv_bo *bo)
-{
-   /* Note:  This only returns whether or not the BO is in use by an i915 GPU.
-    * Other usages of the BO (such as on different hardware) will not be
-    * flagged as "busy" by this ioctl.  Use with care.
-    */
-   int ret = anv_gem_busy(device, bo->gem_handle);
-   if (ret == 1) {
-      return VK_NOT_READY;
-   } else if (ret == -1) {
-      /* We don't know the real error. */
-      return anv_device_set_lost(device, "gem wait failed: %m");
-   }
-
-   /* Query for device status after the busy call.  If the BO we're checking
-    * got caught in a GPU hang we don't want to return VK_SUCCESS to the
-    * client because it clearly doesn't have valid data.  Yes, this most
-    * likely means an ioctl, but we just did an ioctl to query the busy status
-    * so it's no great loss.
-    */
-   return anv_device_query_status(device);
 }
 
 VkResult
@@ -3567,15 +3489,10 @@ anv_device_wait(struct anv_device *device, struct anv_bo *bo,
       return VK_TIMEOUT;
    } else if (ret == -1) {
       /* We don't know the real error. */
-      return anv_device_set_lost(device, "gem wait failed: %m");
+      return vk_device_set_lost(&device->vk, "gem wait failed: %m");
+   } else {
+      return VK_SUCCESS;
    }
-
-   /* Query for device status after the wait.  If the BO we're waiting on got
-    * caught in a GPU hang we don't want to return VK_SUCCESS to the client
-    * because it clearly doesn't have valid data.  Yes, this most likely means
-    * an ioctl, but we just did an ioctl to wait so it's no great loss.
-    */
-   return anv_device_query_status(device);
 }
 
 uint64_t
@@ -3677,6 +3594,9 @@ VkResult anv_AllocateMemory(
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    mem->type = mem_type;
+   mem->map = NULL;
+   mem->map_size = 0;
+   mem->map_delta = 0;
    mem->ahw = NULL;
    mem->host_ptr = NULL;
 
@@ -3980,6 +3900,9 @@ void anv_FreeMemory(
    list_del(&mem->link);
    pthread_mutex_unlock(&device->mutex);
 
+   if (mem->map)
+      anv_UnmapMemory(_device, _mem);
+
    p_atomic_add(&device->physical->memory.heaps[mem->type->heapIndex].used,
                 -mem->bo->size);
 
@@ -4037,7 +3960,7 @@ VkResult anv_MapMemory(
     *
     *    "memory must not be currently host mapped"
     */
-   if (mem->bo->map != NULL) {
+   if (mem->map != NULL) {
       return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
                        "Memory object already mapped.");
    }
@@ -4066,8 +3989,10 @@ VkResult anv_MapMemory(
    if (result != VK_SUCCESS)
       return result;
 
+   mem->map = map;
+   mem->map_size = map_size;
    mem->map_delta = (offset - map_offset);
-   *ppData = map + mem->map_delta;
+   *ppData = mem->map + mem->map_delta;
 
    return VK_SUCCESS;
 }
@@ -4082,8 +4007,10 @@ void anv_UnmapMemory(
    if (mem == NULL || mem->host_ptr)
       return;
 
-   anv_device_unmap_bo(device, mem->bo);
+   anv_device_unmap_bo(device, mem->bo, mem->map, mem->map_size);
 
+   mem->map = NULL;
+   mem->map_size = 0;
    mem->map_delta = 0;
 }
 
@@ -4095,14 +4022,14 @@ clflush_mapped_ranges(struct anv_device         *device,
    for (uint32_t i = 0; i < count; i++) {
       ANV_FROM_HANDLE(anv_device_memory, mem, ranges[i].memory);
       uint64_t map_offset = ranges[i].offset + mem->map_delta;
-      if (map_offset >= mem->bo->map_size)
+      if (map_offset >= mem->map_size)
          continue;
 
       if (mem->type->propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
          continue;
 
-      intel_clflush_range(mem->bo->map + map_offset,
-                          MIN2(ranges[i].size, mem->bo->map_size - map_offset));
+      intel_clflush_range(mem->map + map_offset,
+                          MIN2(ranges[i].size, mem->map_size - map_offset));
    }
 }
 
@@ -4188,7 +4115,7 @@ VkResult anv_QueueBindSparse(
     VkFence                                     fence)
 {
    ANV_FROM_HANDLE(anv_queue, queue, _queue);
-   if (anv_device_is_lost(queue->device))
+   if (vk_device_is_lost(&queue->device->vk))
       return VK_ERROR_DEVICE_LOST;
 
    return vk_error(queue, VK_ERROR_FEATURE_NOT_PRESENT);
@@ -4244,7 +4171,7 @@ VkResult anv_GetEventStatus(
    ANV_FROM_HANDLE(anv_device, device, _device);
    ANV_FROM_HANDLE(anv_event, event, _event);
 
-   if (anv_device_is_lost(device))
+   if (vk_device_is_lost(&device->vk))
       return VK_ERROR_DEVICE_LOST;
 
    return *(uint64_t *)event->state.map;
@@ -4599,8 +4526,8 @@ VkResult anv_GetCalibratedTimestampsEXT(
                                 &pTimestamps[d]);
 
          if (ret != 0) {
-            return anv_device_set_lost(device, "Failed to read the TIMESTAMP "
-                                               "register: %m");
+            return vk_device_set_lost(&device->vk, "Failed to read the "
+                                      "TIMESTAMP register: %m");
          }
          uint64_t device_period = DIV_ROUND_UP(1000000000, timestamp_frequency);
          max_clock_period = MAX2(max_clock_period, device_period);

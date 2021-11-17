@@ -220,6 +220,20 @@ struct DefInfo {
                stride = DIV_ROUND_UP(stride, 4);
          }
          assert(stride > 0);
+      } else if (instr->isMIMG() && instr->mimg().d16 && ctx.program->chip_class <= GFX9) {
+         /* Workaround GFX9 hardware bug for D16 image instructions: FeatureImageGather4D16Bug
+          *
+          * The register use is not calculated correctly, and the hardware assumes a
+          * full dword per component. Don't use the last registers of the register file.
+          * Otherwise, the instruction will be skipped.
+          *
+          * https://reviews.llvm.org/D81172
+          */
+         bool imageGather4D16Bug = operand == -1 && rc == v2 && instr->mimg().dmask != 0xF;
+         assert(ctx.program->chip_class == GFX9 && "Image D16 on GFX8 not supported.");
+
+         if (imageGather4D16Bug)
+            bounds.size -= rc.bytes() / 4;
       }
    }
 };
@@ -495,6 +509,7 @@ get_subdword_operand_stride(chip_class chip, const aco_ptr<Instruction>& instr, 
    case aco_opcode::ds_write_b16: return chip >= GFX9 ? 2 : 4;
    case aco_opcode::buffer_store_byte:
    case aco_opcode::buffer_store_short:
+   case aco_opcode::buffer_store_format_d16_x:
    case aco_opcode::flat_store_byte:
    case aco_opcode::flat_store_short:
    case aco_opcode::scratch_store_byte:
@@ -552,6 +567,8 @@ add_subdword_operand(ra_ctx& ctx, aco_ptr<Instruction>& instr, unsigned idx, uns
       instr->opcode = aco_opcode::buffer_store_byte_d16_hi;
    else if (instr->opcode == aco_opcode::buffer_store_short)
       instr->opcode = aco_opcode::buffer_store_short_d16_hi;
+   else if (instr->opcode == aco_opcode::buffer_store_format_d16_x)
+      instr->opcode = aco_opcode::buffer_store_format_d16_hi_x;
    else if (instr->opcode == aco_opcode::flat_store_byte)
       instr->opcode = aco_opcode::flat_store_byte_d16_hi;
    else if (instr->opcode == aco_opcode::flat_store_short)
@@ -601,6 +618,7 @@ get_subdword_definition_info(Program* program, const aco_ptr<Instruction>& instr
    }
 
    switch (instr->opcode) {
+   /* D16 loads with _hi version */
    case aco_opcode::ds_read_u8_d16:
    case aco_opcode::ds_read_i8_d16:
    case aco_opcode::ds_read_u16_d16:
@@ -615,16 +633,32 @@ get_subdword_definition_info(Program* program, const aco_ptr<Instruction>& instr
    case aco_opcode::scratch_load_short_d16:
    case aco_opcode::buffer_load_ubyte_d16:
    case aco_opcode::buffer_load_sbyte_d16:
-   case aco_opcode::buffer_load_short_d16: {
+   case aco_opcode::buffer_load_short_d16:
+   case aco_opcode::buffer_load_format_d16_x: {
       assert(chip >= GFX9);
       if (!program->dev.sram_ecc_enabled)
          return std::make_pair(2u, 2u);
       else
          return std::make_pair(2u, 4u);
    }
-
-   default: return std::make_pair(4, rc.size() * 4u);
+   /* 3-component D16 loads */
+   case aco_opcode::buffer_load_format_d16_xyz:
+   case aco_opcode::tbuffer_load_format_d16_xyz: {
+      assert(chip >= GFX9);
+      if (!program->dev.sram_ecc_enabled)
+         return std::make_pair(4u, 6u);
+      break;
    }
+
+   default: break;
+   }
+
+   if (instr->isMIMG() && instr->mimg().d16 && !program->dev.sram_ecc_enabled) {
+      assert(chip >= GFX9);
+      return std::make_pair(4u, rc.bytes());
+   }
+
+   return std::make_pair(4, rc.size() * 4u);
 }
 
 void
@@ -667,6 +701,8 @@ add_subdword_definition(Program* program, aco_ptr<Instruction>& instr, PhysReg r
       instr->opcode = aco_opcode::buffer_load_sbyte_d16_hi;
    else if (instr->opcode == aco_opcode::buffer_load_short_d16)
       instr->opcode = aco_opcode::buffer_load_short_d16_hi;
+   else if (instr->opcode == aco_opcode::buffer_load_format_d16_x)
+      instr->opcode = aco_opcode::buffer_load_format_d16_hi_x;
    else if (instr->opcode == aco_opcode::flat_load_ubyte_d16)
       instr->opcode = aco_opcode::flat_load_ubyte_d16_hi;
    else if (instr->opcode == aco_opcode::flat_load_sbyte_d16)

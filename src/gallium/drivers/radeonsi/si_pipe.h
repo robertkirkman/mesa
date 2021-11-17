@@ -899,6 +899,10 @@ struct si_saved_cs {
 
 struct si_small_prim_cull_info {
    float scale[2], translate[2];
+   float scale_no_aa[2], translate_no_aa[2];
+   float clip_half_line_width[2];      /* line_width * 0.5 in clip space in X and Y directions */
+   float small_prim_precision_no_aa;   /* same as the small prim precision, but ignores MSAA */
+   /* The above fields are uploaded to memory. The below fields are passed via user SGPRs. */
    float small_prim_precision;
 };
 
@@ -1130,7 +1134,7 @@ struct si_context {
 
    /* Emitted draw state. */
    bool ngg : 1;
-   uint8_t ngg_culling;
+   uint16_t ngg_culling;
    unsigned last_index_size;
    int last_base_vertex;
    unsigned last_start_instance;
@@ -1549,7 +1553,6 @@ struct pipe_video_buffer *si_video_buffer_create_with_modifiers(struct pipe_cont
                                                                 unsigned int modifiers_count);
 
 /* si_viewport.c */
-void si_get_small_prim_cull_info(struct si_context *sctx, struct si_small_prim_cull_info *out);
 void si_update_vs_viewport_state(struct si_context *ctx);
 void si_init_viewport_functions(struct si_context *ctx);
 

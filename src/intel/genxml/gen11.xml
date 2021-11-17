@@ -3094,7 +3094,7 @@
       <value name="Intra" value="0"/>
       <value name="Inter" value="1"/>
     </field>
-    <field name="SizeID" start="33" end="34" type="uint">
+    <field name="SizeID" start="33" end="34" type="uint" prefix="SZ">
       <value name="4x4" value="0"/>
       <value name="8x8" value="1"/>
       <value name="16x16" value="2"/>
@@ -4502,7 +4502,7 @@
       <value name="Field Picture with Top Field First" value="2"/>
       <value name="Field Picture with Bottom Field First" value="3"/>
     </field>
-    <field name="Picure Type" start="122" end="124" type="uint"/>
+    <field name="Picture Type" start="122" end="124" type="uint"/>
     <field name="CONDOVER" start="125" end="126" type="uint"/>
     <field name="PQ Uniform" start="128" end="128" type="bool"/>
     <field name="Half QP" start="129" end="129" type="bool"/>
@@ -4696,7 +4696,7 @@
     <field name="Rho Domain Rate Control Enable" start="109" end="109" type="bool"/>
     <field name="First Chroma QP Offset" start="112" end="116" type="uint"/>
     <field name="Second Chroma QP Offset" start="120" end="124" type="uint"/>
-    <field name="Field Picure" start="128" end="128" type="bool"/>
+    <field name="Field Picture" start="128" end="128" type="bool"/>
     <field name="MBAFF Mode" start="129" end="129" type="bool"/>
     <field name="Frame MB Only" start="130" end="130" type="bool"/>
     <field name="8x8 IDCT Transform Mode" start="131" end="131" type="bool"/>
@@ -5310,7 +5310,7 @@
       <value name="VDEnc Mode" value="1"/>
     </field>
     <field name="Standalone VDEnc Mode Enable" start="46" end="46" type="bool"/>
-    <field name="Decoder Mode select" start="47" end="48" type="uint">
+    <field name="Decoder Mode Select" start="47" end="48" type="uint">
       <value name="VLD Mode" value="0"/>
       <value name="IT Mode" value="1"/>
       <value name="Deblocker Mode" value="2"/>
@@ -5348,7 +5348,7 @@
       <value name="JPEG_Chroma_Cr_QUANTIZER_MATRIX (or B)" value="2"/>
     </field>
     <group count="64" start="64" size="8">
-      <field name="Forward Quantizer Matrix 8x8" start="0" end="7" type="uint"/>
+      <field name="Forward Quantizer Matrix" start="0" end="7" type="uint"/>
     </group>
   </instruction>
 
@@ -5918,7 +5918,7 @@
   </instruction>
 
   <instruction name="MI_FLUSH_DW" bias="2" length="5" engine="blitter|video">
-    <field name="DWord Length" start="0" end="5" type="uint"/>
+    <field name="DWord Length" start="0" end="5" type="uint" default="3"/>
     <field name="Video Pipeline Cache Invalidate" start="7" end="7" type="bool"/>
     <field name="Notify Enable" start="8" end="8" type="bool"/>
     <field name="Flush LLC" start="9" end="9" type="bool"/>
@@ -6607,11 +6607,11 @@
     <field name="Sub-Pel Mode" start="140" end="141" type="uint"/>
     <field name="Forward Transform Skip Check Enable" start="145" end="145" type="bool"/>
     <field name="Block-Based Skip Enable" start="147" end="147" type="bool"/>
-    <field name="Inter SAD Measure Adjustment" start="148" end="149" type="uint">
+    <field name="Inter SAD Measure Adjustment" start="148" end="149" type="uint" prefix="ISMA">
       <value name="None" value="0"/>
       <value name="Haar Transform Adjusted" value="2"/>
     </field>
-    <field name="Intra SAD Measure Adjustment" start="150" end="151" type="uint">
+    <field name="Intra SAD Measure Adjustment" start="150" end="151" type="uint" prefix="ISMA">
       <value name="None" value="0"/>
       <value name="Haar Transform Adjusted" value="2"/>
     </field>
@@ -6750,7 +6750,7 @@
     <field name="Media Command Opcode" start="23" end="26" type="uint" default="1"/>
     <field name="Pipeline" start="27" end="28" type="uint" default="2"/>
     <field name="Command Type" start="29" end="31" type="uint" default="3"/>
-    <field name="Standard Select" start="32" end="35" type="uint">
+    <field name="Standard Select" start="32" end="35" type="uint" prefix="SS">
       <value name="HEVC" value="0"/>
       <value name="VP9" value="1"/>
       <value name="AVC" value="2"/>
