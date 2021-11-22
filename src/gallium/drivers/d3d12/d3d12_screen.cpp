@@ -174,6 +174,7 @@ d3d12_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION:
    case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:
    case PIPE_CAP_RGB_OVERRIDE_DST_ALPHA_BLEND:
+   case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
       return 1;
 
    /* We need to do some lowering that requires a link to the sampler */
@@ -220,7 +221,7 @@ d3d12_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TEXTURE_BUFFER_OBJECTS:
       return 1;
 
-   case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
+   case PIPE_CAP_TEXTURE_TRANSFER_MODES:
       return 0; /* unsure */
 
    case PIPE_CAP_ENDIANNESS:

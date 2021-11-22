@@ -533,27 +533,30 @@ void si_init_shader_args(struct si_shader_context *ctx, bool ngg_cull_shader)
             ctx, (ctx->stage == MESA_SHADER_VERTEX || ctx->stage == MESA_SHADER_TESS_EVAL));
       }
 
-      if (ctx->stage == MESA_SHADER_VERTEX) {
-         if (shader->selector->info.base.vs.blit_sgprs_amd) {
-            declare_vs_blit_inputs(ctx, shader->selector->info.base.vs.blit_sgprs_amd);
-         } else {
-            ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->vs_state_bits);
+      if (ctx->stage == MESA_SHADER_VERTEX && shader->selector->info.base.vs.blit_sgprs_amd) {
+         declare_vs_blit_inputs(ctx, shader->selector->info.base.vs.blit_sgprs_amd);
+      } else {
+         ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->vs_state_bits);
+
+         if (ctx->stage == MESA_SHADER_VERTEX) {
             ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->args.base_vertex);
             ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->args.draw_id);
             ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->args.start_instance);
-            ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_CONST_DESC_PTR, &ctx->small_prim_cull_info);
-            declare_vb_descriptor_input_sgprs(ctx);
-         }
-      } else {
-         /* TES or GS */
-         ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->vs_state_bits);
-
-         if (ctx->stage == MESA_SHADER_TESS_EVAL) {
+         } else if (ctx->stage == MESA_SHADER_TESS_EVAL) {
             ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->tcs_offchip_layout);
             ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->tes_offchip_addr);
             ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, NULL); /* unused */
-            ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_CONST_DESC_PTR, &ctx->small_prim_cull_info);
+         } else {
+            /* GS */
+            ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, NULL); /* unused */
+            ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, NULL); /* unused */
+            ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, NULL); /* unused */
          }
+
+         ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_CONST_DESC_PTR, &ctx->small_prim_cull_info);
+
+         if (ctx->stage == MESA_SHADER_VERTEX)
+            declare_vb_descriptor_input_sgprs(ctx);
       }
 
       /* VGPRs (first GS, then VS/TES) */
@@ -584,10 +587,8 @@ void si_init_shader_args(struct si_shader_context *ctx, bool ngg_cull_shader)
                num_user_sgprs =
                   SI_SGPR_VS_VB_DESCRIPTOR_FIRST + shader->selector->num_vbos_in_user_sgprs * 4;
             }
-         } else if (ctx->stage == MESA_SHADER_TESS_EVAL && ngg_cull_shader) {
-            num_user_sgprs = GFX9_GS_NUM_USER_SGPR;
          } else {
-            num_user_sgprs = SI_NUM_VS_STATE_RESOURCE_SGPRS;
+            num_user_sgprs = GFX9_GS_NUM_USER_SGPR;
          }
 
          /* The NGG cull shader has to return all 9 VGPRs.
@@ -1265,8 +1266,7 @@ static void si_dump_shader_key(const struct si_shader *shader, FILE *f)
       fprintf(f, "  opt.kill_outputs = 0x%" PRIx64 "\n", key->ge.opt.kill_outputs);
       fprintf(f, "  opt.kill_pointsize = 0x%x\n", key->ge.opt.kill_pointsize);
       fprintf(f, "  opt.kill_clip_distances = 0x%x\n", key->ge.opt.kill_clip_distances);
-      if (stage != MESA_SHADER_GEOMETRY)
-         fprintf(f, "  opt.ngg_culling = 0x%x\n", key->ge.opt.ngg_culling);
+      fprintf(f, "  opt.ngg_culling = 0x%x\n", key->ge.opt.ngg_culling);
    }
 
    if (stage <= MESA_SHADER_GEOMETRY) {
@@ -1290,7 +1290,8 @@ static void si_dump_shader_key(const struct si_shader *shader, FILE *f)
 
 bool si_vs_needs_prolog(const struct si_shader_selector *sel,
                         const struct si_vs_prolog_bits *prolog_key,
-                        const union si_shader_key *key, bool ngg_cull_shader)
+                        const union si_shader_key *key, bool ngg_cull_shader,
+                        bool is_gs)
 {
    assert(sel->info.stage == MESA_SHADER_VERTEX);
 
@@ -1298,7 +1299,7 @@ bool si_vs_needs_prolog(const struct si_shader_selector *sel,
     * VS prolog. */
    return sel->vs_needs_prolog || prolog_key->ls_vgpr_fix ||
           /* The 2nd VS prolog loads input VGPRs from LDS */
-          (key->ge.opt.ngg_culling && !ngg_cull_shader);
+          (key->ge.opt.ngg_culling && !ngg_cull_shader && !is_gs);
 }
 
 /**
@@ -1324,7 +1325,8 @@ void si_get_vs_prolog_key(const struct si_shader_info *info, unsigned num_input_
    key->vs_prolog.as_es = shader_out->key.ge.as_es;
    key->vs_prolog.as_ngg = shader_out->key.ge.as_ngg;
 
-   if (!ngg_cull_shader && shader_out->key.ge.opt.ngg_culling)
+   if (shader_out->selector->info.stage != MESA_SHADER_GEOMETRY &&
+       !ngg_cull_shader && shader_out->key.ge.opt.ngg_culling)
       key->vs_prolog.load_vgprs_after_culling = 1;
 
    if (shader_out->selector->info.stage == MESA_SHADER_TESS_CTRL) {
@@ -1653,7 +1655,8 @@ static bool si_get_vs_prolog(struct si_screen *sscreen, struct ac_llvm_compiler 
 {
    struct si_shader_selector *vs = main_part->selector;
 
-   if (!si_vs_needs_prolog(vs, key, &shader->key, false))
+   if (!si_vs_needs_prolog(vs, key, &shader->key, false,
+                           shader->selector->info.stage == MESA_SHADER_GEOMETRY))
       return true;
 
    /* Get the prolog. */

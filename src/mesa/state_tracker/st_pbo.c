@@ -44,17 +44,6 @@
 
 #include "compiler/nir/nir_builder.h"
 
-/* Conversion to apply in the fragment shader. */
-enum st_pbo_conversion {
-   ST_PBO_CONVERT_FLOAT = 0,
-   ST_PBO_CONVERT_UINT,
-   ST_PBO_CONVERT_SINT,
-   ST_PBO_CONVERT_UINT_TO_SINT,
-   ST_PBO_CONVERT_SINT_TO_UINT,
-
-   ST_NUM_PBO_CONVERSIONS
-};
-
 /* Final setup of buffer addressing information.
  *
  * buf_offset is in pixels.
@@ -385,8 +374,8 @@ st_pbo_create_gs(struct st_context *st)
    return ureg_create_shader_and_destroy(ureg, st->pipe);
 }
 
-static const struct glsl_type *
-sampler_type_for_target(enum pipe_texture_target target,
+const struct glsl_type *
+st_pbo_sampler_type_for_target(enum pipe_texture_target target,
                         enum st_pbo_conversion conv)
 {
    bool is_array = target >= PIPE_TEXTURE_1D_ARRAY;
@@ -518,7 +507,7 @@ create_fs(struct st_context *st, bool download,
 
    nir_variable *tex_var =
       nir_variable_create(b.shader, nir_var_uniform,
-                          sampler_type_for_target(target, conversion),
+                          st_pbo_sampler_type_for_target(target, conversion),
                           "tex");
    tex_var->data.explicit_binding = true;
    tex_var->data.binding = 0;
@@ -672,6 +661,9 @@ st_init_pbo_helpers(struct st_context *st)
    /* Rasterizer state */
    memset(&st->pbo.raster, 0, sizeof(struct pipe_rasterizer_state));
    st->pbo.raster.half_pixel_center = 1;
+
+   if (st->allow_compute_based_texture_transfer)
+      st->pbo.shaders = _mesa_hash_table_create_u32_keys(NULL);
 }
 
 void
@@ -707,5 +699,11 @@ st_destroy_pbo_helpers(struct st_context *st)
    if (st->pbo.vs) {
       st->pipe->delete_vs_state(st->pipe, st->pbo.vs);
       st->pbo.vs = NULL;
+   }
+
+   if (st->pbo.shaders) {
+      hash_table_foreach(st->pbo.shaders, entry)
+         st->pipe->delete_compute_state(st->pipe, entry->data);
+      _mesa_hash_table_destroy(st->pbo.shaders, NULL);
    }
 }

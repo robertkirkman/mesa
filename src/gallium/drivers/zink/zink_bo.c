@@ -234,7 +234,7 @@ bo_create_internal(struct zink_screen *screen,
                    unsigned flags,
                    const void *pNext)
 {
-   struct zink_bo *bo;
+   struct zink_bo *bo = NULL;
    bool init_pb_cache;
 
    /* too big for vk alloc */
@@ -247,6 +247,7 @@ bo_create_internal(struct zink_screen *screen,
    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
    mai.pNext = pNext;
    mai.allocationSize = size;
+demote:
    mai.memoryTypeIndex = screen->heap_map[heap];
    if (screen->info.mem_props.memoryTypes[mai.memoryTypeIndex].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
       alignment = MAX2(alignment, screen->info.props.limits.minMemoryMapAlignment);
@@ -261,9 +262,21 @@ bo_create_internal(struct zink_screen *screen,
    /* all non-suballocated bo can cache */
    init_pb_cache = !pNext;
 
-   bo = CALLOC(1, sizeof(struct zink_bo) + init_pb_cache * sizeof(struct pb_cache_entry));
+   if (!bo)
+      bo = CALLOC(1, sizeof(struct zink_bo) + init_pb_cache * sizeof(struct pb_cache_entry));
    if (!bo) {
       return NULL;
+   }
+
+   VkResult ret = VKSCR(AllocateMemory)(screen->dev, &mai, NULL, &bo->mem);
+   if (!zink_screen_handle_vkresult(screen, ret)) {
+      if (heap == ZINK_HEAP_DEVICE_LOCAL_VISIBLE) {
+         heap = ZINK_HEAP_DEVICE_LOCAL;
+         mesa_loge("zink: %p couldn't allocate memory! from BAR heap: retrying as device-local", bo);
+         goto demote;
+      }
+      mesa_loge("zink: couldn't allocate memory! from heap %u", heap);
+      goto fail;
    }
 
    if (init_pb_cache) {
@@ -271,9 +284,6 @@ bo_create_internal(struct zink_screen *screen,
       pb_cache_init_entry(&screen->pb.bo_cache, bo->cache_entry, &bo->base, heap);
    }
 
-   VkResult ret = VKSCR(AllocateMemory)(screen->dev, &mai, NULL, &bo->mem);
-   if (!zink_screen_handle_vkresult(screen, ret))
-      goto fail;
 
    simple_mtx_init(&bo->lock, mtx_plain);
    pipe_reference_init(&bo->base.reference, 1);
@@ -569,12 +579,20 @@ zink_bo_create(struct zink_screen *screen, uint64_t size, unsigned alignment, en
       }
 
       struct pb_slabs *slabs = get_slabs(screen, alloc_size, flags);
-      entry = pb_slab_alloc(slabs, alloc_size, heap);
+      bool reclaim_all = false;
+      if (heap == ZINK_HEAP_DEVICE_LOCAL_VISIBLE && !screen->resizable_bar) {
+         unsigned low_bound = 128 * 1024 * 1024; //128MB is a very small BAR
+         if (screen->info.driver_props.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
+            low_bound *= 2; //nvidia has fat textures or something
+         unsigned heapidx = screen->info.mem_props.memoryTypes[screen->heap_map[heap]].heapIndex;
+         reclaim_all = screen->info.mem_props.memoryHeaps[heapidx].size <= low_bound;
+      }
+      entry = pb_slab_alloc_reclaimed(slabs, alloc_size, heap, reclaim_all);
       if (!entry) {
          /* Clean up buffer managers and try again. */
          clean_up_buffer_managers(screen);
 
-         entry = pb_slab_alloc(slabs, alloc_size, heap);
+         entry = pb_slab_alloc_reclaimed(slabs, alloc_size, heap, true);
       }
       if (!entry)
          return NULL;
@@ -824,7 +842,6 @@ static struct pb_slab *
 bo_slab_alloc(void *priv, unsigned heap, unsigned entry_size, unsigned group_index, bool encrypted)
 {
    struct zink_screen *screen = priv;
-   VkMemoryPropertyFlags domains = vk_domain_from_heap(heap);
    uint32_t base_id;
    unsigned slab_size = 0;
    struct zink_slab *slab = CALLOC_STRUCT(zink_slab);
@@ -893,7 +910,6 @@ bo_slab_alloc(void *priv, unsigned heap, unsigned entry_size, unsigned group_ind
       bo->base.size = entry_size;
       bo->base.vtbl = &bo_slab_vtbl;
       bo->offset = slab->buffer->offset + i * entry_size;
-      bo->base.placement = domains;
       bo->unique_id = base_id + i;
       bo->u.slab.entry.slab = &slab->base;
       bo->u.slab.entry.group_index = group_index;
@@ -907,6 +923,7 @@ bo_slab_alloc(void *priv, unsigned heap, unsigned entry_size, unsigned group_ind
          bo->u.slab.real = slab->buffer->u.slab.real;
          assert(bo->u.slab.real->mem);
       }
+      bo->base.placement = bo->u.slab.real->base.placement;
 
       list_addtail(&bo->u.slab.entry.head, &slab->base.free);
    }

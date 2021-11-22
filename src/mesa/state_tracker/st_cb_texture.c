@@ -51,6 +51,7 @@
 #include "state_tracker/st_debug.h"
 #include "state_tracker/st_context.h"
 #include "state_tracker/st_cb_bitmap.h"
+#include "state_tracker/st_cb_drawpixels.h"
 #include "state_tracker/st_cb_fbo.h"
 #include "state_tracker/st_cb_flush.h"
 #include "state_tracker/st_cb_texture.h"
@@ -129,8 +130,8 @@ gl_target_to_pipe(GLenum target)
    }
 }
 
-static enum pipe_format
-get_src_format(struct pipe_screen *screen, enum pipe_format src_format, struct pipe_resource *src)
+enum pipe_format
+st_pbo_get_src_format(struct pipe_screen *screen, enum pipe_format src_format, struct pipe_resource *src)
 {
    /* Convert the source format to what is expected by GetTexImage
     * and see if it's supported.
@@ -284,10 +285,10 @@ end:
    return done;
 }
 
-static enum pipe_format
-get_dst_format(struct gl_context *ctx, enum pipe_texture_target target,
-               enum pipe_format src_format, bool is_compressed,
-               GLenum format, GLenum type, unsigned bind)
+enum pipe_format
+st_pbo_get_dst_format(struct gl_context *ctx, enum pipe_texture_target target,
+                      enum pipe_format src_format, bool is_compressed,
+                      GLenum format, GLenum type, unsigned bind)
 {
    struct st_context *st = st_context(ctx);
    struct pipe_screen *screen = st->screen;
@@ -2518,41 +2519,41 @@ st_GetTexSubImage(struct gl_context * ctx,
 
    if (!st->prefer_blit_based_texture_transfer &&
        !_mesa_is_format_compressed(texImage->TexFormat)) {
-      /* Try to avoid the fallback if we're doing texture decompression here */
-      goto fallback;
+      /* Try to avoid the non_blit_transfer if we're doing texture decompression here */
+      goto non_blit_transfer;
    }
 
    /* Handle non-finalized textures. */
    if (!stImage->pt || stImage->pt != stObj->pt || !src) {
-      goto fallback;
+      goto cpu_transfer;
    }
 
    /* XXX Fallback to _mesa_GetTexImage_sw for depth-stencil formats
     * due to an incomplete stencil blit implementation in some drivers. */
    if (format == GL_DEPTH_STENCIL || format == GL_STENCIL_INDEX) {
-      goto fallback;
+      goto non_blit_transfer;
    }
 
    /* If the base internal format and the texture format don't match, we have
     * to fall back to _mesa_GetTexImage_sw. */
    if (texImage->_BaseFormat !=
        _mesa_get_format_base_format(texImage->TexFormat)) {
-      goto fallback;
+      goto non_blit_transfer;
    }
 
-   src_format = get_src_format(screen, stObj->surface_based ? stObj->surface_format : src->format, src);
+   src_format = st_pbo_get_src_format(screen, stObj->surface_based ? stObj->surface_format : src->format, src);
    if (src_format == PIPE_FORMAT_NONE)
-      goto fallback;
+      goto non_blit_transfer;
 
    if (format == GL_DEPTH_COMPONENT || format == GL_DEPTH_STENCIL)
       bind = PIPE_BIND_DEPTH_STENCIL;
    else
       bind = PIPE_BIND_RENDER_TARGET;
 
-   dst_format = get_dst_format(ctx, pipe_target, src_format, util_format_is_compressed(src->format),
+   dst_format = st_pbo_get_dst_format(ctx, pipe_target, src_format, util_format_is_compressed(src->format),
                                format, type, bind);
    if (dst_format == PIPE_FORMAT_NONE)
-      goto fallback;
+      goto non_blit_transfer;
 
    if (st->pbo.download_enabled && ctx->Pack.BufferObj) {
       if (try_pbo_download(st, texImage,
@@ -2567,11 +2568,11 @@ st_GetTexSubImage(struct gl_context * ctx,
     * in which case the memcpy-based fast path will be used. */
    if (_mesa_format_matches_format_and_type(texImage->TexFormat, format,
                                             type, ctx->Pack.SwapBytes, NULL))
-      goto fallback;
+      goto non_blit_transfer;
 
    dst = create_dst_texture(ctx, dst_format, pipe_target, width, height, depth, gl_target, bind);
    if (!dst)
-      goto fallback;
+      goto non_blit_transfer;
 
    /* From now on, we need the gallium representation of dimensions. */
    if (gl_target == GL_TEXTURE_1D_ARRAY) {
@@ -2612,12 +2613,17 @@ st_GetTexSubImage(struct gl_context * ctx,
                            depth, format, type, pixels, texImage);
    pipe_resource_reference(&dst, NULL);
 
-fallback:
-   if (!done) {
-      _mesa_GetTexSubImage_sw(ctx, xoffset, yoffset, zoffset,
-                              width, height, depth,
-                              format, type, pixels, texImage);
+non_blit_transfer:
+   if (done)
+      return;
+   if (st->allow_compute_based_texture_transfer) {
+      if (st_GetTexSubImage_shader(ctx, xoffset, yoffset, zoffset, width, height, depth, format, type, pixels, texImage))
+         return;
    }
+cpu_transfer:
+   _mesa_GetTexSubImage_sw(ctx, xoffset, yoffset, zoffset,
+                           width, height, depth,
+                           format, type, pixels, texImage);
 }
 
 

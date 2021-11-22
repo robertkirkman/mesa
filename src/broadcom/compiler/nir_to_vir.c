@@ -1670,15 +1670,6 @@ vir_emit_tlb_color_write(struct v3d_compile *c, unsigned rt)
 static void
 emit_frag_end(struct v3d_compile *c)
 {
-        /* If the shader has no non-TLB side effects and doesn't write Z
-         * we can promote it to enabling early_fragment_tests even
-         * if the user didn't.
-         */
-        if (c->output_position_index == -1 &&
-            !(c->s->info.num_images || c->s->info.num_ssbos)) {
-                c->s->info.fs.early_fragment_tests = true;
-        }
-
         if (c->output_sample_mask_index != -1) {
                 vir_SETMSF_dest(c, vir_nop_reg(),
                                 vir_AND(c,
@@ -1703,55 +1694,69 @@ emit_frag_end(struct v3d_compile *c)
         }
 
         struct qreg tlbu_reg = vir_magic_reg(V3D_QPU_WADDR_TLBU);
-        if (c->output_position_index != -1 &&
-            !c->s->info.fs.early_fragment_tests) {
-                struct qinst *inst = vir_MOV_dest(c, tlbu_reg,
-                                                  c->outputs[c->output_position_index]);
-                uint8_t tlb_specifier = TLB_TYPE_DEPTH;
 
-                if (c->devinfo->ver >= 42) {
-                        tlb_specifier |= (TLB_V42_DEPTH_TYPE_PER_PIXEL |
-                                          TLB_SAMPLE_MODE_PER_PIXEL);
-                } else
-                        tlb_specifier |= TLB_DEPTH_TYPE_PER_PIXEL;
+        /* If the shader has no non-TLB side effects and doesn't write Z
+         * we can promote it to enabling early_fragment_tests even
+         * if the user didn't.
+         */
+        if (c->output_position_index == -1 &&
+            !(c->s->info.num_images || c->s->info.num_ssbos) &&
+            !c->s->info.fs.uses_discard &&
+            !c->fs_key->sample_alpha_to_coverage &&
+            has_any_tlb_color_write) {
+                c->s->info.fs.early_fragment_tests = true;
+        }
+
+        /* By default, the FEP will perform early fragment tests. This can be
+         * disabled when needed (Z writes from shader, discards, etc), by
+         * setting c->writes_z to True, in which case, the QPUs need to write
+         * the Z value.
+         */
+        if (!c->s->info.fs.early_fragment_tests) {
+                c->writes_z = true;
+                uint8_t tlb_specifier = TLB_TYPE_DEPTH;
+                struct qinst *inst;
+
+                if (c->output_position_index != -1) {
+                        /* Shader writes to gl_FragDepth, use that */
+                        inst = vir_MOV_dest(c, tlbu_reg,
+                                            c->outputs[c->output_position_index]);
+
+                        if (c->devinfo->ver >= 42) {
+                                tlb_specifier |= (TLB_V42_DEPTH_TYPE_PER_PIXEL |
+                                                  TLB_SAMPLE_MODE_PER_PIXEL);
+                        } else {
+                                tlb_specifier |= TLB_DEPTH_TYPE_PER_PIXEL;
+                        }
+                } else {
+                        /* Shader doesn't write to gl_FragDepth, take Z from
+                         * FEP.
+                         */
+                        inst = vir_MOV_dest(c, tlbu_reg, vir_nop_reg());
+
+                        if (c->devinfo->ver >= 42) {
+                                /* The spec says the PER_PIXEL flag is ignored
+                                 * for invariant writes, but the simulator
+                                 * demands it.
+                                 */
+                                tlb_specifier |= (TLB_V42_DEPTH_TYPE_INVARIANT |
+                                                  TLB_SAMPLE_MODE_PER_PIXEL);
+                        } else {
+                                tlb_specifier |= TLB_DEPTH_TYPE_INVARIANT;
+                        }
+
+                        /* Since (single-threaded) fragment shaders always need
+                         * a TLB write, if we dond't have any we emit a
+                         * passthrouh Z and flag us as potentially discarding,
+                         * so that we can use Z as the required TLB write.
+                         */
+                        if (!has_any_tlb_color_write)
+                                c->s->info.fs.uses_discard = true;
+                }
 
                 inst->uniform = vir_get_uniform_index(c, QUNIFORM_CONSTANT,
                                                       tlb_specifier |
                                                       0xffffff00);
-                c->writes_z = true;
-        } else if (c->s->info.fs.uses_discard ||
-                   !c->s->info.fs.early_fragment_tests ||
-                   c->fs_key->sample_alpha_to_coverage ||
-                   !has_any_tlb_color_write) {
-                /* Emit passthrough Z if it needed to be delayed until shader
-                 * end due to potential discards.
-                 *
-                 * Since (single-threaded) fragment shaders always need a TLB
-                 * write, emit passthrouh Z if we didn't have any color
-                 * buffers and flag us as potentially discarding, so that we
-                 * can use Z as the TLB write.
-                 */
-                c->s->info.fs.uses_discard = true;
-
-                struct qinst *inst = vir_MOV_dest(c, tlbu_reg,
-                                                  vir_nop_reg());
-                uint8_t tlb_specifier = TLB_TYPE_DEPTH;
-
-                if (c->devinfo->ver >= 42) {
-                        /* The spec says the PER_PIXEL flag is ignored for
-                         * invariant writes, but the simulator demands it.
-                         */
-                        tlb_specifier |= (TLB_V42_DEPTH_TYPE_INVARIANT |
-                                          TLB_SAMPLE_MODE_PER_PIXEL);
-                } else {
-                        tlb_specifier |= TLB_DEPTH_TYPE_INVARIANT;
-                }
-
-                inst->uniform = vir_get_uniform_index(c,
-                                                      QUNIFORM_CONSTANT,
-                                                      tlb_specifier |
-                                                      0xffffff00);
-                c->writes_z = true;
         }
 
         /* XXX: Performance improvement: Merge Z write and color writes TLB
@@ -2058,14 +2063,14 @@ ntq_setup_gs_inputs(struct v3d_compile *c)
                  */
                 assert(glsl_type_is_array(var->type));
                 const struct glsl_type *type = glsl_get_array_element(var->type);
-                unsigned array_len = MAX2(glsl_get_length(type), 1);
+                unsigned var_len = glsl_count_vec4_slots(type, false, false);
                 unsigned loc = var->data.driver_location;
 
                 resize_qreg_array(c, &c->inputs, &c->inputs_array_size,
-                                  (loc + array_len) * 4);
+                                  (loc + var_len) * 4);
 
                 if (var->data.compact) {
-                        for (unsigned j = 0; j < array_len; j++) {
+                        for (unsigned j = 0; j < var_len; j++) {
                                 unsigned input_idx = c->num_inputs++;
                                 unsigned loc_frac = var->data.location_frac + j;
                                 unsigned loc = var->data.location + loc_frac / 4;
@@ -2076,8 +2081,10 @@ ntq_setup_gs_inputs(struct v3d_compile *c)
                        continue;
                 }
 
-                for (unsigned j = 0; j < array_len; j++) {
-                        unsigned num_elements = glsl_get_vector_elements(type);
+                for (unsigned j = 0; j < var_len; j++) {
+                        unsigned num_elements =
+                                glsl_type_is_struct(glsl_without_array(type)) ?
+                                4 : glsl_get_vector_elements(type);
                         for (unsigned k = 0; k < num_elements; k++) {
                                 unsigned chan = var->data.location_frac + k;
                                 unsigned input_idx = c->num_inputs++;
@@ -2124,7 +2131,7 @@ ntq_setup_fs_inputs(struct v3d_compile *c)
                 } else if (var->data.compact) {
                         for (int j = 0; j < var_len; j++)
                                 emit_compact_fragment_input(c, loc, var, j);
-                } else if (glsl_type_is_struct(var->type)) {
+                } else if (glsl_type_is_struct(glsl_without_array(var->type))) {
                         for (int j = 0; j < var_len; j++) {
                            emit_fragment_input(c, loc, var, j, 4);
                         }

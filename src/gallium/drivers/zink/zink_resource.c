@@ -647,11 +647,6 @@ resource_object_create(struct zink_screen *screen, const struct pipe_resource *t
       assert(reqs.memoryTypeBits & BITFIELD_BIT(mai.memoryTypeIndex));
    }
 
-   VkMemoryType mem_type = screen->info.mem_props.memoryTypes[mai.memoryTypeIndex];
-   obj->coherent = mem_type.propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-   if (!(templ->flags & PIPE_RESOURCE_FLAG_SPARSE))
-      obj->host_visible = mem_type.propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
-
    VkMemoryDedicatedAllocateInfo ded_alloc_info = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
       .pNext = mai.pNext,
@@ -673,6 +668,7 @@ resource_object_create(struct zink_screen *screen, const struct pipe_resource *t
       mai.pNext = &emai;
    }
 
+#ifdef ZINK_USE_DMABUF
    VkImportMemoryFdInfoKHR imfi = {
       VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
       NULL,
@@ -690,6 +686,7 @@ resource_object_create(struct zink_screen *screen, const struct pipe_resource *t
       imfi.pNext = mai.pNext;
       mai.pNext = &imfi;
    }
+#endif
 
    struct wsi_memory_allocate_info memory_wsi_info = {
       VK_STRUCTURE_TYPE_WSI_MEMORY_ALLOCATE_INFO_MESA,
@@ -715,6 +712,11 @@ resource_object_create(struct zink_screen *screen, const struct pipe_resource *t
    } else {
       obj->offset = zink_bo_get_offset(obj->bo);
       obj->size = zink_bo_get_size(obj->bo);
+   }
+
+   obj->coherent = obj->bo->base.placement & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+   if (!(templ->flags & PIPE_RESOURCE_FLAG_SPARSE)) {
+      obj->host_visible = obj->bo->base.placement & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
    }
 
    if (templ->target == PIPE_BUFFER) {
@@ -931,6 +933,7 @@ zink_resource_get_param(struct pipe_screen *pscreen, struct pipe_context *pctx,
    case PIPE_RESOURCE_PARAM_HANDLE_TYPE_SHARED:
    case PIPE_RESOURCE_PARAM_HANDLE_TYPE_KMS:
    case PIPE_RESOURCE_PARAM_HANDLE_TYPE_FD: {
+#ifdef ZINK_USE_DMABUF
       memset(&whandle, 0, sizeof(whandle));
       if (param == PIPE_RESOURCE_PARAM_HANDLE_TYPE_SHARED)
          whandle.type = WINSYS_HANDLE_TYPE_SHARED;
@@ -944,6 +947,10 @@ zink_resource_get_param(struct pipe_screen *pscreen, struct pipe_context *pctx,
 
       *value = whandle.handle;
       break;
+#else
+      (void)whandle;
+      return false;
+#endif
    }
    }
    return true;

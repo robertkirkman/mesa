@@ -508,20 +508,41 @@ foreach platform : _platforms
   pre_args += '-DHAVE_@0@_PLATFORM'.format(platform.to_upper())
 endforeach
 
-# Android uses emutls for versions <= P/28. For USE_ELF_TLS we need ELF TLS.
 use_elf_tls = false
-if (not ['freebsd', 'openbsd', 'haiku'].contains(host_machine.system()) and
-    (not with_platform_android or get_option('platform-sdk-version') >= 29) and
-    (not with_platform_windows or not with_shared_glapi))
+if not with_platform_windows or not with_shared_glapi
   pre_args += '-DUSE_ELF_TLS'
   use_elf_tls = true
 
-  if with_platform_android
+  if with_platform_android and get_option('platform-sdk-version') >= 29
     # By default the NDK compiler, at least, emits emutls references instead of
     # ELF TLS, even when building targeting newer API levels.  Make it actually do
     # ELF TLS instead.
     c_args += '-fno-emulated-tls'
     cpp_args += '-fno-emulated-tls'
+  endif
+
+  # -mtls-dialect=gnu2 speeds up non-initial-exec TLS significantly but requires
+  # full toolchain (including libc) support.
+  have_mtls_dialect = false
+  foreach c_arg : get_option('c_args')
+    if c_arg.startswith('-mtls-dialect=')
+      have_mtls_dialect = true
+      break
+    endif
+  endforeach
+  if not have_mtls_dialect
+    # need .run to check libc support. meson aborts when calling .run when
+    # cross-compiling, but because this is just an optimization we can skip it
+    if meson.is_cross_build()
+      warning('cannot auto-detect -mtls-dialect when cross-compiling, using compiler default')
+    else
+      # -fpic to force dynamic tls, otherwise TLS relaxation defeats check
+      gnu2_test = cc.run('int __thread x; int main() { return x; }', args: ['-mtls-dialect=gnu2', '-fpic'], name: '-mtls-dialect=gnu2')
+      if gnu2_test.returncode() == 0
+        c_args += '-mtls-dialect=gnu2'
+        cpp_args += '-mtls-dialect=gnu2'
+      endif
+    endif
   endif
 endif
 
@@ -648,9 +669,12 @@ endif
 
 dep_dxheaders = null_dep
 if with_gallium_d3d12 or with_microsoft_clc
-  dep_dxheaders = dependency('DirectX-Headers', fallback : ['DirectX-Headers', 'dep_dxheaders'],
-    required : with_gallium_d3d12
-  )
+  dep_dxheaders = dependency('directx-headers', required : false)
+  if not dep_dxheaders.found()
+    dep_dxheaders = dependency('DirectX-Headers', fallback : ['DirectX-Headers', 'dep_dxheaders'],
+      required : with_gallium_d3d12
+    )
+  endif
 endif
 
 if with_vulkan_overlay_layer or with_aco_tests
@@ -909,9 +933,13 @@ if get_option('vmware-mks-stats')
 endif
 
 _opencl = get_option('gallium-opencl')
+_rtti = get_option('cpp_rtti')
 if _opencl != 'disabled'
   if not with_gallium
     error('OpenCL Clover implementation requires at least one gallium driver.')
+  endif
+  if not _rtti
+    error('The Clover OpenCL state tracker requires rtti')
   endif
 
   with_libclc = true
@@ -1730,31 +1758,29 @@ if with_llvm
     error('SWR requires LLVM draw support.')
   endif
 
-  # LLVM can be built without rtti, turning off rtti changes the ABI of C++
-  # programs, so we need to build all C++ code in mesa without rtti as well to
-  # ensure that linking works.
-  #
-  # In meson 0.51.0 we can use cmake to find LLVM in addittion to meson's
-  # builtin llvm-config based finder. A new generic variable getter method
-  # has also been added, so we'll use that if we can, to cover the cmake case.
-  if dep_llvm.type_name() == 'internal'
-    _rtti = subproject('llvm').get_variable('has_rtti', true)
-  else
-    # The CMake finder will return 'ON', the llvm-config will return 'YES'
-    _rtti = ['ON', 'YES'].contains(dep_llvm.get_variable(cmake : 'LLVM_ENABLE_RTTI', configtool: 'has-rtti'))
-  endif
-  if not _rtti
-    if with_gallium_opencl
-      error('The Clover OpenCL state tracker requires rtti, you need to turn off clover or use an LLVM built with LLVM_ENABLE_RTTI.')
-    endif
-    if cc.get_id() == 'msvc'
-      cpp_args += '/GR-'
+  if cc.get_id() != 'msvc'
+    # LLVM can be built without rtti, turning off rtti changes the ABI of C++
+    # programs, so we need to build all C++ code in mesa without rtti as well to
+    # ensure that linking works. Note that MSVC does handle mismatching RTTI
+    # without issues, so only apply this for other compilers.
+    #
+    # In meson 0.51.0 we can use cmake to find LLVM in addittion to meson's
+    # builtin llvm-config based finder. A new generic variable getter method
+    # has also been added, so we'll use that if we can, to cover the cmake case.
+    if dep_llvm.type_name() == 'internal'
+      _llvm_rtti = subproject('llvm').get_variable('has_rtti', true)
     else
-      cpp_args += '-fno-rtti'
+      # The CMake finder will return 'ON', the llvm-config will return 'YES'
+      _llvm_rtti = ['ON', 'YES'].contains(dep_llvm.get_variable(cmake : 'LLVM_ENABLE_RTTI', configtool: 'has-rtti'))
     endif
-  endif
-
-  if cc.get_id() == 'msvc'
+    if _rtti != _llvm_rtti
+      if _llvm_rtti
+        error('LLVM was built with RTTI, cannot build Mesa with RTTI disabled. Remove cpp_rtti disable switch or use LLVM built without LLVM_ENABLE_RTTI.')
+      else
+        error('LLVM was built without RTTI, so Mesa must also disable RTTI. Use an LLVM built with LLVM_ENABLE_RTTI or add cpp_rtti=false.')
+      endif
+    endif
+  else
     # Suppress "/DELAYLOAD:ole32.dll/shell32.dll ignored" warnings that LLVM adds
     add_project_link_arguments(
       '/ignore:4199',

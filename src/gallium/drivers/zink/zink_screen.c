@@ -544,8 +544,15 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
       return screen->info.props.limits.minTexelBufferOffsetAlignment;
 
-   case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
-      return 1;
+   case PIPE_CAP_TEXTURE_TRANSFER_MODES: {
+      enum pipe_texture_transfer_mode mode = PIPE_TEXTURE_TRANSFER_BLIT;
+      if (!screen->is_cpu &&
+          screen->info.have_KHR_8bit_storage &&
+          screen->info.have_KHR_16bit_storage &&
+          screen->info.have_KHR_shader_float16_int8)
+         mode |= PIPE_TEXTURE_TRANSFER_COMPUTE;
+      return mode;
+   }
 
    case PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE:
       return MIN2(get_smallest_buffer_heap(screen),
@@ -980,6 +987,23 @@ vk_sample_count_flags(uint32_t sample_count)
 }
 
 static bool
+zink_is_compute_copy_faster(struct pipe_screen *pscreen,
+                            enum pipe_format src_format,
+                            enum pipe_format dst_format,
+                            unsigned width,
+                            unsigned height,
+                            unsigned depth,
+                            bool cpu)
+{
+   if (cpu)
+      /* very basic for now, probably even worse for some cases,
+       * but fixes lots of others
+       */
+      return width * height * depth > 64 * 64;
+   return false;
+}
+
+static bool
 zink_is_format_supported(struct pipe_screen *pscreen,
                          enum pipe_format format,
                          enum pipe_texture_target target,
@@ -1167,6 +1191,7 @@ zink_destroy_screen(struct pipe_screen *pscreen)
 
    slab_destroy_parent(&screen->transfer_pool);
    ralloc_free(screen);
+   glsl_type_singleton_decref();
 }
 
 static bool
@@ -1746,11 +1771,11 @@ zink_query_memory_info(struct pipe_screen *pscreen, struct pipe_memory_info *inf
          if (mem.memoryProperties.memoryHeaps[i].flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
             /* VRAM */
             info->total_device_memory += mem.memoryProperties.memoryHeaps[i].size / 1024;
-            info->avail_device_memory += (budget.heapBudget[i] - budget.heapUsage[i]) / 1024;
+            info->avail_device_memory += (mem.memoryProperties.memoryHeaps[i].size - budget.heapUsage[i]) / 1024;
          } else {
             /* GART */
             info->total_staging_memory += mem.memoryProperties.memoryHeaps[i].size / 1024;
-            info->avail_staging_memory += (budget.heapBudget[i] - budget.heapUsage[i]) / 1024;
+            info->avail_staging_memory += (mem.memoryProperties.memoryHeaps[i].size - budget.heapUsage[i]) / 1024;
          }
       }
       /* evictions not yet supported in vulkan */
@@ -1980,6 +2005,7 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
    screen->base.get_shader_param = zink_get_shader_param;
    screen->base.get_compiler_options = zink_get_compiler_options;
    screen->base.get_sample_pixel_grid = zink_get_sample_pixel_grid;
+   screen->base.is_compute_copy_faster = zink_is_compute_copy_faster;
    screen->base.is_format_supported = zink_is_format_supported;
    screen->base.query_dmabuf_modifiers = zink_query_dmabuf_modifiers;
    screen->base.is_dmabuf_modifier_supported = zink_is_dmabuf_modifier_supported;
@@ -2028,6 +2054,15 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
    if (!os_get_total_physical_memory(&screen->total_mem))
       goto fail;
 
+   switch (screen->info.driver_props.driverID) {
+   case VK_DRIVER_ID_NVIDIA_PROPRIETARY:
+      screen->max_fences = 500;
+      break;
+   default:
+      screen->max_fences = 5000;
+      break;
+   }
+
    if (debug_get_bool_option("ZINK_NO_TIMELINES", false))
       screen->info.have_KHR_timeline_semaphore = false;
    if (screen->info.have_KHR_timeline_semaphore)
@@ -2075,6 +2110,7 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
                                 zink_create_vertex_state, zink_vertex_state_destroy);
    screen->base.create_vertex_state = zink_cache_create_vertex_state;
    screen->base.vertex_state_destroy = zink_cache_vertex_state_destroy;
+   glsl_type_singleton_init_or_ref();
 
    return screen;
 

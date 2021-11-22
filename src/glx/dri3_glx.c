@@ -306,6 +306,8 @@ dri3_create_context_attribs(struct glx_screen *base,
          pcp->base.noError = GL_TRUE;
    }
 
+   pcp->base.renderType = dca.render_type;
+
    pcp->driContext =
       (*psc->image_driver->createContextAttribs) (psc->driScreen,
                                                   dca.api,
@@ -1019,6 +1021,13 @@ dri3_create_screen(int screen, struct glx_display * priv)
       if (psc->config->configQueryb(psc->driScreen, "force_direct_glx_context",
                                     &force) == 0) {
          psc->base.force_direct_context = force;
+      }
+
+      uint8_t invalid_glx_destroy_window = false;
+      if (psc->config->configQueryb(psc->driScreen,
+                                    "allow_invalid_glx_destroy_window",
+                                    &invalid_glx_destroy_window) == 0) {
+         psc->base.allow_invalid_glx_destroy_window = invalid_glx_destroy_window;
       }
    }
 

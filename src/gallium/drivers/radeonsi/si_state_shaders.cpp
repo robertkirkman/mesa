@@ -1900,7 +1900,6 @@ void si_update_ps_inputs_read_or_disabled(struct si_context *sctx)
 static void si_get_vs_key_outputs(struct si_context *sctx, struct si_shader_selector *vs,
                                   union si_shader_key *key)
 {
-
    key->ge.opt.kill_clip_distances = vs->clipdist_mask & ~sctx->queued.named.rasterizer->clip_plane_enable;
 
    /* Find out which VS outputs aren't used by the PS. */
@@ -1908,15 +1907,9 @@ static void si_get_vs_key_outputs(struct si_context *sctx, struct si_shader_sele
    uint64_t linked = outputs_written & sctx->ps_inputs_read_or_disabled;
 
    key->ge.opt.kill_outputs = ~linked & outputs_written;
-
-   if (vs->info.stage != MESA_SHADER_GEOMETRY) {
-      key->ge.opt.ngg_culling = sctx->ngg_culling;
-      key->ge.mono.u.vs_export_prim_id = sctx->shader.ps.cso && sctx->shader.ps.cso->info.uses_primid;
-   } else {
-      key->ge.opt.ngg_culling = 0;
-      key->ge.mono.u.vs_export_prim_id = 0;
-   }
-
+   key->ge.opt.ngg_culling = sctx->ngg_culling;
+   key->ge.mono.u.vs_export_prim_id = vs->info.stage != MESA_SHADER_GEOMETRY &&
+                                      sctx->shader.ps.cso && sctx->shader.ps.cso->info.uses_primid;
    key->ge.opt.kill_pointsize = vs->info.writes_psize &&
                                 sctx->current_rast_prim != PIPE_PRIM_POINTS &&
                                 !sctx->queued.named.rasterizer->polygon_mode_is_points;
@@ -3024,11 +3017,12 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
    bool ngg_culling_allowed =
       sscreen->info.chip_class >= GFX10 &&
       sscreen->use_ngg_culling &&
-      (sel->info.stage == MESA_SHADER_VERTEX ||
-       sel->info.stage == MESA_SHADER_TESS_EVAL) &&
       sel->info.writes_position &&
       !sel->info.writes_viewport_index && /* cull only against viewport 0 */
-      !sel->info.base.writes_memory && !sel->so.num_outputs &&
+      !sel->info.base.writes_memory &&
+      /* NGG GS supports culling with streamout because it culls after streamout. */
+      (sel->info.stage == MESA_SHADER_GEOMETRY || !sel->so.num_outputs) &&
+      (sel->info.stage != MESA_SHADER_GEOMETRY || sel->info.num_stream_output_components[0]) &&
       (sel->info.stage != MESA_SHADER_VERTEX ||
        (!sel->info.base.vs.blit_sgprs_amd &&
         !sel->info.base.vs.window_space_position));
@@ -3041,7 +3035,8 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
             sel->ngg_cull_vert_threshold = 0; /* always enabled */
          else
             sel->ngg_cull_vert_threshold = 128;
-      } else if (sel->info.stage == MESA_SHADER_TESS_EVAL) {
+      } else if (sel->info.stage == MESA_SHADER_TESS_EVAL ||
+                 sel->info.stage == MESA_SHADER_GEOMETRY) {
          if (sel->rast_prim != PIPE_PRIM_POINTS)
             sel->ngg_cull_vert_threshold = 0; /* always enabled */
       }

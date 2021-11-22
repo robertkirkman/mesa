@@ -11,9 +11,9 @@
 #include <string>
 #include <vector>
 
-#include <intel/dev/intel_device_info.h>
-#include <intel/perf/intel_perf.h>
-#include <intel/perf/intel_perf_query.h>
+#include "dev/intel_device_info.h"
+#include "perf/intel_perf.h"
+#include "perf/intel_perf_query.h"
 
 namespace pps
 {
@@ -23,13 +23,6 @@ class IntelPerf
 {
    public:
    IntelPerf(int drm_fd);
-
-   IntelPerf(const IntelPerf &) = delete;
-   IntelPerf &operator=(const IntelPerf &) = delete;
-
-   IntelPerf(IntelPerf &&);
-   IntelPerf &operator=(IntelPerf &&) noexcept;
-
    ~IntelPerf();
 
    std::optional<struct intel_perf_query_info> find_query_by_name(const std::string &name) const;
@@ -49,6 +42,9 @@ class IntelPerf
 
    struct intel_perf_context *ctx = nullptr;
    struct intel_perf_config *cfg = nullptr;
+
+   // Accumulations are stored here
+   struct intel_perf_query_result result = {};
 
    struct intel_device_info devinfo = {};
 

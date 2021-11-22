@@ -491,6 +491,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .EXT_host_query_reset = true,
       .EXT_image_drm_format_modifier = device->rad_info.chip_class >= GFX9,
       .EXT_image_robustness = true,
+      .EXT_image_view_min_lod = true,
       .EXT_index_type_uint8 = device->rad_info.chip_class >= GFX8,
       .EXT_inline_uniform_block = true,
       .EXT_line_rasterization = true,
@@ -1628,6 +1629,12 @@ radv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT *features =
             (VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT *)ext;
          features->vertexInputDynamicState = true;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_VIEW_MIN_LOD_FEATURES_EXT: {
+         VkPhysicalDeviceImageViewMinLodFeaturesEXT *features =
+            (VkPhysicalDeviceImageViewMinLodFeaturesEXT *)ext;
+         features->minLod = true;
          break;
       }
       default:
@@ -7214,12 +7221,6 @@ radv_get_max_anisotropy(struct radv_device *device, const VkSamplerCreateInfo *p
    return 0;
 }
 
-static inline int
-S_FIXED(float value, unsigned frac_bits)
-{
-   return value * (1 << frac_bits);
-}
-
 static uint32_t
 radv_register_border_color(struct radv_device *device, VkClearColorValue value)
 {
@@ -7312,10 +7313,10 @@ radv_init_sampler(struct radv_device *device, struct radv_sampler *sampler,
        S_008F30_ANISO_THRESHOLD(max_aniso_ratio >> 1) | S_008F30_ANISO_BIAS(max_aniso_ratio) |
        S_008F30_DISABLE_CUBE_WRAP(0) | S_008F30_COMPAT_MODE(compat_mode) |
        S_008F30_FILTER_MODE(filter_mode) | S_008F30_TRUNC_COORD(trunc_coord));
-   sampler->state[1] = (S_008F34_MIN_LOD(S_FIXED(CLAMP(pCreateInfo->minLod, 0, 15), 8)) |
-                        S_008F34_MAX_LOD(S_FIXED(CLAMP(pCreateInfo->maxLod, 0, 15), 8)) |
+   sampler->state[1] = (S_008F34_MIN_LOD(radv_float_to_ufixed(CLAMP(pCreateInfo->minLod, 0, 15), 8)) |
+                        S_008F34_MAX_LOD(radv_float_to_ufixed(CLAMP(pCreateInfo->maxLod, 0, 15), 8)) |
                         S_008F34_PERF_MIP(max_aniso_ratio ? max_aniso_ratio + 6 : 0));
-   sampler->state[2] = (S_008F38_LOD_BIAS(S_FIXED(CLAMP(pCreateInfo->mipLodBias, -16, 16), 8)) |
+   sampler->state[2] = (S_008F38_LOD_BIAS(radv_float_to_sfixed(CLAMP(pCreateInfo->mipLodBias, -16, 16), 8)) |
                         S_008F38_XY_MAG_FILTER(radv_tex_filter(pCreateInfo->magFilter, max_aniso)) |
                         S_008F38_XY_MIN_FILTER(radv_tex_filter(pCreateInfo->minFilter, max_aniso)) |
                         S_008F38_MIP_FILTER(radv_tex_mipfilter(pCreateInfo->mipmapMode)) |
