@@ -425,10 +425,9 @@ struct si_shader *si_generate_gs_copy_shader(struct si_screen *sscreen,
 
    shader->selector = gs_selector;
    shader->is_gs_copy_shader = true;
+   shader->wave_size = si_determine_wave_size(sscreen, shader);
 
-   si_llvm_context_init(&ctx, sscreen, compiler,
-                        si_get_wave_size(sscreen, MESA_SHADER_VERTEX,
-                                         false, false));
+   si_llvm_context_init(&ctx, sscreen, compiler, shader->wave_size);
    ctx.shader = shader;
    ctx.stage = MESA_SHADER_VERTEX;
 

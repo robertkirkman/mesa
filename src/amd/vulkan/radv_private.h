@@ -430,7 +430,9 @@ struct radv_meta_state {
    struct {
       VkRenderPass render_pass[NUM_META_FS_KEYS];
       VkPipeline color_pipelines[NUM_META_FS_KEYS];
+   } color_clear[MAX_SAMPLES_LOG2][MAX_RTS];
 
+   struct {
       VkRenderPass depthstencil_rp;
       VkPipeline depth_only_pipeline[NUM_DEPTH_CLEAR_PIPELINES];
       VkPipeline stencil_only_pipeline[NUM_DEPTH_CLEAR_PIPELINES];
@@ -439,7 +441,7 @@ struct radv_meta_state {
       VkPipeline depth_only_unrestricted_pipeline[NUM_DEPTH_CLEAR_PIPELINES];
       VkPipeline stencil_only_unrestricted_pipeline[NUM_DEPTH_CLEAR_PIPELINES];
       VkPipeline depthstencil_unrestricted_pipeline[NUM_DEPTH_CLEAR_PIPELINES];
-   } clear[MAX_SAMPLES_LOG2];
+   } ds_clear[MAX_SAMPLES_LOG2];
 
    VkPipelineLayout clear_color_p_layout;
    VkPipelineLayout clear_depth_p_layout;
@@ -538,6 +540,11 @@ struct radv_meta_state {
       VkDescriptorSetLayout img_ds_layout;
       VkPipeline pipeline;
    } cleari_r32g32b32;
+   struct {
+      VkPipelineLayout p_layout;
+      VkDescriptorSetLayout ds_layout;
+      VkPipeline pipeline[MAX_SAMPLES_LOG2];
+   } fmask_copy;
 
    struct {
       VkPipelineLayout p_layout;
@@ -1059,7 +1066,6 @@ enum radv_cmd_dirty_bits {
    RADV_CMD_DIRTY_FRAMEBUFFER = 1ull << 32,
    RADV_CMD_DIRTY_VERTEX_BUFFER = 1ull << 33,
    RADV_CMD_DIRTY_STREAMOUT_BUFFER = 1ull << 34,
-   RADV_CMD_DIRTY_VERTEX_STATE = RADV_CMD_DIRTY_VERTEX_BUFFER | RADV_CMD_DIRTY_DYNAMIC_VERTEX_INPUT,
 };
 
 enum radv_cmd_flush_bits {
@@ -1612,14 +1618,18 @@ void radv_update_fce_metadata(struct radv_cmd_buffer *cmd_buffer, struct radv_im
 void radv_update_dcc_metadata(struct radv_cmd_buffer *cmd_buffer, struct radv_image *image,
                               const VkImageSubresourceRange *range, bool value);
 enum radv_cmd_flush_bits radv_src_access_flush(struct radv_cmd_buffer *cmd_buffer,
-                                               VkAccessFlags src_flags,
+                                               VkAccessFlags2KHR src_flags,
                                                const struct radv_image *image);
 enum radv_cmd_flush_bits radv_dst_access_flush(struct radv_cmd_buffer *cmd_buffer,
-                                               VkAccessFlags dst_flags,
+                                               VkAccessFlags2KHR dst_flags,
                                                const struct radv_image *image);
 uint32_t radv_fill_buffer(struct radv_cmd_buffer *cmd_buffer, const struct radv_image *image,
                           struct radeon_winsys_bo *bo, uint64_t offset, uint64_t size,
                           uint32_t value);
+void radv_copy_buffer(struct radv_cmd_buffer *cmd_buffer, struct radeon_winsys_bo *src_bo,
+                      struct radeon_winsys_bo *dst_bo, uint64_t src_offset, uint64_t dst_offset,
+                      uint64_t size);
+
 void radv_cmd_buffer_trace_emit(struct radv_cmd_buffer *cmd_buffer);
 bool radv_get_memory_fd(struct radv_device *device, struct radv_device_memory *memory, int *pFD);
 void radv_free_memory(struct radv_device *device, const VkAllocationCallbacks *pAllocator,
@@ -2429,9 +2439,9 @@ struct radv_framebuffer {
 };
 
 struct radv_subpass_barrier {
-   VkPipelineStageFlags src_stage_mask;
-   VkAccessFlags src_access_mask;
-   VkAccessFlags dst_access_mask;
+   VkPipelineStageFlags2KHR src_stage_mask;
+   VkAccessFlags2KHR src_access_mask;
+   VkAccessFlags2KHR dst_access_mask;
 };
 
 void radv_emit_subpass_barrier(struct radv_cmd_buffer *cmd_buffer,

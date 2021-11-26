@@ -491,8 +491,14 @@ radv_device_init_meta(struct radv_device *device)
    if (result != VK_SUCCESS)
       goto fail_accel_struct_build;
 
+   result = radv_device_init_meta_fmask_copy_state(device);
+   if (result != VK_SUCCESS)
+      goto fail_fmask_copy;
+
    return VK_SUCCESS;
 
+fail_fmask_copy:
+   radv_device_finish_accel_struct_build_state(device);
 fail_accel_struct_build:
    radv_device_finish_meta_fmask_expand_state(device);
 fail_fmask_expand:
@@ -541,6 +547,7 @@ radv_device_finish_meta(struct radv_device *device)
    radv_device_finish_meta_fmask_expand_state(device);
    radv_device_finish_meta_dcc_retile_state(device);
    radv_device_finish_meta_copy_vrs_htile_state(device);
+   radv_device_finish_meta_fmask_copy_state(device);
 
    radv_store_meta_pipeline(device);
    radv_pipeline_cache_finish(&device->meta_state.cache);
@@ -706,4 +713,17 @@ get_global_ids(nir_builder *b, unsigned num_components)
       mask);
 
    return nir_iadd(b, nir_imul(b, block_ids, block_size), local_ids);
+}
+
+void
+radv_break_on_count(nir_builder *b, nir_variable *var, nir_ssa_def *count)
+{
+   nir_ssa_def *counter = nir_load_var(b, var);
+
+   nir_push_if(b, nir_uge(b, counter, count));
+   nir_jump(b, nir_jump_break);
+   nir_pop_if(b, NULL);
+
+   counter = nir_iadd(b, counter, nir_imm_int(b, 1));
+   nir_store_var(b, var, counter, 0x1);
 }

@@ -74,8 +74,8 @@ create_clipdist_vars(nir_shader *shader, nir_variable **io_vars,
                      unsigned ucp_enables, bool output,
                      bool use_clipdist_array)
 {
+   shader->info.clip_distance_array_size = util_last_bit(ucp_enables);
    if (use_clipdist_array) {
-      shader->info.clip_distance_array_size = util_last_bit(ucp_enables);
       io_vars[0] =
          create_clipdist_var(shader, output,
                              VARYING_SLOT_CLIP_DIST0,
@@ -115,10 +115,23 @@ load_clipdist_input(nir_builder *b, nir_variable *in, int location_offset,
       .num_slots = 1,
    };
 
-   nir_ssa_def *load =
-      nir_load_input(b, 4, 32, nir_imm_int(b, 0),
-                     .base = in->data.driver_location + location_offset,
-                     .io_semantics = semantics);
+   nir_ssa_def *load;
+   if (b->shader->options->use_interpolated_input_intrinsics) {
+      /* TODO: use sample when per-sample shading? */
+      nir_ssa_def *barycentric = nir_load_barycentric(
+            b, nir_intrinsic_load_barycentric_pixel, INTERP_MODE_NONE);
+      load = nir_load_interpolated_input(
+            b, 4, 32, barycentric, nir_imm_int(b, 0),
+            .base = in->data.driver_location + location_offset,
+            .dest_type = nir_type_float32,
+            .io_semantics = semantics);
+
+   } else {
+      load = nir_load_input(b, 4, 32, nir_imm_int(b, 0),
+                            .base = in->data.driver_location + location_offset,
+                            .dest_type = nir_type_float32,
+                            .io_semantics = semantics);
+   }
 
    val[0] = nir_channel(b, load, 0);
    val[1] = nir_channel(b, load, 1);

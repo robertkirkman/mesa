@@ -577,6 +577,7 @@ struct si_ps_epilog_bits {
 union si_shader_part_key {
    struct {
       struct si_vs_prolog_bits states;
+      unsigned wave32 : 1;
       unsigned num_input_sgprs : 6;
       /* For merged stages such as LS-HS, HS input VGPRs are first. */
       unsigned num_merged_next_stage_vgprs : 3;
@@ -590,9 +591,11 @@ union si_shader_part_key {
    } vs_prolog;
    struct {
       struct si_tcs_epilog_bits states;
+      unsigned wave32 : 1;
    } tcs_epilog;
    struct {
       struct si_ps_prolog_bits states;
+      unsigned wave32 : 1;
       unsigned num_input_sgprs : 6;
       unsigned num_input_vgprs : 5;
       /* Color interpolation and two-side color selection. */
@@ -606,6 +609,7 @@ union si_shader_part_key {
    } ps_prolog;
    struct {
       struct si_ps_epilog_bits states;
+      unsigned wave32 : 1;
       unsigned colors_written : 8;
       unsigned color_types : 16;
       unsigned writes_z : 1;
@@ -760,7 +764,7 @@ struct gfx9_gs_info {
    unsigned esgs_ring_size; /* in bytes */
 };
 
-#define SI_NUM_VGT_STAGES_KEY_BITS 5
+#define SI_NUM_VGT_STAGES_KEY_BITS 8
 #define SI_NUM_VGT_STAGES_STATES   (1 << SI_NUM_VGT_STAGES_KEY_BITS)
 
 /* The VGT_SHADER_STAGES key used to index the table of precomputed values.
@@ -774,9 +778,13 @@ union si_vgt_stages_key {
       uint8_t ngg_passthrough : 1;
       uint8_t ngg : 1;       /* gfx10+ */
       uint8_t streamout : 1; /* only used with NGG */
-      uint8_t _pad : 8 - SI_NUM_VGT_STAGES_KEY_BITS;
+      uint8_t hs_wave32 : 1;
+      uint8_t gs_wave32 : 1;
+      uint8_t vs_wave32 : 1;
 #else /* UTIL_ARCH_BIG_ENDIAN */
-      uint8_t _pad : 8 - SI_NUM_VGT_STAGES_KEY_BITS;
+      uint8_t vs_wave32 : 1;
+      uint8_t gs_wave32 : 1;
+      uint8_t hs_wave32 : 1;
       uint8_t streamout : 1;
       uint8_t ngg : 1;
       uint8_t ngg_passthrough : 1;
@@ -809,6 +817,7 @@ struct si_shader {
    bool is_optimized;
    bool is_binary_shared;
    bool is_gs_copy_shader;
+   uint8_t wave_size;
 
    /* The following data is all that's needed for binary shaders. */
    struct si_shader_binary binary;
@@ -944,6 +953,7 @@ void si_nir_late_opts(nir_shader *nir);
 char *si_finalize_nir(struct pipe_screen *screen, void *nirptr);
 
 /* si_state_shaders.cpp */
+unsigned si_determine_wave_size(struct si_screen *sscreen, struct si_shader *shader);
 void gfx9_get_gs_info(struct si_shader_selector *es, struct si_shader_selector *gs,
                       struct gfx9_gs_info *out);
 bool gfx10_is_ngg_passthrough(struct si_shader *shader);

@@ -37,13 +37,37 @@
 #include "util/u_prim.h"
 #include "tgsi/tgsi_from_mesa.h"
 
+unsigned si_determine_wave_size(struct si_screen *sscreen, struct si_shader *shader)
+{
+   /* There are a few uses that pass shader=NULL here, expecting the default compute wave size. */
+   struct si_shader_info *info = shader ? &shader->selector->info : NULL;
+   gl_shader_stage stage = info ? info->stage : MESA_SHADER_COMPUTE;
+
+   if (sscreen->info.chip_class < GFX10)
+      return 64;
+
+   /* Legacy GS only supports Wave64. */
+   if ((stage == MESA_SHADER_VERTEX && shader->key.ge.as_es && !shader->key.ge.as_ngg) ||
+       (stage == MESA_SHADER_TESS_EVAL && shader->key.ge.as_es && !shader->key.ge.as_ngg) ||
+       (stage == MESA_SHADER_GEOMETRY && !shader->key.ge.as_ngg))
+      return 64;
+
+   if (stage == MESA_SHADER_COMPUTE)
+      return sscreen->debug_flags & DBG(W32_CS) ? 32 : 64;
+
+   if (stage == MESA_SHADER_FRAGMENT)
+      return sscreen->debug_flags & DBG(W32_PS) ? 32 : 64;
+
+   return sscreen->debug_flags & DBG(W32_GE) ? 32 : 64;
+}
+
 /* SHADER_CACHE */
 
 /**
  * Return the IR key for the shader cache.
  */
 void si_get_ir_cache_key(struct si_shader_selector *sel, bool ngg, bool es,
-                         unsigned char ir_sha1_cache_key[20])
+                         unsigned wave_size, unsigned char ir_sha1_cache_key[20])
 {
    struct blob blob = {};
    unsigned ir_size;
@@ -70,7 +94,7 @@ void si_get_ir_cache_key(struct si_shader_selector *sel, bool ngg, bool es,
       shader_variant_flags |= 1 << 0;
    if (sel->nir)
       shader_variant_flags |= 1 << 1;
-   if (si_get_wave_size(sel->screen, sel->info.stage, ngg, es) == 32)
+   if (wave_size == 32)
       shader_variant_flags |= 1 << 2;
    if (sel->info.stage == MESA_SHADER_FRAGMENT &&
        /* Derivatives imply helper invocations so check for needs_quad_helper_invocations. */
@@ -586,7 +610,7 @@ static void si_shader_hs(struct si_screen *sscreen, struct si_shader *shader)
 
    si_pm4_set_reg(
       pm4, R_00B428_SPI_SHADER_PGM_RSRC1_HS,
-      S_00B428_VGPRS((shader->config.num_vgprs - 1) / (sscreen->ge_wave_size == 32 ? 8 : 4)) |
+      S_00B428_VGPRS((shader->config.num_vgprs - 1) / (shader->wave_size == 32 ? 8 : 4)) |
          (sscreen->info.chip_class <= GFX9 ? S_00B428_SGPRS((shader->config.num_sgprs - 1) / 8)
                                            : 0) |
          S_00B428_DX10_CLAMP(1) | S_00B428_MEM_ORDERED(si_shader_mem_ordered(shader)) |
@@ -1207,7 +1231,6 @@ static void gfx10_shader_ngg(struct si_screen *sscreen, struct si_shader *shader
    else
       gs_vgpr_comp_cnt = 0; /* VGPR0 contains offsets 0, 1 */
 
-   unsigned wave_size = si_get_shader_wave_size(shader);
    unsigned late_alloc_wave64, cu_mask;
 
    ac_compute_late_alloc(&sscreen->info, true, shader->key.ge.opt.ngg_culling,
@@ -1217,7 +1240,7 @@ static void gfx10_shader_ngg(struct si_screen *sscreen, struct si_shader *shader
    si_pm4_set_reg(pm4, R_00B320_SPI_SHADER_PGM_LO_ES, va >> 8);
    si_pm4_set_reg(
       pm4, R_00B228_SPI_SHADER_PGM_RSRC1_GS,
-      S_00B228_VGPRS((shader->config.num_vgprs - 1) / (wave_size == 32 ? 8 : 4)) |
+      S_00B228_VGPRS((shader->config.num_vgprs - 1) / (shader->wave_size == 32 ? 8 : 4)) |
          S_00B228_FLOAT_MODE(shader->config.float_mode) | S_00B228_DX10_CLAMP(1) |
          S_00B228_MEM_ORDERED(si_shader_mem_ordered(shader)) |
          /* Disable the WGP mode on gfx10.3 because it can hang. (it happened on VanGogh)
@@ -1343,6 +1366,7 @@ static void gfx10_shader_ngg(struct si_screen *sscreen, struct si_shader *shader
    shader->ctx_reg.ngg.vgt_stages.u.ngg = 1;
    shader->ctx_reg.ngg.vgt_stages.u.streamout = gs_sel->so.num_outputs;
    shader->ctx_reg.ngg.vgt_stages.u.ngg_passthrough = gfx10_is_ngg_passthrough(shader);
+   shader->ctx_reg.ngg.vgt_stages.u.gs_wave32 = shader->wave_size == 32;
 }
 
 static void si_emit_shader_vs(struct si_context *sctx)
@@ -1511,7 +1535,7 @@ static void si_shader_vs(struct si_screen *sscreen, struct si_shader *shader,
                   S_00B124_MEM_BASE(sscreen->info.address32_hi >> 8));
 
    uint32_t rsrc1 =
-      S_00B128_VGPRS((shader->config.num_vgprs - 1) / (sscreen->ge_wave_size == 32 ? 8 : 4)) |
+      S_00B128_VGPRS((shader->config.num_vgprs - 1) / (shader->wave_size == 32 ? 8 : 4)) |
       S_00B128_VGPR_COMP_CNT(vgpr_comp_cnt) | S_00B128_DX10_CLAMP(1) |
       S_00B128_MEM_ORDERED(si_shader_mem_ordered(shader)) |
       S_00B128_FLOAT_MODE(shader->config.float_mode);
@@ -1715,7 +1739,7 @@ static void si_shader_ps(struct si_screen *sscreen, struct si_shader *shader)
 
    /* Set interpolation controls. */
    spi_ps_in_control = S_0286D8_NUM_INTERP(num_interp) |
-                       S_0286D8_PS_W32_EN(sscreen->ps_wave_size == 32);
+                       S_0286D8_PS_W32_EN(shader->wave_size == 32);
 
    shader->ctx_reg.ps.num_interp = num_interp;
    shader->ctx_reg.ps.spi_baryc_cntl = spi_baryc_cntl;
@@ -1731,7 +1755,7 @@ static void si_shader_ps(struct si_screen *sscreen, struct si_shader *shader)
                   S_00B024_MEM_BASE(sscreen->info.address32_hi >> 8));
 
    uint32_t rsrc1 =
-      S_00B028_VGPRS((shader->config.num_vgprs - 1) / (sscreen->ps_wave_size == 32 ? 8 : 4)) |
+      S_00B028_VGPRS((shader->config.num_vgprs - 1) / (shader->wave_size == 32 ? 8 : 4)) |
       S_00B028_DX10_CLAMP(1) | S_00B028_MEM_ORDERED(si_shader_mem_ordered(shader)) |
       S_00B028_FLOAT_MODE(shader->config.float_mode);
 
@@ -1748,6 +1772,8 @@ static void si_shader_ps(struct si_screen *sscreen, struct si_shader *shader)
 
 static void si_shader_init_pm4_state(struct si_screen *sscreen, struct si_shader *shader)
 {
+   assert(shader->wave_size);
+
    switch (shader->selector->info.stage) {
    case MESA_SHADER_VERTEX:
       if (shader->key.ge.as_ls)
@@ -2268,6 +2294,7 @@ static bool si_check_missing_main_part(struct si_screen *sscreen, struct si_shad
          main_part->key.ge.as_ngg = key->ge.as_ngg;
       }
       main_part->is_monolithic = false;
+      main_part->wave_size = si_determine_wave_size(sscreen, main_part);
 
       if (!si_compile_shader(sscreen, compiler_state->compiler, main_part,
                              &compiler_state->debug)) {
@@ -2444,6 +2471,7 @@ current_not_ready:
 
    shader->selector = sel;
    *((SHADER_KEY_TYPE*)&shader->key) = *key;
+   shader->wave_size = si_determine_wave_size(sscreen, shader);
    shader->compiler_ctx_state.compiler = &sctx->compiler;
    shader->compiler_ctx_state.debug = sctx->debug;
    shader->compiler_ctx_state.is_debug_context = sctx->is_debug;
@@ -2710,11 +2738,15 @@ static void si_init_shader_selector_async(void *job, void *gdata, int thread_ind
            sel->info.stage == MESA_SHADER_TESS_EVAL || sel->info.stage == MESA_SHADER_GEOMETRY))
          shader->key.ge.as_ngg = 1;
 
+      shader->wave_size = si_determine_wave_size(sscreen, shader);
+
       if (sel->nir) {
-         if (sel->info.stage <= MESA_SHADER_GEOMETRY)
-            si_get_ir_cache_key(sel, shader->key.ge.as_ngg, shader->key.ge.as_es, ir_sha1_cache_key);
-         else
-            si_get_ir_cache_key(sel, false, false, ir_sha1_cache_key);
+         if (sel->info.stage <= MESA_SHADER_GEOMETRY) {
+            si_get_ir_cache_key(sel, shader->key.ge.as_ngg, shader->key.ge.as_es,
+                                shader->wave_size, ir_sha1_cache_key);
+         } else {
+            si_get_ir_cache_key(sel, false, false, shader->wave_size, ir_sha1_cache_key);
+         }
       }
 
       /* Try to load the shader from the shader cache. */
@@ -4050,10 +4082,12 @@ struct si_pm4_state *si_build_vgt_shader_config(struct si_screen *screen, union 
    if (screen->info.chip_class >= GFX9)
       stages |= S_028B54_MAX_PRIMGRP_IN_WAVE(2);
 
-   if (screen->info.chip_class >= GFX10 && screen->ge_wave_size == 32) {
-      stages |= S_028B54_HS_W32_EN(1) |
-                S_028B54_GS_W32_EN(key.u.ngg) | /* legacy GS only supports Wave64 */
-                S_028B54_VS_W32_EN(1);
+   if (screen->info.chip_class >= GFX10) {
+      stages |= S_028B54_HS_W32_EN(key.u.hs_wave32) |
+                S_028B54_GS_W32_EN(key.u.gs_wave32) |
+                S_028B54_VS_W32_EN(key.u.vs_wave32);
+      /* Legacy GS only supports Wave64. Read it as an implication. */
+      assert(!(key.u.gs && !key.u.ngg) || !key.u.gs_wave32);
    }
 
    si_pm4_set_reg(pm4, R_028B54_VGT_SHADER_STAGES_EN, stages);

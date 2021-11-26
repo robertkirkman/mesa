@@ -45,16 +45,30 @@ radv_render_pass_add_subpass_dep(struct radv_render_pass *pass, const VkSubpassD
    if (src == VK_SUBPASS_EXTERNAL)
       dst = 0;
 
+
+   /* From the Vulkan 1.2.195 spec:
+    *
+    * "If an instance of VkMemoryBarrier2 is included in the pNext chain, srcStageMask,
+    *  dstStageMask, srcAccessMask, and dstAccessMask parameters are ignored. The synchronization
+    *  and access scopes instead are defined by the parameters of VkMemoryBarrier2."
+    */
+   const VkMemoryBarrier2KHR *barrier =
+      vk_find_struct_const(dep->pNext, MEMORY_BARRIER_2_KHR);
+   VkPipelineStageFlags2KHR src_stage_mask = barrier ? barrier->srcStageMask : dep->srcStageMask;
+   VkAccessFlags2KHR src_access_mask = barrier ? barrier->srcAccessMask : dep->srcAccessMask;
+   VkPipelineStageFlags2KHR dst_stage_mask = barrier ? barrier->dstStageMask : dep->dstStageMask;
+   VkAccessFlags2KHR dst_access_mask = barrier ? barrier->dstAccessMask : dep->dstAccessMask;
+
    if (dst == VK_SUBPASS_EXTERNAL) {
-      if (dep->dstStageMask != VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT)
-         pass->end_barrier.src_stage_mask |= dep->srcStageMask;
-      pass->end_barrier.src_access_mask |= dep->srcAccessMask;
-      pass->end_barrier.dst_access_mask |= dep->dstAccessMask;
+      if (dst_stage_mask != VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT_KHR)
+         pass->end_barrier.src_stage_mask |= src_stage_mask;
+      pass->end_barrier.src_access_mask |= src_access_mask;
+      pass->end_barrier.dst_access_mask |= dst_access_mask;
    } else {
-      if (dep->dstStageMask != VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT)
-         pass->subpasses[dst].start_barrier.src_stage_mask |= dep->srcStageMask;
-      pass->subpasses[dst].start_barrier.src_access_mask |= dep->srcAccessMask;
-      pass->subpasses[dst].start_barrier.dst_access_mask |= dep->dstAccessMask;
+      if (dst_stage_mask != VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT_KHR)
+         pass->subpasses[dst].start_barrier.src_stage_mask |= src_stage_mask;
+      pass->subpasses[dst].start_barrier.src_access_mask |= src_access_mask;
+      pass->subpasses[dst].start_barrier.dst_access_mask |= dst_access_mask;
    }
 }
 
@@ -144,7 +158,7 @@ radv_render_pass_add_implicit_deps(struct radv_render_pass *pass)
       }
 
       if (add_ingoing_dep) {
-         const VkSubpassDependency2KHR implicit_ingoing_dep = {
+         const VkSubpassDependency2 implicit_ingoing_dep = {
             .srcSubpass = VK_SUBPASS_EXTERNAL,
             .dstSubpass = i, /* first subpass attachment is used in */
             .srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -161,7 +175,7 @@ radv_render_pass_add_implicit_deps(struct radv_render_pass *pass)
       }
 
       if (add_outgoing_dep) {
-         const VkSubpassDependency2KHR implicit_outgoing_dep = {
+         const VkSubpassDependency2 implicit_outgoing_dep = {
             .srcSubpass = i, /* last subpass attachment is used in */
             .dstSubpass = VK_SUBPASS_EXTERNAL,
             .srcStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,

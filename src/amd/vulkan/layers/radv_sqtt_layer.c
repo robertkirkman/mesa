@@ -563,31 +563,18 @@ sqtt_CmdResolveImage2KHR(VkCommandBuffer commandBuffer,
 }
 
 VKAPI_ATTR void VKAPI_CALL
-sqtt_CmdWaitEvents(VkCommandBuffer commandBuffer, uint32_t eventCount, const VkEvent *pEvents,
-                   VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask,
-                   uint32_t memoryBarrierCount, const VkMemoryBarrier *pMemoryBarriers,
-                   uint32_t bufferMemoryBarrierCount,
-                   const VkBufferMemoryBarrier *pBufferMemoryBarriers,
-                   uint32_t imageMemoryBarrierCount,
-                   const VkImageMemoryBarrier *pImageMemoryBarriers)
+sqtt_CmdWaitEvents2KHR(VkCommandBuffer commandBuffer, uint32_t eventCount, const VkEvent* pEvents,
+                       const VkDependencyInfoKHR* pDependencyInfos)
 {
-   EVENT_MARKER(WaitEvents, commandBuffer, eventCount, pEvents, srcStageMask, dstStageMask,
-                memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount,
-                pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
+   EVENT_MARKER_ALIAS(WaitEvents2KHR, WaitEvents, commandBuffer, eventCount, pEvents,
+                      pDependencyInfos);
 }
 
 VKAPI_ATTR void VKAPI_CALL
-sqtt_CmdPipelineBarrier(VkCommandBuffer commandBuffer, VkPipelineStageFlags srcStageMask,
-                        VkPipelineStageFlags destStageMask, VkBool32 byRegion,
-                        uint32_t memoryBarrierCount, const VkMemoryBarrier *pMemoryBarriers,
-                        uint32_t bufferMemoryBarrierCount,
-                        const VkBufferMemoryBarrier *pBufferMemoryBarriers,
-                        uint32_t imageMemoryBarrierCount,
-                        const VkImageMemoryBarrier *pImageMemoryBarriers)
+sqtt_CmdPipelineBarrier2KHR(VkCommandBuffer commandBuffer,
+                            const VkDependencyInfoKHR* pDependencyInfo)
 {
-   EVENT_MARKER(PipelineBarrier, commandBuffer, srcStageMask, destStageMask, byRegion,
-                memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount,
-                pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
+   EVENT_MARKER_ALIAS(PipelineBarrier2KHR, PipelineBarrier, commandBuffer, pDependencyInfo);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -666,10 +653,10 @@ sqtt_CmdEndQuery(VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t 
 }
 
 VKAPI_ATTR void VKAPI_CALL
-sqtt_CmdWriteTimestamp(VkCommandBuffer commandBuffer, VkPipelineStageFlagBits pipelineStage,
-                       VkQueryPool queryPool, uint32_t flags)
+sqtt_CmdWriteTimestamp2KHR(VkCommandBuffer commandBuffer, VkPipelineStageFlags2KHR stage,
+                           VkQueryPool queryPool, uint32_t query)
 {
-   API_MARKER(WriteTimestamp, commandBuffer, pipelineStage, queryPool, flags);
+   API_MARKER_ALIAS(WriteTimestamp2KHR, WriteTimestamp, commandBuffer, stage, queryPool, query);
 }
 
 VKAPI_ATTR void VKAPI_CALL

@@ -52,6 +52,7 @@
 #include "util/u_idalloc.h"
 #include "util/simple_mtx.h"
 #include "util/u_dynarray.h"
+#include "util/mesa-sha1.h"
 #include "vbo/vbo.h"
 
 
@@ -2609,9 +2610,8 @@ struct gl_linked_shader
 {
    gl_shader_stage Stage;
 
-#ifdef DEBUG
-   unsigned SourceChecksum;
-#endif
+   /** All gl_shader::compiled_source_sha1 combined. */
+   uint8_t linked_source_sha1[SHA1_DIGEST_LENGTH];
 
    struct gl_program *Program;  /**< Post-compile assembly code */
 
@@ -2680,17 +2680,21 @@ struct gl_shader
    GLuint Name;  /**< AKA the handle */
    GLint RefCount;  /**< Reference count */
    GLchar *Label;   /**< GL_KHR_debug */
-   unsigned char sha1[20]; /**< SHA1 hash of pre-processed source */
    GLboolean DeletePending;
    bool IsES;              /**< True if this shader uses GLSL ES */
 
    enum gl_compile_status CompileStatus;
 
-#ifdef DEBUG
-   unsigned SourceChecksum;       /**< for debug/logging purposes */
-#endif
-   const GLchar *Source;  /**< Source code string */
+   /** SHA1 of the pre-processed source used by the disk cache. */
+   uint8_t disk_cache_sha1[SHA1_DIGEST_LENGTH];
+   /** SHA1 of the original source before replacement, set by glShaderSource. */
+   uint8_t source_sha1[SHA1_DIGEST_LENGTH];
+   /** SHA1 of FallbackSource (a copy of some original source before replacement). */
+   uint8_t fallback_source_sha1[SHA1_DIGEST_LENGTH];
+   /** SHA1 of the current compiled source, set by successful glCompileShader. */
+   uint8_t compiled_source_sha1[SHA1_DIGEST_LENGTH];
 
+   const GLchar *Source;  /**< Source code string */
    const GLchar *FallbackSource;  /**< Fallback string used by on-disk cache*/
 
    GLchar *InfoLog;
@@ -3970,6 +3974,12 @@ struct gl_constants
     * features are unimplemented and might not work correctly.
     */
    GLboolean AllowHigherCompatVersion;
+
+   /**
+    * Allow GLSL shaders with the compatibility version directive
+    * in non-compatibility profiles. (for shader-db)
+    */
+   GLboolean AllowGLSLCompatShaders;
 
    /**
     * Allow extra tokens at end of preprocessor directives. The CTS now tests

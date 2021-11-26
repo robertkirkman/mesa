@@ -686,9 +686,6 @@ struct si_screen {
     * We want to minimize the impact on multithreaded Mesa. */
    struct ac_llvm_compiler compiler_lowp[10];
 
-   unsigned compute_wave_size;
-   unsigned ps_wave_size;
-   unsigned ge_wave_size;
    unsigned ngg_subgroup_size;
 
    struct util_idalloc_mt buffer_ids;
@@ -1978,33 +1975,6 @@ static inline void radeon_add_to_gfx_buffer_list_check_mem(struct si_context *sc
       si_flush_gfx_cs(sctx, RADEON_FLUSH_ASYNC_START_NEXT_GFX_IB_NOW, NULL);
 
    radeon_add_to_buffer_list(sctx, &sctx->gfx_cs, bo, usage);
-}
-
-static inline unsigned si_get_wave_size(struct si_screen *sscreen,
-                                        gl_shader_stage stage, bool ngg, bool es)
-{
-   if (stage == MESA_SHADER_COMPUTE)
-      return sscreen->compute_wave_size;
-   else if (stage == MESA_SHADER_FRAGMENT)
-      return sscreen->ps_wave_size;
-   else if ((stage == MESA_SHADER_VERTEX && es && !ngg) ||
-            (stage == MESA_SHADER_TESS_EVAL && es && !ngg) ||
-            (stage == MESA_SHADER_GEOMETRY && !ngg)) /* legacy GS only supports Wave64 */
-      return 64;
-   else
-      return sscreen->ge_wave_size;
-}
-
-static inline unsigned si_get_shader_wave_size(struct si_shader *shader)
-{
-   if (shader->selector->info.stage <= MESA_SHADER_GEOMETRY) {
-      return si_get_wave_size(shader->selector->screen, shader->selector->info.stage,
-                              shader->key.ge.as_ngg,
-                              shader->key.ge.as_es);
-   }
-
-   return si_get_wave_size(shader->selector->screen, shader->selector->info.stage,
-                           false, false);
 }
 
 static inline void si_select_draw_vbo(struct si_context *sctx)

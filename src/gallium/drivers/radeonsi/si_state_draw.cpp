@@ -229,12 +229,23 @@ static bool si_update_shaders(struct si_context *sctx)
    key.index = 0;
 
    /* Update VGT_SHADER_STAGES_EN. */
-   if (HAS_TESS)
+   if (HAS_TESS) {
       key.u.tess = 1;
+      if (GFX_VERSION >= GFX10)
+         key.u.hs_wave32 = sctx->queued.named.hs->wave_size == 32;
+   }
    if (HAS_GS)
       key.u.gs = 1;
-   if (NGG)
+   if (NGG) {
       key.index |= si_get_vs_inline(sctx, HAS_TESS, HAS_GS)->current->ctx_reg.ngg.vgt_stages.index;
+   } else if (GFX_VERSION >= GFX10) {
+      if (HAS_GS) {
+         key.u.gs_wave32 = sctx->shader.gs.current->wave_size == 32;
+         key.u.vs_wave32 = sctx->shader.gs.cso->gs_copy_shader->wave_size == 32;
+      } else {
+         key.u.vs_wave32 = si_get_vs_inline(sctx, HAS_TESS, HAS_GS)->current->wave_size == 32;
+      }
+   }
 
    struct si_pm4_state **pm4 = &sctx->vgt_shader_config[key.index];
    if (unlikely(!*pm4))
@@ -631,7 +642,7 @@ static void si_emit_derived_tess_state(struct si_context *sctx, unsigned *num_pa
     * if it's only partially filled.
     */
    unsigned temp_verts_per_tg = *num_patches * max_verts_per_patch;
-   unsigned wave_size = sctx->screen->ge_wave_size;
+   unsigned wave_size = ls_current->wave_size;
 
    if (temp_verts_per_tg > wave_size &&
        (wave_size - temp_verts_per_tg % wave_size >= MAX2(max_verts_per_patch, 8)))
