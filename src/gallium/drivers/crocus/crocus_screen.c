@@ -235,6 +235,7 @@ crocus_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_COMPUTE_SHADER_DERIVATIVES:
    case PIPE_CAP_DOUBLES:
    case PIPE_CAP_MEMOBJ:
+   case PIPE_CAP_IMAGE_STORE_FORMATTED:
       return devinfo->ver >= 7;
    case PIPE_CAP_QUERY_BUFFER_OBJECT:
    case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
@@ -662,7 +663,7 @@ crocus_get_compiler_options(struct pipe_screen *pscreen,
    gl_shader_stage stage = stage_from_pipe(pstage);
    assert(ir == PIPE_SHADER_IR_NIR);
 
-   return screen->compiler->glsl_compiler_options[stage].NirOptions;
+   return screen->compiler->nir_options[stage];
 }
 
 static struct disk_cache *

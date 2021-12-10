@@ -31,7 +31,6 @@
 #include "main/context.h"
 #include "main/debug_output.h"
 #include "main/glthread.h"
-#include "main/samplerobj.h"
 #include "main/shaderobj.h"
 #include "main/state.h"
 #include "main/version.h"
@@ -44,33 +43,19 @@
 #include "st_context.h"
 #include "st_debug.h"
 #include "st_cb_bitmap.h"
-#include "st_cb_blit.h"
 #include "st_cb_bufferobjects.h"
 #include "st_cb_clear.h"
 #include "st_cb_compute.h"
 #include "st_cb_condrender.h"
-#include "st_cb_copyimage.h"
 #include "st_cb_drawpixels.h"
-#include "st_cb_rasterpos.h"
 #include "st_cb_drawtex.h"
 #include "st_cb_eglimage.h"
-#include "st_cb_fbo.h"
 #include "st_cb_feedback.h"
-#include "st_cb_memoryobjects.h"
-#include "st_cb_msaa.h"
 #include "st_cb_perfmon.h"
 #include "st_cb_perfquery.h"
 #include "st_cb_program.h"
 #include "st_cb_queryobj.h"
-#include "st_cb_readpixels.h"
-#include "st_cb_semaphoreobjects.h"
-#include "st_cb_texture.h"
-#include "st_cb_xformfb.h"
 #include "st_cb_flush.h"
-#include "st_cb_syncobj.h"
-#include "st_cb_strings.h"
-#include "st_cb_texturebarrier.h"
-#include "st_cb_viewport.h"
 #include "st_atom.h"
 #include "st_draw.h"
 #include "st_extensions.h"
@@ -95,11 +80,8 @@
 DEBUG_GET_ONCE_BOOL_OPTION(mesa_mvp_dp4, "MESA_MVP_DP4", FALSE)
 
 
-/**
- * Called via ctx->Driver.Enable()
- */
-static void
-st_Enable(struct gl_context *ctx, GLenum cap, UNUSED GLboolean state)
+void
+st_Enable(struct gl_context *ctx, GLenum cap)
 {
    struct st_context *st = st_context(ctx);
 
@@ -116,11 +98,7 @@ st_Enable(struct gl_context *ctx, GLenum cap, UNUSED GLboolean state)
    }
 }
 
-
-/**
- * Called via ctx->Driver.QueryMemoryInfo()
- */
-static void
+void
 st_query_memory_info(struct gl_context *ctx, struct gl_memory_info *out)
 {
    struct pipe_screen *screen = st_context(ctx)->screen;
@@ -201,10 +179,7 @@ st_vp_uses_current_values(const struct gl_context *ctx)
 }
 
 
-/**
- * Called via ctx->Driver.UpdateState()
- */
-static void
+void
 st_invalidate_state(struct gl_context *ctx)
 {
    GLbitfield new_state = ctx->NewState;
@@ -245,16 +220,6 @@ st_invalidate_state(struct gl_context *ctx)
       st->dirty |= ST_NEW_VERTEX_ARRAYS;
       /* glColor3f -> glColor4f changes the vertex format. */
       ctx->Array.NewVertexElements = true;
-   }
-
-   if (st->clamp_frag_depth_in_shader && (new_state & _NEW_VIEWPORT)) {
-      if (ctx->GeometryProgram._Current)
-         st->dirty |= ST_NEW_GS_CONSTANTS;
-      else if (ctx->TessEvalProgram._Current)
-         st->dirty |= ST_NEW_TES_CONSTANTS;
-      else
-         st->dirty |= ST_NEW_VS_CONSTANTS;
-      st->dirty |= ST_NEW_FS_CONSTANTS;
    }
 
    /* Update the vertex shader if ctx->Light._ClampVertexColor was changed. */
@@ -548,15 +513,7 @@ st_init_driver_flags(struct st_context *st)
       f->NewFragClamp = ST_NEW_RASTERIZER;
    }
 
-   if (st->clamp_frag_depth_in_shader) {
-      f->NewClipControl |= ST_NEW_VS_STATE | ST_NEW_GS_STATE |
-                           ST_NEW_TES_STATE;
-
-      f->NewDepthClamp = ST_NEW_FS_STATE | ST_NEW_VS_STATE |
-                         ST_NEW_GS_STATE | ST_NEW_TES_STATE;
-   } else {
-      f->NewDepthClamp = ST_NEW_RASTERIZER;
-   }
+   f->NewDepthClamp = ST_NEW_RASTERIZER;
 
    if (st->lower_ucp)
       f->NewClipPlaneEnable = ST_NEW_VS_STATE | ST_NEW_GS_STATE;
@@ -784,9 +741,6 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
       }
    }
 
-   if (screen->get_param(screen, PIPE_CAP_DEPTH_CLIP_DISABLE) == 2)
-      st->clamp_frag_depth_in_shader = true;
-
    /* called after _mesa_create_context/_mesa_init_point, fix default user
     * settable max point size up
     */
@@ -819,7 +773,6 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
    /* Set which shader types can be compiled at link time. */
    st->shader_has_one_variant[MESA_SHADER_VERTEX] =
          st->has_shareable_shaders &&
-         !st->clamp_frag_depth_in_shader &&
          !st->clamp_vert_color_in_shader &&
          !st->lower_point_size &&
          !st->lower_ucp;
@@ -829,7 +782,6 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
          !st->lower_flatshade &&
          !st->lower_alpha_test &&
          !st->clamp_frag_color_in_shader &&
-         !st->clamp_frag_depth_in_shader &&
          !st->force_persample_in_shader &&
          !st->lower_two_sided_color &&
          !st->lower_texcoord_replace;
@@ -837,14 +789,12 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
    st->shader_has_one_variant[MESA_SHADER_TESS_CTRL] = st->has_shareable_shaders;
    st->shader_has_one_variant[MESA_SHADER_TESS_EVAL] =
          st->has_shareable_shaders &&
-         !st->clamp_frag_depth_in_shader &&
          !st->clamp_vert_color_in_shader &&
          !st->lower_point_size &&
          !st->lower_ucp;
 
    st->shader_has_one_variant[MESA_SHADER_GEOMETRY] =
          st->has_shareable_shaders &&
-         !st->clamp_frag_depth_in_shader &&
          !st->clamp_vert_color_in_shader &&
          !st->lower_point_size &&
          !st->lower_ucp;
@@ -888,7 +838,7 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
    /* This must be done after extensions are initialized to enable persistent
     * mappings immediately.
     */
-   _vbo_CreateContext(ctx, true);
+   _vbo_CreateContext(ctx);
 
    _mesa_initialize_dispatch_tables(ctx);
    _mesa_initialize_vbo_vtxfmt(ctx);
@@ -918,7 +868,7 @@ st_emit_string_marker(struct gl_context *ctx, const GLchar *string, GLsizei len)
 }
 
 
-static void
+void
 st_set_background_context(struct gl_context *ctx,
                           struct util_queue_monitoring *queue_info)
 {
@@ -931,7 +881,7 @@ st_set_background_context(struct gl_context *ctx,
 }
 
 
-static void
+void
 st_get_device_uuid(struct gl_context *ctx, char *uuid)
 {
    struct pipe_screen *screen = st_context(ctx)->screen;
@@ -942,7 +892,7 @@ st_get_device_uuid(struct gl_context *ctx, char *uuid)
 }
 
 
-static void
+void
 st_get_driver_uuid(struct gl_context *ctx, char *uuid)
 {
    struct pipe_screen *screen = st_context(ctx)->screen;
@@ -968,53 +918,18 @@ st_init_driver_functions(struct pipe_screen *screen,
                          struct dd_function_table *functions,
                          bool has_egl_image_validate)
 {
-   _mesa_init_sampler_object_functions(functions);
-
    st_init_draw_functions(screen, functions);
-   st_init_blit_functions(functions);
    st_init_bufferobject_functions(screen, functions);
-   st_init_clear_functions(functions);
-   st_init_bitmap_functions(functions);
-   st_init_copy_image_functions(functions);
-   st_init_drawpixels_functions(functions);
-   st_init_rasterpos_functions(functions);
-
-   st_init_drawtex_functions(functions);
 
    st_init_eglimage_functions(functions, has_egl_image_validate);
 
-   st_init_fbo_functions(functions);
-   st_init_feedback_functions(functions);
-   st_init_memoryobject_functions(functions);
-   st_init_msaa_functions(functions);
-   st_init_perfmon_functions(functions);
-   st_init_perfquery_functions(functions);
    st_init_program_functions(functions);
-   st_init_query_functions(functions);
-   st_init_cond_render_functions(functions);
-   st_init_readpixels_functions(functions);
-   st_init_semaphoreobject_functions(functions);
-   st_init_texture_functions(functions);
-   st_init_texture_barrier_functions(functions);
    st_init_flush_functions(screen, functions);
-   st_init_string_functions(functions);
-   st_init_viewport_functions(functions);
-   st_init_compute_functions(functions);
-
-   st_init_xformfb_functions(functions);
-   st_init_syncobj_functions(functions);
 
    st_init_vdpau_functions(functions);
 
    if (screen->get_param(screen, PIPE_CAP_STRING_MARKER))
       functions->EmitStringMarker = st_emit_string_marker;
-
-   functions->Enable = st_Enable;
-   functions->UpdateState = st_invalidate_state;
-   functions->QueryMemoryInfo = st_query_memory_info;
-   functions->SetBackgroundContext = st_set_background_context;
-   functions->GetDriverUuid = st_get_driver_uuid;
-   functions->GetDeviceUuid = st_get_device_uuid;
 
    /* GL_ARB_get_program_binary */
    functions->GetProgramBinaryDriverSHA1 = st_get_program_binary_driver_sha1;

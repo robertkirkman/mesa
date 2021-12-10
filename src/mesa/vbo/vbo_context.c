@@ -159,7 +159,7 @@ vbo_exec_update_eval_maps(struct gl_context *ctx)
 
 
 GLboolean
-_vbo_CreateContext(struct gl_context *ctx, bool use_buffer_objects)
+_vbo_CreateContext(struct gl_context *ctx)
 {
    struct vbo_context *vbo = &ctx->vbo_context;
 
@@ -180,7 +180,7 @@ _vbo_CreateContext(struct gl_context *ctx, bool use_buffer_objects)
     * will pretty much be permanently installed, which means that the
     * vtxfmt mechanism can be removed now.
     */
-   vbo_exec_init(ctx, use_buffer_objects);
+   vbo_exec_init(ctx);
    if (ctx->API == API_OPENGL_COMPAT)
       vbo_save_init(ctx);
 
@@ -217,12 +217,4 @@ _vbo_current_attrib(const struct gl_context *ctx, gl_vert_attrib attr)
    const struct vbo_context *vbo = vbo_context_const(ctx);
    const gl_vertex_processing_mode vmp = ctx->VertexProgram._VPMode;
    return &vbo->current[_vbo_attribute_alias_map[vmp][attr]];
-}
-
-
-const struct gl_vertex_buffer_binding *
-_vbo_current_binding(const struct gl_context *ctx)
-{
-   const struct vbo_context *vbo = vbo_context_const(ctx);
-   return &vbo->binding;
 }

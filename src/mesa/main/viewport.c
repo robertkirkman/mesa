@@ -35,6 +35,8 @@
 #include "mtypes.h"
 #include "viewport.h"
 
+#include "state_tracker/st_cb_viewport.h"
+
 static void
 clamp_viewport(struct gl_context *ctx, GLfloat *x, GLfloat *y,
                GLfloat *width, GLfloat *height)
@@ -113,8 +115,7 @@ viewport(struct gl_context *ctx, GLint x, GLint y, GLsizei width,
    for (unsigned i = 0; i < ctx->Const.MaxViewports; i++)
       set_viewport_no_notify(ctx, i, input.X, input.Y, input.Width, input.Height);
 
-   if (ctx->Driver.Viewport)
-      ctx->Driver.Viewport(ctx);
+   st_viewport(ctx);
 }
 
 /**
@@ -166,8 +167,7 @@ _mesa_set_viewport(struct gl_context *ctx, unsigned idx, GLfloat x, GLfloat y,
    clamp_viewport(ctx, &x, &y, &width, &height);
    set_viewport_no_notify(ctx, idx, x, y, width, height);
 
-   if (ctx->Driver.Viewport)
-      ctx->Driver.Viewport(ctx);
+   st_viewport(ctx);
 }
 
 static void
@@ -182,8 +182,7 @@ viewport_array(struct gl_context *ctx, GLuint first, GLsizei count,
                              inputs[i].Width, inputs[i].Height);
    }
 
-   if (ctx->Driver.Viewport)
-      ctx->Driver.Viewport(ctx);
+   st_viewport(ctx);
 }
 
 void GLAPIENTRY
@@ -305,9 +304,6 @@ _mesa_set_depth_range(struct gl_context *ctx, unsigned idx,
                       GLclampd nearval, GLclampd farval)
 {
    set_depth_range_no_notify(ctx, idx, nearval, farval);
-
-   if (ctx->Driver.DepthRange)
-      ctx->Driver.DepthRange(ctx);
 }
 
 /**
@@ -340,10 +336,6 @@ _mesa_DepthRange(GLclampd nearval, GLclampd farval)
     */
    for (i = 0; i < ctx->Const.MaxViewports; i++)
       set_depth_range_no_notify(ctx, i, nearval, farval);
-
-   if (ctx->Driver.DepthRange) {
-      ctx->Driver.DepthRange(ctx);
-   }
 }
 
 void GLAPIENTRY
@@ -366,9 +358,6 @@ depth_range_arrayv(struct gl_context *ctx, GLuint first, GLsizei count,
 {
    for (GLsizei i = 0; i < count; i++)
       set_depth_range_no_notify(ctx, i + first, inputs[i].Near, inputs[i].Far);
-
-   if (ctx->Driver.DepthRange)
-      ctx->Driver.DepthRange(ctx);
 }
 
 void GLAPIENTRY
@@ -419,9 +408,6 @@ _mesa_DepthRangeArrayfvOES(GLuint first, GLsizei count, const GLfloat *v)
 
    for (i = 0; i < count; i++)
       set_depth_range_no_notify(ctx, i + first, v[i * 2], v[i * 2 + 1]);
-
-   if (ctx->Driver.DepthRange)
-      ctx->Driver.DepthRange(ctx);
 }
 
 /**
@@ -532,16 +518,10 @@ clip_control(struct gl_context *ctx, GLenum origin, GLenum depth, bool no_error)
          ctx->NewDriverState |= ctx->DriverFlags.NewPolygonState;
       else
          ctx->NewState |= _NEW_POLYGON;
-
-      if (ctx->Driver.FrontFace)
-         ctx->Driver.FrontFace(ctx, ctx->Polygon.FrontFace);
    }
 
    if (ctx->Transform.ClipDepthMode != depth) {
       ctx->Transform.ClipDepthMode = depth;
-
-      if (ctx->Driver.DepthRange)
-         ctx->Driver.DepthRange(ctx);
    }
 }
 

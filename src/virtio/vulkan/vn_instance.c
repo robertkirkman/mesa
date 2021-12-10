@@ -293,6 +293,8 @@ vn_instance_init_renderer(struct vn_instance *instance)
          instance->renderer_info.vk_ext_command_serialization_spec_version);
       vn_log(instance, "VK_MESA_venus_protocol spec version %d",
              instance->renderer_info.vk_mesa_venus_protocol_spec_version);
+      vn_log(instance, "supports blob id 0: %d",
+             instance->renderer_info.supports_blob_id_0);
    }
 
    return VK_SUCCESS;
@@ -319,6 +321,13 @@ vn_instance_submit_roundtrip(struct vn_instance *instance,
    return result;
 }
 
+static bool
+roundtrip_seqno_ge(uint32_t a, uint32_t b)
+{
+   /* a >= b, but deal with wrapping as well */
+   return (a - b) <= INT32_MAX;
+}
+
 void
 vn_instance_wait_roundtrip(struct vn_instance *instance,
                            uint32_t roundtrip_seqno)
@@ -328,7 +337,7 @@ vn_instance_wait_roundtrip(struct vn_instance *instance,
    uint32_t iter = 0;
    do {
       const uint32_t cur = atomic_load_explicit(ptr, memory_order_acquire);
-      if (cur >= roundtrip_seqno || roundtrip_seqno - cur >= INT32_MAX)
+      if (roundtrip_seqno_ge(cur, roundtrip_seqno))
          break;
       vn_relax(&iter, "roundtrip");
    } while (true);

@@ -492,6 +492,28 @@ intrinsic("terminate_ray")
 # src[] = { sbt_index, payload }
 intrinsic("execute_callable", src_comp=[1, -1])
 
+# Initialize a ray query
+#
+#   0. Ray Query
+#   1. Acceleration Structure
+#   2. Ray Flags
+#   3. Cull Mask
+#   4. Ray Origin
+#   5. Ray Tmin
+#   6. Ray Direction
+#   7. Ray Tmax
+intrinsic("rq_initialize", src_comp=[-1, -1, 1, 1, 3, 1, 3, 1])
+# src[] = { query }
+intrinsic("rq_terminate", src_comp=[-1])
+# src[] = { query }
+intrinsic("rq_proceed", src_comp=[-1], dest_comp=1)
+# src[] = { query, hit }
+intrinsic("rq_generate_intersection", src_comp=[-1, 1])
+# src[] = { query }
+intrinsic("rq_confirm_intersection", src_comp=[-1])
+# src[] = { query, committed } BASE=nir_ray_query_value
+intrinsic("rq_load", src_comp=[-1, 1], dest_comp=0, indices=[BASE,COLUMN])
+
 # Driver independent raytracing helpers
 
 # rt_resume is a helper that that be the first instruction accesing the
@@ -1319,6 +1341,9 @@ store("ssbo_block_intel", [-1, 1], [WRITE_MASK, ACCESS, ALIGN_MUL, ALIGN_OFFSET]
 
 # src[] = { value, offset }.
 store("shared_block_intel", [1], [BASE, WRITE_MASK, ALIGN_MUL, ALIGN_OFFSET])
+
+# Intrinsics for Intel mesh shading
+system_value("mesh_global_arg_addr_intel", 1, bit_sizes=[64])
 
 # Intrinsics for Intel bindless thread dispatch
 system_value("btd_dss_id_intel", 1)

@@ -207,15 +207,11 @@ The following are only applicable for drivers that uses NIR, as they
 modify the behavior for the common ``NIR_PASS`` and ``NIR_PASS_V`` macros,
 that wrap calls to NIR lowering/optimizations.
 
-:envvar:`NIR_PRINT`
-   If defined, the resulting NIR shader will be printed out at each
-   successful NIR lowering/optimization call.
-:envvar:`NIR_TEST_CLONE`
-   If defined, cloning a NIR shader would be tested at each successful
-   NIR lowering/optimization call.
-:envvar:`NIR_TEST_SERIALIZE`
-   If defined, serialize and deserialize a NIR shader would be tested at
-   each successful NIR lowering/optimization call.
+:envvar:`NIR_DEBUG`
+   a comma-separated list of debug options to apply to NIR
+   shaders. Use `NIR_DEBUG=help` to print a list of available options.
+:envvar:`NIR_SKIP`
+   a comma-separated list of optimization/lowering passes to skip.
 
 Mesa Xlib driver environment variables
 --------------------------------------
@@ -228,12 +224,8 @@ the :doc:`Xlib software driver page <xlibdriver>` for details.
 :envvar:`MESA_BACK_BUFFER`
    specifies how to implement the back color buffer, either ``pixmap``
    or ``ximage``
-:envvar:`MESA_GAMMA`
-   gamma correction coefficients for red, green, blue channels
 :envvar:`MESA_XSYNC`
    enable synchronous X behavior (for debugging only)
-:envvar:`MESA_GLX_FORCE_CI`
-   if set, force GLX to treat 8 BPP visuals as CI visuals
 :envvar:`MESA_GLX_FORCE_ALPHA`
    if set, forces RGB windows to have an alpha channel.
 :envvar:`MESA_GLX_DEPTH_BITS`
@@ -273,10 +265,6 @@ Intel driver environment variables
    ``do32``
       generate compute shader SIMD32 programs even if workgroup size
       doesn't exceed the SIMD16 limit
-   ``dri``
-      emit messages about the DRI interface
-   ``fbo``
-      emit messages about framebuffers
    ``fs``
       dump shader assembly for fragment shaders
    ``gs``
@@ -285,8 +273,6 @@ Intel driver environment variables
       print instruction hex dump with the disassembly
    ``l3``
       emit messages about the new L3 state during transitions
-   ``miptree``
-      emit messages about miptrees
    ``no8``
       don't generate SIMD8 fragment shader
    ``no16``
@@ -307,10 +293,6 @@ Intel driver environment variables
       emit messages about performance issues
    ``perfmon``
       emit messages about ``AMD_performance_monitor``
-   ``pix``
-      emit messages about pixel operations
-   ``prim``
-      emit messages about drawing primitives
    ``reemit``
       mark all state dirty on each draw call
    ``sf``
@@ -324,8 +306,6 @@ Intel driver environment variables
    ``spill_vec4``
       force spilling of all registers in the vec4 backend (useful to
       debug spilling code)
-   ``state``
-      emit messages about state flag tracking
    ``submit``
       emit batchbuffer usage statistics
    ``sync``
@@ -339,8 +319,6 @@ Intel driver environment variables
       emit messages about textures.
    ``urb``
       emit messages about URB setup
-   ``vert``
-      emit messages about vertex assembly
    ``vs``
       dump shader assembly for vertex shaders
 
@@ -467,8 +445,7 @@ Gallium environment variables
    files.
 :envvar:`GALLIUM_DRIVER`
    useful in combination with :envvar:`LIBGL_ALWAYS_SOFTWARE`=`true` for
-   choosing one of the software renderers ``softpipe``, ``llvmpipe`` or
-   ``swr``.
+   choosing one of the software renderers ``softpipe`` or ``llvmpipe``.
 :envvar:`GALLIUM_LOG_FILE`
    specifies a file for logging all errors, warnings, etc. rather than
    stderr.
@@ -741,6 +718,9 @@ RADV driver environment variables
 :envvar:`RADV_THREAD_TRACE_BUFFER_SIZE`
    set the SQTT/RGP buffer size in bytes (default value is 32MiB, the buffer is
    automatically resized if too small)
+
+:envvar:`RADV_THREAD_TRACE_CACHE_COUNTERS`
+   enable/disable SQTT/RGP cache counters on GFX10+ (disabled by default)
 
 :envvar:`RADV_THREAD_TRACE_INSTRUCTION_TIMING`
    enable/disable SQTT/RGP instruction timing (enabled by default)

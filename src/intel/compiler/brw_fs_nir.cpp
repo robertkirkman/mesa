@@ -53,7 +53,10 @@ fs_visitor::emit_nir_code()
 void
 fs_visitor::nir_setup_outputs()
 {
-   if (stage == MESA_SHADER_TESS_CTRL || stage == MESA_SHADER_FRAGMENT)
+   if (stage == MESA_SHADER_TESS_CTRL ||
+       stage == MESA_SHADER_TASK ||
+       stage == MESA_SHADER_MESH ||
+       stage == MESA_SHADER_FRAGMENT)
       return;
 
    unsigned vec4s[VARYING_SLOT_TESS_MAX] = { 0, };
@@ -152,8 +155,16 @@ emit_system_values_block(nir_block *block, fs_visitor *v)
       case nir_intrinsic_load_first_vertex:
       case nir_intrinsic_load_instance_id:
       case nir_intrinsic_load_base_instance:
-      case nir_intrinsic_load_draw_id:
          unreachable("should be lowered by brw_nir_lower_vs_inputs().");
+         break;
+
+      case nir_intrinsic_load_draw_id:
+         /* For Task/Mesh, draw_id will be handled later in
+          * nir_emit_mesh_task_intrinsic().
+          */
+         if (!brw_shader_stage_is_mesh(v->stage))
+            unreachable("should be lowered by brw_nir_lower_vs_inputs().");
+         break;
 
       case nir_intrinsic_load_invocation_id:
          if (v->stage == MESA_SHADER_TESS_CTRL)
@@ -195,7 +206,7 @@ emit_system_values_block(nir_block *block, fs_visitor *v)
          assert(gl_shader_stage_uses_workgroup(v->stage));
          reg = &v->nir_system_values[SYSTEM_VALUE_WORKGROUP_ID];
          if (reg->file == BAD_FILE)
-            *reg = *v->emit_cs_work_group_id_setup();
+            *reg = *v->emit_work_group_id_setup();
          break;
 
       case nir_intrinsic_load_helper_invocation:
@@ -449,6 +460,12 @@ fs_visitor::nir_emit_instr(nir_instr *instr)
       case MESA_SHADER_INTERSECTION:
       case MESA_SHADER_CALLABLE:
          nir_emit_bs_intrinsic(abld, nir_instr_as_intrinsic(instr));
+         break;
+      case MESA_SHADER_TASK:
+         nir_emit_task_intrinsic(abld, nir_instr_as_intrinsic(instr));
+         break;
+      case MESA_SHADER_MESH:
+         nir_emit_mesh_intrinsic(abld, nir_instr_as_intrinsic(instr));
          break;
       default:
          unreachable("unsupported shader stage");
@@ -3620,11 +3637,15 @@ fs_visitor::nir_emit_fs_intrinsic(const fs_builder &bld,
    }
 
    case nir_intrinsic_load_input: {
-      /* load_input is only used for flat inputs */
+      /* In Fragment Shaders load_input is used either for flat inputs or
+       * per-primitive inputs.
+       */
       assert(nir_dest_bit_size(instr->dest) == 32);
       unsigned base = nir_intrinsic_base(instr);
       unsigned comp = nir_intrinsic_component(instr);
       unsigned num_components = instr->num_components;
+
+      /* TODO(mesh): Multiview. Verify and handle these special cases for Mesh. */
 
       /* Special case fields in the VUE header */
       if (base == VARYING_SLOT_LAYER)
@@ -3632,9 +3653,17 @@ fs_visitor::nir_emit_fs_intrinsic(const fs_builder &bld,
       else if (base == VARYING_SLOT_VIEWPORT)
          comp = 2;
 
-      for (unsigned int i = 0; i < num_components; i++) {
-         bld.MOV(offset(dest, bld, i),
-                 retype(component(interp_reg(base, comp + i), 3), dest.type));
+      if (BITFIELD64_BIT(base) & nir->info.per_primitive_inputs) {
+         assert(base != VARYING_SLOT_PRIMITIVE_INDICES);
+         for (unsigned int i = 0; i < num_components; i++) {
+            bld.MOV(offset(dest, bld, i),
+                    retype(component(per_primitive_reg(base), comp + i), dest.type));
+         }
+      } else {
+         for (unsigned int i = 0; i < num_components; i++) {
+            bld.MOV(offset(dest, bld, i),
+                    retype(component(interp_reg(base, comp + i), 3), dest.type));
+         }
       }
       break;
    }

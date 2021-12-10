@@ -1365,10 +1365,6 @@ int anv_gem_execbuffer(struct anv_device *device,
 int anv_gem_set_tiling(struct anv_device *device, uint32_t gem_handle,
                        uint32_t stride, uint32_t tiling);
 int anv_gem_create_context(struct anv_device *device);
-int anv_gem_create_context_engines(struct anv_device *device,
-                                   const struct drm_i915_query_engine_info *info,
-                                   int num_engines,
-                                   uint16_t *engine_classes);
 bool anv_gem_has_context_priority(int fd, int priority);
 int anv_gem_destroy_context(struct anv_device *device, int context);
 int anv_gem_set_context_param(int fd, int context, uint32_t param,
@@ -1388,8 +1384,6 @@ int anv_gem_set_domain(struct anv_device *device, uint32_t gem_handle,
 int anv_i915_query(int fd, uint64_t query_id, void *buffer,
                    int32_t *buffer_len);
 struct drm_i915_query_engine_info *anv_gem_get_engine_info(int fd);
-int anv_gem_count_engines(const struct drm_i915_query_engine_info *info,
-                          uint16_t engine_class);
 
 uint64_t anv_vma_alloc(struct anv_device *device,
                        uint64_t size, uint64_t align,

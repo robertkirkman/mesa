@@ -312,6 +312,9 @@ emit_load(struct lower_io_state *state,
       nir_intrinsic_set_range(load,
                               state->type_size(var->type, var->data.bindless));
 
+   if (nir_intrinsic_has_access(load))
+      nir_intrinsic_set_access(load, var->data.access);
+
    nir_intrinsic_set_dest_type(load, dest_type);
 
    if (load->intrinsic != nir_intrinsic_load_uniform) {
@@ -417,6 +420,9 @@ emit_store(struct lower_io_state *state, nir_ssa_def *data,
    nir_intrinsic_set_src_type(store, src_type);
 
    nir_intrinsic_set_write_mask(store, write_mask);
+
+   if (nir_intrinsic_has_access(store))
+      nir_intrinsic_set_access(store, var->data.access);
 
    if (array_index)
       store->src[1] = nir_src_for_ssa(array_index);
@@ -965,6 +971,44 @@ build_runtime_addr_mode_check(nir_builder *b, nir_ssa_def *addr,
    default:
       unreachable("Unsupported address mode");
    }
+}
+
+unsigned
+nir_address_format_bit_size(nir_address_format addr_format)
+{
+   switch (addr_format) {
+   case nir_address_format_32bit_global:              return 32;
+   case nir_address_format_64bit_global:              return 64;
+   case nir_address_format_64bit_global_32bit_offset: return 32;
+   case nir_address_format_64bit_bounded_global:      return 32;
+   case nir_address_format_32bit_index_offset:        return 32;
+   case nir_address_format_32bit_index_offset_pack64: return 64;
+   case nir_address_format_vec2_index_32bit_offset:   return 32;
+   case nir_address_format_62bit_generic:             return 64;
+   case nir_address_format_32bit_offset:              return 32;
+   case nir_address_format_32bit_offset_as_64bit:     return 64;
+   case nir_address_format_logical:                   return 32;
+   }
+   unreachable("Invalid address format");
+}
+
+unsigned
+nir_address_format_num_components(nir_address_format addr_format)
+{
+   switch (addr_format) {
+   case nir_address_format_32bit_global:              return 1;
+   case nir_address_format_64bit_global:              return 1;
+   case nir_address_format_64bit_global_32bit_offset: return 4;
+   case nir_address_format_64bit_bounded_global:      return 4;
+   case nir_address_format_32bit_index_offset:        return 2;
+   case nir_address_format_32bit_index_offset_pack64: return 1;
+   case nir_address_format_vec2_index_32bit_offset:   return 3;
+   case nir_address_format_62bit_generic:             return 1;
+   case nir_address_format_32bit_offset:              return 1;
+   case nir_address_format_32bit_offset_as_64bit:     return 1;
+   case nir_address_format_logical:                   return 1;
+   }
+   unreachable("Invalid address format");
 }
 
 static nir_ssa_def *

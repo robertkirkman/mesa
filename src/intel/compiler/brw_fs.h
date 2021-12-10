@@ -127,6 +127,8 @@ public:
    bool run_gs();
    bool run_cs(bool allow_spilling);
    bool run_bs(bool allow_spilling);
+   bool run_task(bool allow_spilling);
+   bool run_mesh(bool allow_spilling);
    void optimize();
    void allocate_registers(bool allow_spilling);
    void setup_fs_payload_gfx4();
@@ -254,6 +256,12 @@ public:
                               nir_intrinsic_instr *instr);
    void nir_emit_bs_intrinsic(const brw::fs_builder &bld,
                               nir_intrinsic_instr *instr);
+   void nir_emit_task_intrinsic(const brw::fs_builder &bld,
+                                nir_intrinsic_instr *instr);
+   void nir_emit_mesh_intrinsic(const brw::fs_builder &bld,
+                                nir_intrinsic_instr *instr);
+   void nir_emit_task_mesh_intrinsic(const brw::fs_builder &bld,
+                                     nir_intrinsic_instr *instr);
    fs_reg get_nir_image_intrinsic_image(const brw::fs_builder &bld,
                                         nir_intrinsic_instr *instr);
    fs_reg get_nir_ssbo_intrinsic_index(const brw::fs_builder &bld,
@@ -319,7 +327,12 @@ public:
                            unsigned base_offset, const nir_src &offset_src,
                            unsigned num_components, unsigned first_component);
    void emit_cs_terminate();
-   fs_reg *emit_cs_work_group_id_setup();
+   fs_reg *emit_work_group_id_setup();
+
+   void emit_task_mesh_store(const brw::fs_builder &bld,
+                             nir_intrinsic_instr *instr);
+   void emit_task_mesh_load(const brw::fs_builder &bld,
+                            nir_intrinsic_instr *instr);
 
    void emit_barrier();
 
@@ -332,6 +345,7 @@ public:
    fs_reg get_timestamp(const brw::fs_builder &bld);
 
    fs_reg interp_reg(int location, int channel);
+   fs_reg per_primitive_reg(int location);
 
    virtual void dump_instructions() const;
    virtual void dump_instructions(const char *name) const;
@@ -660,5 +674,7 @@ uint32_t brw_fb_write_msg_control(const fs_inst *inst,
                                   const struct brw_wm_prog_data *prog_data);
 
 void brw_compute_urb_setup_index(struct brw_wm_prog_data *wm_prog_data);
+
+void brw_nir_lower_simd(nir_shader *nir, unsigned dispatch_width);
 
 #endif /* BRW_FS_H */

@@ -143,12 +143,15 @@ fd6_emit_shader(struct fd_context *ctx, struct fd_ringbuffer *ring,
    OUT_PKT4(ring, hw_stack_offset, 1);
    OUT_RING(ring, A6XX_SP_VS_PVT_MEM_HW_STACK_OFFSET_OFFSET(per_sp_size));
 
+   uint32_t shader_preload_size =
+      MIN2(so->instrlen, ctx->screen->info->a6xx.instr_cache_size);
+
    OUT_PKT7(ring, fd6_stage2opcode(so->type), 3);
    OUT_RING(ring, CP_LOAD_STATE6_0_DST_OFF(0) |
                      CP_LOAD_STATE6_0_STATE_TYPE(ST6_SHADER) |
                      CP_LOAD_STATE6_0_STATE_SRC(SS6_INDIRECT) |
                      CP_LOAD_STATE6_0_STATE_BLOCK(sb) |
-                     CP_LOAD_STATE6_0_NUM_UNIT(so->instrlen));
+                     CP_LOAD_STATE6_0_NUM_UNIT(shader_preload_size));
    OUT_RELOC(ring, so->bo, 0, 0, 0);
 }
 
@@ -366,6 +369,29 @@ next_regid(uint32_t reg, uint32_t increment)
 }
 
 static void
+fd6_emit_tess_bos(struct fd_screen *screen, struct fd_ringbuffer *ring,
+                  const struct ir3_shader_variant *s) assert_dt
+{
+   const struct ir3_const_state *const_state = ir3_const_state(s);
+   const unsigned regid = const_state->offsets.primitive_param + 1;
+   uint32_t dwords = 8;
+
+   if (regid >= s->constlen)
+      return;
+
+   OUT_PKT7(ring, fd6_stage2opcode(s->type), 7);
+   OUT_RING(ring, CP_LOAD_STATE6_0_DST_OFF(regid) |
+                     CP_LOAD_STATE6_0_STATE_TYPE(ST6_CONSTANTS) |
+                     CP_LOAD_STATE6_0_STATE_SRC(SS6_DIRECT) |
+                     CP_LOAD_STATE6_0_STATE_BLOCK(fd6_stage2shadersb(s->type)) |
+                     CP_LOAD_STATE6_0_NUM_UNIT(dwords / 4));
+   OUT_RING(ring, 0);
+   OUT_RING(ring, 0);
+   OUT_RELOC(ring, screen->tess_bo, FD6_TESS_FACTOR_SIZE, 0, 0);
+   OUT_RELOC(ring, screen->tess_bo, 0, 0, 0);
+}
+
+static void
 setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
                struct fd6_program_state *state,
                const struct ir3_shader_key *key, bool binning_pass) assert_dt
@@ -544,6 +570,10 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
 
    fd6_emit_shader(ctx, ring, vs);
    fd6_emit_immediates(ctx->screen, vs, ring);
+   if (hs) {
+      fd6_emit_tess_bos(ctx->screen, ring, hs);
+      fd6_emit_tess_bos(ctx->screen, ring, ds);
+   }
 
    struct ir3_shader_linkage l = {0};
    const struct ir3_shader_variant *last_shader = fd6_last_shader(state);
@@ -1206,6 +1236,7 @@ fd6_program_create(void *data, struct ir3_shader_variant *bs,
                    const struct ir3_shader_key *key) in_dt
 {
    struct fd_context *ctx = fd_context(data);
+   struct fd_screen *screen = ctx->screen;
    struct fd6_program_state *state = CALLOC_STRUCT(fd6_program_state);
 
    tc_assert_driver_thread(ctx->tc);
@@ -1232,6 +1263,19 @@ fd6_program_create(void *data, struct ir3_shader_variant *bs,
       }
    }
 #endif
+
+   if (hs) {
+      /* Allocate the fixed-size tess factor BO globally on the screen.  This
+       * lets the program (which ideally we would have shared across contexts,
+       * though the current ir3_cache impl doesn't do that) bake in the
+       * addresses.
+       */
+      fd_screen_lock(screen);
+      if (!screen->tess_bo)
+         screen->tess_bo =
+            fd_bo_new(screen->dev, FD6_TESS_BO_SIZE, 0, "tessfactor");
+      fd_screen_unlock(screen);
+   }
 
    setup_config_stateobj(ctx, state);
    setup_stateobj(state->binning_stateobj, ctx, state, key, true);

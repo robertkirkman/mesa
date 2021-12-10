@@ -807,6 +807,11 @@ tu_get_physical_device_properties_1_1(struct tu_physical_device *pdevice,
    p->subgroupSupportedOperations = VK_SUBGROUP_FEATURE_BASIC_BIT |
                                     VK_SUBGROUP_FEATURE_VOTE_BIT |
                                     VK_SUBGROUP_FEATURE_BALLOT_BIT;
+   if (pdevice->info->a6xx.has_getfiberid) {
+      p->subgroupSupportedStages |= VK_SHADER_STAGE_ALL_GRAPHICS;
+      p->subgroupSupportedOperations |= VK_SUBGROUP_FEATURE_QUAD_BIT;
+   }
+
    p->subgroupQuadOperationsInAllStages = false;
 
    p->pointClippingBehavior = VK_POINT_CLIPPING_BEHAVIOR_ALL_CLIP_PLANES;
@@ -1313,7 +1318,7 @@ tu_trace_destroy_ts_buffer(struct u_trace_context *utctx, void *timestamps)
 
 static void
 tu_trace_record_ts(struct u_trace *ut, void *cs, void *timestamps,
-                   unsigned idx)
+                   unsigned idx, bool end_of_pipe)
 {
    struct tu_bo *bo = timestamps;
    struct tu_cs *ts_cs = cs;

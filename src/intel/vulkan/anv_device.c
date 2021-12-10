@@ -697,7 +697,8 @@ anv_physical_device_init_queue_families(struct anv_physical_device *pdevice)
 
    if (pdevice->engine_info) {
       int gc_count =
-         anv_gem_count_engines(pdevice->engine_info, I915_ENGINE_CLASS_RENDER);
+         intel_gem_count_engines(pdevice->engine_info,
+                                 I915_ENGINE_CLASS_RENDER);
       int g_count = 0;
       int c_count = 0;
 
@@ -3062,9 +3063,9 @@ VkResult anv_CreateDevice(
             engine_classes[engine_count++] = queue_family->engine_class;
       }
       device->context_id =
-         anv_gem_create_context_engines(device,
-                                        physical_device->engine_info,
-                                        engine_count, engine_classes);
+         intel_gem_create_context_engines(device->fd,
+                                          physical_device->engine_info,
+                                          engine_count, engine_classes);
    } else {
       assert(num_queues == 1);
       device->context_id = anv_gem_create_context(device);

@@ -495,7 +495,7 @@ unsigned
 iris_get_num_logical_layers(const struct iris_resource *res, unsigned level)
 {
    if (res->surf.dim == ISL_SURF_DIM_3D)
-      return minify(res->surf.logical_level0_px.depth, level);
+      return u_minify(res->surf.logical_level0_px.depth, level);
    else
       return res->surf.logical_level0_px.array_len;
 }
@@ -571,14 +571,15 @@ want_ccs_e_for_format(const struct intel_device_info *devinfo,
 
    const struct isl_format_layout *fmtl = isl_format_get_layout(format);
 
-   /* CCS_E seems to significantly hurt performance with 32-bit floating
-    * point formats.  For example, Paraview's "Wavelet Volume" case uses
-    * both R32_FLOAT and R32G32B32A32_FLOAT, and enabling CCS_E for those
+   /* Prior to TGL, CCS_E seems to significantly hurt performance with 32-bit
+    * floating point formats.  For example, Paraview's "Wavelet Volume" case
+    * uses both R32_FLOAT and R32G32B32A32_FLOAT, and enabling CCS_E for those
     * formats causes a 62% FPS drop.
     *
     * However, many benchmarks seem to use 16-bit float with no issues.
     */
-   if (fmtl->channels.r.bits == 32 && fmtl->channels.r.type == ISL_SFLOAT)
+   if (devinfo->ver <= 11 &&
+       fmtl->channels.r.bits == 32 && fmtl->channels.r.type == ISL_SFLOAT)
       return false;
 
    return true;
@@ -772,7 +773,8 @@ iris_resource_configure_aux(struct iris_screen *screen,
       } else if (want_ccs_e_for_format(devinfo, res->surf.format)) {
          res->aux.possible_usages |= devinfo->ver < 12 ?
             1 << ISL_AUX_USAGE_CCS_E : 1 << ISL_AUX_USAGE_GFX12_CCS_E;
-      } else if (isl_format_supports_ccs_d(devinfo, res->surf.format)) {
+      } else {
+         assert(isl_format_supports_ccs_d(devinfo, res->surf.format));
          res->aux.possible_usages |= 1 << ISL_AUX_USAGE_CCS_D;
       }
    }
@@ -787,9 +789,6 @@ iris_resource_configure_aux(struct iris_screen *screen,
 
    switch (res->aux.usage) {
    case ISL_AUX_USAGE_NONE:
-      /* Update relevant fields to indicate that aux is disabled. */
-      iris_resource_disable_aux(res);
-
       /* Having no aux buffer is only okay if there's no modifier with aux. */
       return !res->mod_info || res->mod_info->aux_usage == ISL_AUX_USAGE_NONE;
    case ISL_AUX_USAGE_HIZ:
@@ -924,8 +923,6 @@ iris_resource_finish_aux_import(struct pipe_screen *pscreen,
    case PIPE_FORMAT_P010: format = ISL_FORMAT_PLANAR_420_10; break;
    case PIPE_FORMAT_P012: format = ISL_FORMAT_PLANAR_420_12; break;
    case PIPE_FORMAT_P016: format = ISL_FORMAT_PLANAR_420_16; break;
-   case PIPE_FORMAT_YUYV: format = ISL_FORMAT_YCRCB_NORMAL; break;
-   case PIPE_FORMAT_UYVY: format = ISL_FORMAT_YCRCB_SWAPY; break;
    default: format = res->surf.format; break;
    }
 
@@ -2153,12 +2150,17 @@ iris_map_direct(struct iris_transfer *map)
       const unsigned cpp = fmtl->bpb / 8;
       unsigned x0_el, y0_el;
 
+      assert(box->x % fmtl->bw == 0);
+      assert(box->y % fmtl->bh == 0);
       get_image_offset_el(surf, xfer->level, box->z, &x0_el, &y0_el);
+
+      x0_el += box->x / fmtl->bw;
+      y0_el += box->y / fmtl->bh;
 
       xfer->stride = isl_surf_get_row_pitch_B(surf);
       xfer->layer_stride = isl_surf_get_array_pitch(surf);
 
-      map->ptr = ptr + (y0_el + box->y) * xfer->stride + (x0_el + box->x) * cpp;
+      map->ptr = ptr + y0_el * xfer->stride + x0_el * cpp;
    }
 }
 
@@ -2274,11 +2276,6 @@ iris_transfer_map(struct pipe_context *ctx,
           !iris_has_invalid_primary(res, level, 1, box->z, box->depth)) {
          usage |= PIPE_MAP_DIRECTLY;
       }
-
-      const struct isl_format_layout *fmtl =
-         isl_format_get_layout(surf->format);
-      if (fmtl->txc == ISL_TXC_ASTC)
-         usage |= PIPE_MAP_DIRECTLY;
 
       /* We can map directly if it wouldn't stall, there's no compression,
        * and we aren't doing an uncached read.

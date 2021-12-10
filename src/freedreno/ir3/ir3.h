@@ -330,6 +330,7 @@ struct ir3_instruction {
       struct {
          unsigned samp, tex;
          unsigned tex_base : 3;
+         unsigned cluster_size : 4;
          type_t type;
       } cat5;
       struct {
@@ -887,7 +888,7 @@ is_alu(struct ir3_instruction *instr)
 static inline bool
 is_sfu(struct ir3_instruction *instr)
 {
-   return (opc_cat(instr->opc) == 4);
+   return (opc_cat(instr->opc) == 4) || instr->opc == OPC_GETFIBERID;
 }
 
 static inline bool
@@ -905,7 +906,7 @@ is_tex_or_prefetch(struct ir3_instruction *instr)
 static inline bool
 is_mem(struct ir3_instruction *instr)
 {
-   return (opc_cat(instr->opc) == 6);
+   return (opc_cat(instr->opc) == 6) && instr->opc != OPC_GETFIBERID;
 }
 
 static inline bool
@@ -2171,6 +2172,7 @@ ir3_SAM(struct ir3_block *block, opc_t opc, type_t type, unsigned wrmask,
 }
 
 /* cat6 instructions: */
+INSTR0(GETFIBERID)
 INSTR2(LDLV)
 INSTR3(LDG)
 INSTR3(LDL)
@@ -2194,6 +2196,10 @@ INSTR2(ATOMIC_AND)
 INSTR2(ATOMIC_OR)
 INSTR2(ATOMIC_XOR)
 INSTR2(LDC)
+INSTR2(QUAD_SHUFFLE_BRCST)
+INSTR1(QUAD_SHUFFLE_HORIZ)
+INSTR1(QUAD_SHUFFLE_VERT)
+INSTR1(QUAD_SHUFFLE_DIAG)
 #if GPU >= 600
 INSTR3NODST(STIB);
 INSTR2(LDIB);

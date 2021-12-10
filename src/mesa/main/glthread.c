@@ -40,6 +40,7 @@
 #include "util/u_thread.h"
 #include "util/u_cpu_detect.h"
 
+#include "state_tracker/st_context.h"
 
 static void
 glthread_unmarshal_batch(void *job, void *gdata, int thread_index)
@@ -55,7 +56,7 @@ glthread_unmarshal_batch(void *job, void *gdata, int thread_index)
 
    _mesa_HashLockMutex(ctx->Shared->BufferObjects);
    ctx->BufferObjectsLocked = true;
-   mtx_lock(&ctx->Shared->TexMutex);
+   simple_mtx_lock(&ctx->Shared->TexMutex);
    ctx->TexturesLocked = true;
 
    while (pos < used) {
@@ -66,7 +67,7 @@ glthread_unmarshal_batch(void *job, void *gdata, int thread_index)
    }
 
    ctx->TexturesLocked = false;
-   mtx_unlock(&ctx->Shared->TexMutex);
+   simple_mtx_unlock(&ctx->Shared->TexMutex);
    ctx->BufferObjectsLocked = false;
    _mesa_HashUnlockMutex(ctx->Shared->BufferObjects);
 
@@ -84,7 +85,7 @@ glthread_thread_initialization(void *job, void *gdata, int thread_index)
 {
    struct gl_context *ctx = (struct gl_context*)job;
 
-   ctx->Driver.SetBackgroundContext(ctx, &ctx->GLThread.stats);
+   st_set_background_context(ctx, &ctx->GLThread.stats);
    _glapi_set_context(ctx);
 }
 

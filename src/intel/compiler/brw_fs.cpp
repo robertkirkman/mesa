@@ -1850,6 +1850,10 @@ fs_visitor::assign_curb_setup()
 void
 brw_compute_urb_setup_index(struct brw_wm_prog_data *wm_prog_data)
 {
+   /* TODO(mesh): Review usage of this in the context of Mesh, we may want to
+    * skip per-primitive attributes here.
+    */
+
    /* Make sure uint8_t is sufficient */
    STATIC_ASSERT(VARYING_SLOT_MAX <= 0xff);
    uint8_t index = 0;
@@ -1865,16 +1869,39 @@ static void
 calculate_urb_setup(const struct intel_device_info *devinfo,
                     const struct brw_wm_prog_key *key,
                     struct brw_wm_prog_data *prog_data,
-                    const nir_shader *nir)
+                    const nir_shader *nir,
+                    const struct brw_mue_map *mue_map)
 {
    memset(prog_data->urb_setup, -1,
           sizeof(prog_data->urb_setup[0]) * VARYING_SLOT_MAX);
 
    int urb_next = 0;
+
+   /* Per-Primitive Attributes are laid out by Hardware before the regular
+    * attributes, so order them like this to make easy later to map setup into
+    * real HW registers.
+    */
+   if (nir->info.per_primitive_inputs) {
+      assert(mue_map);
+      for (unsigned i = 0; i < VARYING_SLOT_MAX; i++) {
+         if (nir->info.per_primitive_inputs & BITFIELD64_BIT(i)) {
+            prog_data->urb_setup[i] = urb_next++;
+         }
+      }
+
+      /* The actual setup attributes later must be aligned to a full GRF. */
+      urb_next = ALIGN(urb_next, 2);
+
+      prog_data->num_per_primitive_inputs = urb_next;
+   }
+
+   const uint64_t inputs_read =
+      nir->info.inputs_read & ~nir->info.per_primitive_inputs;
+
    /* Figure out where each of the incoming setup attributes lands. */
    if (devinfo->ver >= 6) {
-      if (util_bitcount64(nir->info.inputs_read &
-                            BRW_FS_VARYING_INPUT_MASK) <= 16) {
+      if (util_bitcount64(inputs_read &
+                          BRW_FS_VARYING_INPUT_MASK) <= 16) {
          /* The SF/SBE pipeline stage can do arbitrary rearrangement of the
           * first 16 varying inputs, so we can put them wherever we want.
           * Just put them in order.
@@ -1885,7 +1912,7 @@ calculate_urb_setup(const struct intel_device_info *devinfo,
           * a different vertex (or geometry) shader.
           */
          for (unsigned int i = 0; i < VARYING_SLOT_MAX; i++) {
-            if (nir->info.inputs_read & BRW_FS_VARYING_INPUT_MASK &
+            if (inputs_read & BRW_FS_VARYING_INPUT_MASK &
                 BITFIELD64_BIT(i)) {
                prog_data->urb_setup[i] = urb_next++;
             }
@@ -1897,6 +1924,12 @@ calculate_urb_setup(const struct intel_device_info *devinfo,
           * (geometry or vertex shader).
           */
 
+         /* TODO(mesh): Implement this case for Mesh. Basically have a large
+          * number of outputs in Mesh (hence a lot of inputs in Fragment)
+          * should already trigger this.
+          */
+         assert(mue_map == NULL);
+
          /* Re-compute the VUE map here in the case that the one coming from
           * geometry has more than one position slot (used for Primitive
           * Replication).
@@ -1907,7 +1940,7 @@ calculate_urb_setup(const struct intel_device_info *devinfo,
                              nir->info.separate_shader, 1);
 
          int first_slot =
-            brw_compute_first_urb_slot_required(nir->info.inputs_read,
+            brw_compute_first_urb_slot_required(inputs_read,
                                                 &prev_stage_vue_map);
 
          assert(prev_stage_vue_map.num_slots <= first_slot + 32);
@@ -1915,7 +1948,7 @@ calculate_urb_setup(const struct intel_device_info *devinfo,
               slot++) {
             int varying = prev_stage_vue_map.slot_to_varying[slot];
             if (varying != BRW_VARYING_SLOT_PAD &&
-                (nir->info.inputs_read & BRW_FS_VARYING_INPUT_MASK &
+                (inputs_read & BRW_FS_VARYING_INPUT_MASK &
                  BITFIELD64_BIT(varying))) {
                prog_data->urb_setup[varying] = slot - first_slot;
             }
@@ -1948,12 +1981,12 @@ calculate_urb_setup(const struct intel_device_info *devinfo,
        *
        * See compile_sf_prog() for more info.
        */
-      if (nir->info.inputs_read & BITFIELD64_BIT(VARYING_SLOT_PNTC))
+      if (inputs_read & BITFIELD64_BIT(VARYING_SLOT_PNTC))
          prog_data->urb_setup[VARYING_SLOT_PNTC] = urb_next++;
    }
 
-   prog_data->num_varying_inputs = urb_next;
-   prog_data->inputs = nir->info.inputs_read;
+   prog_data->num_varying_inputs = urb_next - prog_data->num_per_primitive_inputs;
+   prog_data->inputs = inputs_read;
 
    brw_compute_urb_setup_index(prog_data);
 }
@@ -1995,6 +2028,12 @@ fs_visitor::assign_urb_setup()
 
    /* Each attribute is 4 setup channels, each of which is half a reg. */
    this->first_non_payload_grf += prog_data->num_varying_inputs * 2;
+
+   /* Unlike regular attributes, per-primitive attributes have all 4 channels
+    * in the same slot, so each GRF can store two slots.
+    */
+   assert(prog_data->num_per_primitive_inputs % 2 == 0);
+   this->first_non_payload_grf += prog_data->num_per_primitive_inputs / 2;
 }
 
 void
@@ -9532,6 +9571,112 @@ fs_visitor::run_bs(bool allow_spilling)
    return !failed;
 }
 
+bool
+fs_visitor::run_task(bool allow_spilling)
+{
+   assert(stage == MESA_SHADER_TASK);
+
+   /* Task Shader Payloads (SIMD8 and SIMD16)
+    *
+    *  R0: Header
+    *  R1: Local_ID.X[0-7 or 0-15]
+    *  R2: Inline Parameter
+    *
+    * Task Shader Payloads (SIMD32)
+    *
+    *  R0: Header
+    *  R1: Local_ID.X[0-15]
+    *  R2: Local_ID.X[16-31]
+    *  R3: Inline Parameter
+    *
+    * Local_ID.X values are 16 bits.
+    *
+    * Inline parameter is optional but always present since we use it to pass
+    * the address to descriptors.
+    */
+   payload.num_regs = dispatch_width == 32 ? 4 : 3;
+
+   if (shader_time_index >= 0)
+      emit_shader_time_begin();
+
+   emit_nir_code();
+
+   if (failed)
+      return false;
+
+   emit_cs_terminate();
+
+   if (shader_time_index >= 0)
+      emit_shader_time_end();
+
+   calculate_cfg();
+
+   optimize();
+
+   assign_curb_setup();
+
+   fixup_3src_null_dest();
+   allocate_registers(allow_spilling);
+
+   if (failed)
+      return false;
+
+   return !failed;
+}
+
+bool
+fs_visitor::run_mesh(bool allow_spilling)
+{
+   assert(stage == MESA_SHADER_MESH);
+
+   /* Mesh Shader Payloads (SIMD8 and SIMD16)
+    *
+    *  R0: Header
+    *  R1: Local_ID.X[0-7 or 0-15]
+    *  R2: Inline Parameter
+    *
+    * Mesh Shader Payloads (SIMD32)
+    *
+    *  R0: Header
+    *  R1: Local_ID.X[0-15]
+    *  R2: Local_ID.X[16-31]
+    *  R3: Inline Parameter
+    *
+    * Local_ID.X values are 16 bits.
+    *
+    * Inline parameter is optional but always present since we use it to pass
+    * the address to descriptors.
+    */
+   payload.num_regs = dispatch_width == 32 ? 4 : 3;
+
+   if (shader_time_index >= 0)
+      emit_shader_time_begin();
+
+   emit_nir_code();
+
+   if (failed)
+      return false;
+
+   emit_cs_terminate();
+
+   if (shader_time_index >= 0)
+      emit_shader_time_end();
+
+   calculate_cfg();
+
+   optimize();
+
+   assign_curb_setup();
+
+   fixup_3src_null_dest();
+   allocate_registers(allow_spilling);
+
+   if (failed)
+      return false;
+
+   return !failed;
+}
+
 static bool
 is_used_in_not_interp_frag_coord(nir_ssa_def *def)
 {
@@ -9762,7 +9907,8 @@ static void
 brw_nir_populate_wm_prog_data(const nir_shader *shader,
                               const struct intel_device_info *devinfo,
                               const struct brw_wm_prog_key *key,
-                              struct brw_wm_prog_data *prog_data)
+                              struct brw_wm_prog_data *prog_data,
+                              const struct brw_mue_map *mue_map)
 {
    /* key->alpha_test_func means simulating alpha testing via discards,
     * so the shader definitely kills pixels.
@@ -9825,7 +9971,7 @@ brw_nir_populate_wm_prog_data(const nir_shader *shader,
       BITSET_TEST(shader->info.system_values_read, SYSTEM_VALUE_FRAG_COORD) &&
       prog_data->per_coarse_pixel_dispatch;
 
-   calculate_urb_setup(devinfo, key, prog_data, shader);
+   calculate_urb_setup(devinfo, key, prog_data, shader, mue_map);
    brw_compute_flat_inputs(prog_data, shader);
 }
 
@@ -9883,7 +10029,8 @@ brw_compile_fs(const struct brw_compiler *compiler,
    brw_postprocess_nir(nir, compiler, true, debug_enabled,
                        key->base.robust_buffer_access);
 
-   brw_nir_populate_wm_prog_data(nir, compiler->devinfo, key, prog_data);
+   brw_nir_populate_wm_prog_data(nir, compiler->devinfo, key, prog_data,
+                                 params->mue_map);
 
    fs_visitor *v8 = NULL, *v16 = NULL, *v32 = NULL;
    cfg_t *simd8_cfg = NULL, *simd16_cfg = NULL, *simd32_cfg = NULL;
@@ -10082,19 +10229,25 @@ brw_compile_fs(const struct brw_compiler *compiler,
 }
 
 fs_reg *
-fs_visitor::emit_cs_work_group_id_setup()
+fs_visitor::emit_work_group_id_setup()
 {
-   assert(stage == MESA_SHADER_COMPUTE || stage == MESA_SHADER_KERNEL);
+   assert(gl_shader_stage_uses_workgroup(stage));
 
    fs_reg *reg = new(this->mem_ctx) fs_reg(vgrf(glsl_type::uvec3_type));
 
    struct brw_reg r0_1(retype(brw_vec1_grf(0, 1), BRW_REGISTER_TYPE_UD));
-   struct brw_reg r0_6(retype(brw_vec1_grf(0, 6), BRW_REGISTER_TYPE_UD));
-   struct brw_reg r0_7(retype(brw_vec1_grf(0, 7), BRW_REGISTER_TYPE_UD));
-
    bld.MOV(*reg, r0_1);
-   bld.MOV(offset(*reg, bld, 1), r0_6);
-   bld.MOV(offset(*reg, bld, 2), r0_7);
+
+   if (gl_shader_stage_is_compute(stage)) {
+      struct brw_reg r0_6(retype(brw_vec1_grf(0, 6), BRW_REGISTER_TYPE_UD));
+      struct brw_reg r0_7(retype(brw_vec1_grf(0, 7), BRW_REGISTER_TYPE_UD));
+      bld.MOV(offset(*reg, bld, 1), r0_6);
+      bld.MOV(offset(*reg, bld, 2), r0_7);
+   } else {
+      /* Task/Mesh have a single Workgroup ID dimension in the HW. */
+      bld.MOV(offset(*reg, bld, 1), brw_imm_ud(0));
+      bld.MOV(offset(*reg, bld, 2), brw_imm_ud(0));
+   }
 
    return reg;
 }
@@ -10197,7 +10350,7 @@ lower_simd(nir_builder *b, nir_instr *instr, void *options)
    }
 }
 
-static void
+void
 brw_nir_lower_simd(nir_shader *nir, unsigned dispatch_width)
 {
    nir_shader_lower_instructions(nir, filter_simd, lower_simd,

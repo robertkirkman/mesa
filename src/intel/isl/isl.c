@@ -2121,22 +2121,11 @@ isl_surf_supports_ccs(const struct isl_device *dev,
                       const struct isl_surf *surf,
                       const struct isl_surf *hiz_or_mcs_surf)
 {
-   /* CCS support does not exist prior to Gfx7 */
-   if (ISL_GFX_VER(dev) <= 6)
-      return false;
-
-   /* Wa_22011186057: Disable compression on ADL-P A0 */
-   if (dev->info->platform == INTEL_PLATFORM_ADL && dev->info->gt == 2 &&
-       dev->info->revision == 0)
-      return false;
-
    if (surf->usage & ISL_SURF_USAGE_DISABLE_AUX_BIT)
       return false;
 
-   if (isl_format_is_compressed(surf->format))
-      return false;
-
-   if (!isl_is_pow2(isl_format_get_layout(surf->format)->bpb))
+   if (!isl_format_supports_ccs_d(dev->info, surf->format) &&
+       !isl_format_supports_ccs_e(dev->info, surf->format))
       return false;
 
    /* From the Ivy Bridge PRM, Vol2 Part1 11.7 "MCS Buffer for Render
@@ -2260,15 +2249,6 @@ isl_surf_supports_ccs(const struct isl_device *dev,
        */
       if (ISL_GFX_VER(dev) <= 7 &&
           (surf->levels > 1 || surf->logical_level0_px.array_len > 1))
-         return false;
-
-      /* From the Ivy Bridge PRM, Vol2 Part1 11.7 "MCS Buffer for Render
-       * Target(s)", beneath the "Fast Color Clear" bullet (p326):
-       *
-       *     - MCS buffer for non-MSRT is supported only for RT formats 32bpp,
-       *       64bpp, and 128bpp.
-       */
-      if (isl_format_get_layout(surf->format)->bpb < 32)
          return false;
 
       /* From the Skylake documentation, it is made clear that X-tiling is no

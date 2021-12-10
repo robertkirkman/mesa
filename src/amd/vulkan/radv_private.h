@@ -70,6 +70,7 @@
 #include "ac_binary.h"
 #include "ac_gpu_info.h"
 #include "ac_shader_util.h"
+#include "ac_spm.h"
 #include "ac_sqtt.h"
 #include "ac_surface.h"
 #include "radv_constants.h"
@@ -365,13 +366,17 @@ bool radv_pipeline_cache_load(struct radv_pipeline_cache *cache, const void *dat
 
 bool radv_create_shaders_from_pipeline_cache(
    struct radv_device *device, struct radv_pipeline_cache *cache, const unsigned char *sha1,
-   struct radv_shader **shaders, struct radv_pipeline_shader_stack_size **stack_sizes,
+   struct radv_pipeline *pipeline, struct radv_pipeline_shader_stack_size **stack_sizes,
    uint32_t *num_stack_sizes, bool *found_in_application_cache);
 
 void radv_pipeline_cache_insert_shaders(
    struct radv_device *device, struct radv_pipeline_cache *cache, const unsigned char *sha1,
-   struct radv_shader **shaders, struct radv_shader_binary *const *binaries,
+   struct radv_pipeline *pipeline, struct radv_shader_binary *const *binaries,
    const struct radv_pipeline_shader_stack_size *stack_sizes, uint32_t num_stack_sizes);
+
+VkResult radv_upload_shaders(struct radv_device *device, struct radv_pipeline *pipeline,
+                             struct radv_shader_binary **binaries,
+                             struct radv_shader_binary *gs_copy_binary);
 
 enum radv_blit_ds_layout {
    RADV_BLIT_DS_LAYOUT_TILE_ENABLE,
@@ -752,7 +757,6 @@ struct radv_device {
 
    struct radv_queue *queues[RADV_MAX_QUEUE_FAMILIES];
    int queue_count[RADV_MAX_QUEUE_FAMILIES];
-   struct radeon_cmdbuf *empty_cs[RADV_MAX_QUEUE_FAMILIES];
 
    bool pbb_allowed;
    uint32_t tess_offchip_block_dw_size;
@@ -829,6 +833,12 @@ struct radv_device {
 
    /* Thread trace. */
    struct ac_thread_trace_data thread_trace;
+
+   /* SPM. */
+   struct ac_spm_trace_data spm_trace;
+
+   /* Performance counters. */
+   struct ac_perfcounters perfcounters;
 
    /* Trap handler. */
    struct radv_shader *trap_handler_shader;
@@ -1452,6 +1462,9 @@ struct radv_cmd_state {
    uint32_t emitted_vs_prolog_key_hash;
    uint32_t vbo_misaligned_mask;
    uint32_t vbo_bound_mask;
+
+   /* Whether the cmdbuffer owns the current render pass rather than the app. */
+   bool own_render_pass;
 };
 
 struct radv_cmd_pool {
@@ -1783,12 +1796,22 @@ struct radv_pipeline_shader_stack_size {
    uint32_t non_recursive_size;
 };
 
+struct radv_pipeline_slab {
+   uint32_t ref_count;
+
+   union radv_shader_arena_block *alloc;
+};
+
+void radv_pipeline_slab_destroy(struct radv_device *device, struct radv_pipeline_slab *slab);
+
 struct radv_pipeline {
    struct vk_object_base base;
    enum radv_pipeline_type type;
 
    struct radv_device *device;
    struct radv_dynamic_state dynamic_state;
+
+   struct radv_pipeline_slab *slab;
 
    bool need_indirect_descriptor_sets;
    struct radv_shader *shaders[MESA_VULKAN_SHADER_STAGES];
@@ -2472,9 +2495,6 @@ struct radv_subpass {
    /** Subpass has at least one color resolve attachment */
    bool has_color_resolve;
 
-   /** Subpass has at least one color attachment */
-   bool has_color_att;
-
    struct radv_subpass_barrier start_barrier;
 
    uint32_t view_mask;
@@ -2646,7 +2666,7 @@ struct radv_nir_compiler_options;
 struct radv_shader_info;
 
 void llvm_compile_shader(const struct radv_nir_compiler_options *options,
-                         struct radv_shader_info *info, unsigned shader_count,
+                         const struct radv_shader_info *info, unsigned shader_count,
                          struct nir_shader *const *shaders, struct radv_shader_binary **binary,
                          const struct radv_shader_args *args);
 
@@ -2907,6 +2927,17 @@ radv_accel_struct_get_va(const struct radv_acceleration_structure *accel)
 {
    return radv_buffer_get_va(accel->bo) + accel->mem_offset;
 }
+
+/* radv_perfcounter.c */
+void radv_perfcounter_emit_shaders(struct radeon_cmdbuf *cs, unsigned shaders);
+void radv_perfcounter_emit_reset(struct radeon_cmdbuf *cs);
+void radv_perfcounter_emit_start(struct radv_device *device, struct radeon_cmdbuf *cs, int family);
+void radv_perfcounter_emit_stop(struct radv_device *device, struct radeon_cmdbuf *cs, int family);
+
+/* radv_spm.c */
+bool radv_spm_init(struct radv_device *device);
+void radv_spm_finish(struct radv_device *device);
+void radv_emit_spm_setup(struct radv_device *device, struct radeon_cmdbuf *cs);
 
 #define RADV_FROM_HANDLE(__radv_type, __name, __handle) \
    VK_FROM_HANDLE(__radv_type, __name, __handle)

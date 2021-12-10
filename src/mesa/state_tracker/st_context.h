@@ -46,7 +46,6 @@ extern "C" {
 #endif
 
 
-struct dd_function_table;
 struct draw_context;
 struct draw_stage;
 struct gen_mipmap_state;
@@ -137,7 +136,6 @@ struct st_context
 
    GLboolean clamp_frag_color_in_shader;
    GLboolean clamp_vert_color_in_shader;
-   boolean clamp_frag_depth_in_shader;
    boolean has_stencil_export; /**< can do shader stencil export? */
    boolean has_time_elapsed;
    boolean has_etc1;
@@ -326,6 +324,13 @@ struct st_context
       void *vs;
       void *gs;
       void *upload_fs[5][2];
+      /**
+       * For drivers supporting formatless storing
+       * (PIPE_CAP_IMAGE_STORE_FORMATTED) it is a pointer to the download FS;
+       * for those not supporting it, it is a pointer to an array of
+       * PIPE_FORMAT_COUNT elements, where each element is a pointer to the
+       * download FS using that PIPE_FORMAT as the storing format.
+       */
       void *download_fs[5][PIPE_MAX_TEXTURE_TYPES][2];
       struct hash_table *shaders;
       bool upload_enabled;
@@ -448,7 +453,14 @@ struct st_framebuffer
    struct list_head head;
 };
 
+void st_Enable(struct gl_context *ctx, GLenum cap);
+void st_query_memory_info(struct gl_context *ctx, struct gl_memory_info *out);
 
+void st_invalidate_state(struct gl_context *ctx);
+void st_get_driver_uuid(struct gl_context *ctx, char *uuid);
+void st_get_device_uuid(struct gl_context *ctx, char *uuid);
+void st_set_background_context(struct gl_context *ctx,
+                               struct util_queue_monitoring *queue_info);
 #ifdef __cplusplus
 }
 #endif

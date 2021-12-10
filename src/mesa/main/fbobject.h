@@ -82,12 +82,6 @@ _mesa_update_texture_renderbuffer(struct gl_context *ctx,
                                   struct gl_renderbuffer_attachment *att);
 
 extern void
-_mesa_FramebufferRenderbuffer_sw(struct gl_context *ctx,
-                                 struct gl_framebuffer *fb,
-                                 GLenum attachment,
-                                 struct gl_renderbuffer *rb);
-
-extern void
 _mesa_framebuffer_renderbuffer(struct gl_context *ctx,
                                struct gl_framebuffer *fb,
                                GLenum attachment,
@@ -179,10 +173,6 @@ extern void GLAPIENTRY
 _mesa_RenderbufferStorageMultisampleAdvancedAMD(
       GLenum target, GLsizei samples, GLsizei storageSamples,
       GLenum internalFormat, GLsizei width, GLsizei height);
-
-extern void GLAPIENTRY
-_es_RenderbufferStorageEXT(GLenum target, GLenum internalFormat,
-			   GLsizei width, GLsizei height);
 
 extern void GLAPIENTRY
 _mesa_NamedRenderbufferStorage(GLuint renderbuffer, GLenum internalformat,

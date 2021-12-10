@@ -25,12 +25,13 @@ radv_entrypoints = custom_target(
   command : [
     prog_python, '@INPUT0@', '--xml', '@INPUT1@', '--proto', '--weak',
     '--out-h', '@OUTPUT0@', '--out-c', '@OUTPUT1@', '--prefix', 'radv',
-    '--device-prefix', 'sqtt',
+    '--device-prefix', 'sqtt', '--device-prefix', 'metro_exodus',
   ],
   depend_files : vk_entrypoints_gen_depend_files,
 )
 
 libradv_files = files(
+  'layers/radv_metro_exodus.c',
   'layers/radv_sqtt_layer.c',
   'winsys/null/radv_null_bo.c',
   'winsys/null/radv_null_bo.h',
@@ -69,6 +70,7 @@ libradv_files = files(
   'radv_meta_resolve_fs.c',
   'radv_nir_lower_ycbcr_textures.c',
   'radv_pass.c',
+  'radv_perfcounter.c',
   'radv_pipeline.c',
   'radv_pipeline_cache.c',
   'radv_pipeline_rt.c',
@@ -79,6 +81,7 @@ libradv_files = files(
   'radv_shader_args.c',
   'radv_shader_args.h',
   'radv_shader_info.c',
+  'radv_spm.c',
   'radv_sqtt.c',
   'radv_query.c',
   'radv_util.c',

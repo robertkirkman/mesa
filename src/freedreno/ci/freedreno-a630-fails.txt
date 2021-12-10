@@ -17,10 +17,6 @@ KHR-GLES31.core.geometry_shader.layered_framebuffer.depth_support,Fail
 
 KHR-GLES31.core.geometry_shader.layered_framebuffer.stencil_support,Fail
 
-# " Pixel data comparison failed; expected: (0.1, 0.2, 0.3, 0.4) rendered: (0, 0, 0, 0) epsilon: 0.00392157
-#   Pixel data comparison failed at esextcTessellationShaderPoints.cpp:597"
-KHR-GLES31.core.tessellation_shader.tessellation_shader_point_mode.point_rendering,Fail
-
 # "Invalid value returned: expected:[1, 1, 1, 1] retrieved: [0, 0, 0, 0
 #  Invalid rendering result at esextcTessellationShaderBarrier.cpp:504"
 KHR-GLES31.core.tessellation_shader.tessellation_shader_tc_barriers.barrier_guarded_read_calls,Fail
@@ -147,6 +143,12 @@ spec@arb_sample_shading@samplemask 4,Fail
 spec@arb_sample_shading@samplemask 4@noms mask_in_one,Fail
 spec@arb_sample_shading@samplemask 4@sample mask_in_one,Fail
 
+# These 3 fails started to happen after piglit uprev with commit
+# 0ef03f824d1833a853d1a20b4be121089bb9246c
+spec@arb_shader_image_load_store@qualifiers,Fail
+spec@arb_shader_image_load_store@qualifiers@r8/permissive layout qualifiers/permissive access qualifiers/permissive binding test,Fail
+spec@arb_shader_image_load_store@qualifiers@r8/strict layout qualifiers/permissive access qualifiers/permissive binding test,Fail
+
 spec@arb_shader_storage_buffer_object@array-ssbo-auto-binding,Fail
 spec@arb_shader_storage_buffer_object@linker@instance-matching-shader-storage-blocks-member-array-size-mismatch,Fail
 spec@arb_tessellation_shader@execution@gs-primitiveid-instanced,Fail
@@ -250,9 +252,6 @@ spec@arb_transform_feedback3@gl_skipcomponents2,Fail
 spec@arb_transform_feedback3@gl_skipcomponents3,Fail
 spec@arb_transform_feedback3@gl_skipcomponents4,Fail
 spec@arb_vertex_type_2_10_10_10_rev@attrib-p-type-size-match,Fail
-
-# crash in dri3_fence_reset with a NULL buffer arg
-spec@egl 1.4@egl-copy-buffers,Crash
 
 spec@egl 1.4@eglterminate then unbind context,Fail
 spec@egl_chromium_sync_control@conformance@eglGetSyncValuesCHROMIUM_msc_and_sbc_test,Fail
@@ -545,7 +544,6 @@ spec@!opengl 1.1@texwrap formats bordercolor-swizzled@GL_RGBA16- swizzled- borde
 spec@!opengl 1.1@texwrap formats bordercolor-swizzled@GL_RGBA2- swizzled- border color only,Fail
 spec@!opengl 1.1@texwrap formats bordercolor-swizzled@GL_RGBA4- swizzled- border color only,Fail
 spec@!opengl 1.1@texwrap formats bordercolor-swizzled@GL_RGBA8- swizzled- border color only,Fail
-spec@!opengl 1.1@windowoverlap,Fail
 spec@!opengl 1.4@gl-1.4-polygon-offset,Fail
 
 # "MESA: error: unknown vertex shader output name: VARYING_SLOT_EDGE

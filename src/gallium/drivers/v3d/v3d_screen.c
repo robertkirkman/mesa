@@ -139,6 +139,7 @@ v3d_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
         case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
         case PIPE_CAP_TGSI_TEXCOORD:
         case PIPE_CAP_TEXTURE_MIRROR_CLAMP_TO_EDGE:
+        case PIPE_CAP_SAMPLER_VIEW_TARGET:
                 return 1;
 
         case PIPE_CAP_TEXTURE_QUERY_LOD:
@@ -281,6 +282,15 @@ v3d_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
         case PIPE_CAP_SUPPORTED_PRIM_MODES:
         case PIPE_CAP_SUPPORTED_PRIM_MODES_WITH_RESTART:
                 return screen->prim_types;
+
+        case PIPE_CAP_TEXTURE_BUFFER_OBJECTS:
+                return true;
+
+        case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
+                return 256;
+
+        case PIPE_CAP_IMAGE_STORE_FORMATTED:
+                return false;
 
         default:
                 return u_pipe_screen_get_param_defaults(pscreen, param);
@@ -650,6 +660,23 @@ v3d_screen_is_format_supported(struct pipe_screen *pscreen,
               format == PIPE_FORMAT_R16_UINT ||
               format == PIPE_FORMAT_R32_UINT)) {
                 return false;
+        }
+
+        if (usage & PIPE_BIND_SHADER_IMAGE) {
+                switch (format) {
+                /* FIXME: maybe we can implement a swizzle-on-writes to add
+                 * support for BGRA-alike formats.
+                 */
+                case PIPE_FORMAT_A4B4G4R4_UNORM:
+                case PIPE_FORMAT_A1B5G5R5_UNORM:
+                case PIPE_FORMAT_B5G6R5_UNORM:
+                case PIPE_FORMAT_B8G8R8A8_UNORM:
+                case PIPE_FORMAT_X8Z24_UNORM:
+                case PIPE_FORMAT_Z16_UNORM:
+                        return false;
+                default:
+                        return true;
+                }
         }
 
         return true;

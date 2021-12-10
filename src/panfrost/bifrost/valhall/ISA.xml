@@ -581,13 +581,37 @@
       Condition to use for a `MUX` instruction. `neg` checks the sign bit,
       `int_zero` compares to `0x00000000`, `fp_zero` compares to $\pm 0.0$ as
       an IEEE 754 float, and `bit` checks each bit separately. The `bit` mode
-      acts like an imaginary `CSEL.v32i1` instruction, and implements
+      acts like an imaginary `CSEL.v32u1` instruction, and implements
       `bitselect()` in OpenCL.
     </desc>
     <value desc="Negative">neg</value>
     <value desc="Integer zero" default="true">int_zero</value>
     <value desc="Floating point zero">fp_zero</value>
     <value desc="Bitwise">bit</value>
+  </enum>
+
+  <enum name="Sample mode">
+    <desc>
+      Varying interpolation mode, for choosing the correct sample to
+      interpolate at, allowing the `sample` and `centroid` qualifiers to be
+      implemented, as well as the `interpolateAt*` functions.
+    </desc>
+    <value desc="Center">center</value>
+    <value desc="Centroid">centroid</value>
+    <value desc="Sample">sample</value>
+    <value desc="Explicit">explicit</value>
+  </enum>
+
+  <enum name="Update mode">
+    <desc>
+      The Valhall GPU maintains hidden state when interpolating varyings, to
+      allow reusing sample location calculations. The update mode of a varying
+      load controls this hidden state.
+    </desc>
+    <value desc="Store interpolation position">store</value>
+    <value desc="Retrieve interpolation position">retrieve</value>
+    <reserved/>
+    <value desc="Clobber saved position">clobber</value>
   </enum>
 
   <ins name="NOP" title="No operation" dests="0" opcode="0x00" unit="CVT">
@@ -666,8 +690,8 @@
   <group name="CSEL" title="Integer conditional select" dests="1" unit="CVT">
     <ins name="CSEL.u32" opcode="0x150"/>
     <ins name="CSEL.v2u16" opcode="0x151"/>
-    <ins name="CSEL.i32" opcode="0x158"/>
-    <ins name="CSEL.v2i16" opcode="0x159"/>
+    <ins name="CSEL.s32" opcode="0x158"/>
+    <ins name="CSEL.v2s16" opcode="0x159"/>
     <desc>
       Evaluates the given condition and outputs either the true source or the
       false source.
@@ -689,6 +713,8 @@
     <sr_count/>
     <vecsize/>
     <regfmt/>
+    <sample/>
+    <update/>
     <slot/>
     <src/>
     <imm name="index" start="12" size="4"/> <!-- 0 for pointx, 1 for pointy, 2 for fragw, 3 for fragz -->
@@ -702,13 +728,20 @@
     <vecsize/>
     <sr_count/>
     <regfmt/>
+    <sample/>
+    <update/>
     <slot/>
     <src/>
     <src/>
-    <imm name="index" start="20" size="4"/>
+    <imm name="index" start="16" size="8"/>
   </group>
 
   <ins name="LD_ATTR_IMM" title="Load immediate attribute" opcode="0x66" unit="LS">
+    <desc>
+      Load `vecsize` components from the attribute descriptor at entry `index`
+      of resource table `table` at index (vertex ID, instance ID), converting
+      to the specified register format.
+    </desc>
     <sr_count/>
     <vecsize/>
     <regfmt/>
@@ -717,6 +750,7 @@
     <src>Vertex ID</src>
     <src>Instance ID</src>
     <imm name="index" start="20" size="4"/>
+    <imm name="table" start="16" size="4"/>
   </ins>
 
   <ins name="LEA_IMAGE_IMM" title="Load effective address of image texel" opcode="0x67" unit="LS">

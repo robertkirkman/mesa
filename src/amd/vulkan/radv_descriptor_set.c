@@ -63,6 +63,7 @@ radv_mutable_descriptor_type_size_alignment(const VkMutableDescriptorTypeListVAL
       case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
       case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
       case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+      case VK_DESCRIPTOR_TYPE_SAMPLER:
          size = 16;
          align = 16;
          break;
@@ -721,8 +722,8 @@ radv_CreateDescriptorPool(VkDevice _device, const VkDescriptorPoolCreateInfo *pC
    {
       switch (ext->sType) {
       case VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_INLINE_UNIFORM_BLOCK_CREATE_INFO_EXT: {
-         const struct VkDescriptorPoolInlineUniformBlockCreateInfoEXT *info =
-            (const struct VkDescriptorPoolInlineUniformBlockCreateInfoEXT *)ext;
+         const VkDescriptorPoolInlineUniformBlockCreateInfoEXT *info =
+            (const VkDescriptorPoolInlineUniformBlockCreateInfoEXT *)ext;
          /* the sizes are 4 aligned, and we need to align to at
           * most 32, which needs at most 28 bytes extra per
           * binding. */

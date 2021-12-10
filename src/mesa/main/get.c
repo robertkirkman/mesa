@@ -43,6 +43,10 @@
 #include "stencil.h"
 #include "version.h"
 
+#include "state_tracker/st_cb_queryobj.h"
+#include "state_tracker/st_cb_msaa.h"
+#include "state_tracker/st_context.h"
+
 /* This is a table driven implemetation of the glGet*v() functions.
  * The basic idea is that most getters just look up an int somewhere
  * in struct gl_context and then convert it to a bool or float according to
@@ -1176,12 +1180,7 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
       break;
    /* GL_ARB_timer_query */
    case GL_TIMESTAMP:
-      if (ctx->Driver.GetTimestamp) {
-         v->value_int64 = ctx->Driver.GetTimestamp(ctx);
-      }
-      else {
-         _mesa_problem(ctx, "driver doesn't implement GetTimestamp");
-      }
+      v->value_int64 = st_GetTimestamp(ctx);
       break;
    /* GL_KHR_DEBUG */
    case GL_DEBUG_OUTPUT:
@@ -1243,7 +1242,7 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
       {
          struct gl_memory_info info;
 
-         ctx->Driver.QueryMemoryInfo(ctx, &info);
+         st_query_memory_info(ctx, &info);
 
          if (d->pname == GL_GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX)
             v->value_int = info.total_device_memory;
@@ -1316,8 +1315,8 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
             break;
          }
 
-         ctx->Driver.GetProgrammableSampleCaps(ctx, ctx->DrawBuffer,
-                                               &bits, &width, &height);
+         st_GetProgrammableSampleCaps(ctx, ctx->DrawBuffer,
+                                      &bits, &width, &height);
 
          if (d->pname == GL_SAMPLE_LOCATION_PIXEL_GRID_WIDTH_ARB)
             v->value_uint = width;

@@ -144,6 +144,9 @@ fd_screen_destroy(struct pipe_screen *pscreen)
 {
    struct fd_screen *screen = fd_screen(pscreen);
 
+   if (screen->tess_bo)
+      fd_bo_del(screen->tess_bo);
+
    if (screen->pipe)
       fd_pipe_del(screen->pipe);
 
@@ -265,6 +268,7 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return !fd_screen_get_param(pscreen, PIPE_CAP_TEXTURE_MULTISAMPLE);
 
    case PIPE_CAP_TEXTURE_MULTISAMPLE:
+   case PIPE_CAP_IMAGE_STORE_FORMATTED:
       return is_a5xx(screen) || is_a6xx(screen);
 
    case PIPE_CAP_SURFACE_SAMPLE_COUNT:
@@ -330,11 +334,8 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
          return 120;
 
    case PIPE_CAP_ESSL_FEATURE_LEVEL:
-      /* we can probably enable 320 for a5xx too, but need to test: */
-      if (is_a6xx(screen))
+      if (is_a5xx(screen) || is_a6xx(screen))
          return 320;
-      if (is_a5xx(screen))
-         return 310;
       if (is_ir3(screen))
          return 300;
       return 120;

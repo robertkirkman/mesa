@@ -1503,16 +1503,13 @@ qpu_inst_valid_in_thrend_slot(struct v3d_compile *c,
 {
         const struct v3d_qpu_instr *inst = &qinst->qpu;
 
-        /* Only TLB Z writes are prohibited in the last slot, but we don't
-         * have those flagged so prohibit all TLB ops for now.
-         */
-        if (slot == 2 && qpu_inst_is_tlb(inst))
+        if (slot == 2 && qinst->is_tlb_z_write)
                 return false;
 
         if (slot > 0 && qinst->uniform != ~0)
                 return false;
 
-        if (v3d_qpu_uses_vpm(inst))
+        if (v3d_qpu_waits_vpm(inst))
                 return false;
 
         if (inst->sig.ldvary)

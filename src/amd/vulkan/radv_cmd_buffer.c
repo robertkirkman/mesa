@@ -429,6 +429,12 @@ radv_destroy_cmd_buffer(struct radv_cmd_buffer *cmd_buffer)
    if (cmd_buffer->upload.upload_bo)
       cmd_buffer->device->ws->buffer_destroy(cmd_buffer->device->ws, cmd_buffer->upload.upload_bo);
 
+   if (cmd_buffer->state.own_render_pass) {
+      radv_DestroyRenderPass(radv_device_to_handle(cmd_buffer->device),
+                             radv_render_pass_to_handle(cmd_buffer->state.pass), NULL);
+      cmd_buffer->state.own_render_pass = false;
+   }
+
    if (cmd_buffer->cs)
       cmd_buffer->device->ws->cs_destroy(cmd_buffer->cs);
 
@@ -501,6 +507,12 @@ radv_reset_cmd_buffer(struct radv_cmd_buffer *cmd_buffer)
       cmd_buffer->device->ws->buffer_destroy(cmd_buffer->device->ws, up->upload_bo);
       list_del(&up->list);
       free(up);
+   }
+
+   if (cmd_buffer->state.own_render_pass) {
+      radv_DestroyRenderPass(radv_device_to_handle(cmd_buffer->device),
+                             radv_render_pass_to_handle(cmd_buffer->state.pass), NULL);
+      cmd_buffer->state.own_render_pass = false;
    }
 
    cmd_buffer->push_constant_stages = 0;
@@ -1391,15 +1403,7 @@ radv_emit_graphics_pipeline(struct radv_cmd_buffer *cmd_buffer)
 
    radv_emit_batch_break_on_new_ps(cmd_buffer);
 
-   for (unsigned i = 0; i < MESA_SHADER_COMPUTE; i++) {
-      if (!pipeline->shaders[i])
-         continue;
-
-      radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, pipeline->shaders[i]->bo);
-   }
-
-   if (radv_pipeline_has_gs_copy_shader(pipeline))
-      radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, pipeline->gs_copy_shader->bo);
+   radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, pipeline->slab->alloc->arena->bo);
 
    if (unlikely(cmd_buffer->device->trace_bo))
       radv_save_pipeline(cmd_buffer, pipeline);
@@ -2880,7 +2884,6 @@ emit_prolog_regs(struct radv_cmd_buffer *cmd_buffer, struct radv_shader *vs_shad
    uint64_t prolog_va = radv_buffer_get_va(prolog->bo) + prolog->alloc->offset;
 
    assert(cmd_buffer->state.emitted_pipeline == cmd_buffer->state.pipeline);
-   assert(vs_shader->info.num_input_sgprs <= prolog->num_preserved_sgprs);
 
    uint32_t rsrc1 = vs_shader->config.rsrc1;
    if (chip < GFX10 && G_00B228_SGPRS(prolog->rsrc1) > G_00B228_SGPRS(vs_shader->config.rsrc1))
@@ -2926,7 +2929,7 @@ emit_prolog_inputs(struct radv_cmd_buffer *cmd_buffer, struct radv_shader *vs_sh
        !cmd_buffer->state.emitted_vs_prolog->nontrivial_divisors)
       return;
 
-   struct radv_vs_input_state *state = &cmd_buffer->state.dynamic_vs_input;
+   const struct radv_vs_input_state *state = &cmd_buffer->state.dynamic_vs_input;
    uint64_t input_va = radv_shader_get_va(vs_shader);
 
    if (nontrivial_divisors) {
@@ -3314,7 +3317,7 @@ radv_flush_vertex_descriptors(struct radv_cmd_buffer *cmd_buffer, bool pipeline_
       unsigned desc_index = 0;
       uint32_t mask = pipeline->vb_desc_usage_mask;
       uint64_t va;
-      struct radv_vs_input_state *vs_state =
+      const struct radv_vs_input_state *vs_state =
          vs_shader->info.vs.dynamic_inputs ? &cmd_buffer->state.dynamic_vs_input : NULL;
 
       /* allocate some descriptor state for vertex buffers */
@@ -4367,6 +4370,107 @@ radv_ResetCommandBuffer(VkCommandBuffer commandBuffer, VkCommandBufferResetFlags
    return radv_reset_cmd_buffer(cmd_buffer);
 }
 
+static void
+radv_inherit_dynamic_rendering(struct radv_cmd_buffer *cmd_buffer,
+                               const VkCommandBufferInheritanceInfo *inherit_info)
+{
+   const VkCommandBufferInheritanceRenderingInfoKHR *dyn_info =
+      vk_find_struct_const(inherit_info->pNext, COMMAND_BUFFER_INHERITANCE_RENDERING_INFO_KHR);
+
+   if (!dyn_info)
+      return;
+
+   const VkAttachmentSampleCountInfoAMD *sample_info =
+      vk_find_struct_const(inherit_info->pNext, ATTACHMENT_SAMPLE_COUNT_INFO_AMD);
+   VkResult result;
+   /* (normal + resolve) for color attachments and ds and a VRS attachment */
+   VkAttachmentDescription2 att_desc[MAX_RTS * 2 + 3];
+   VkAttachmentReference2 color_refs[MAX_RTS], ds_ref;
+   unsigned att_count = 0;
+
+   VkSubpassDescription2 subpass = {
+      .sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2,
+      .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+      .viewMask = dyn_info->viewMask,
+      .colorAttachmentCount = dyn_info->colorAttachmentCount,
+      .pColorAttachments = color_refs,
+   };
+
+   for (unsigned i = 0; i < dyn_info->colorAttachmentCount; ++i) {
+      if (dyn_info->pColorAttachmentFormats[i] == VK_FORMAT_UNDEFINED) {
+         color_refs[i] = (VkAttachmentReference2){
+            .sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,
+            .attachment = VK_ATTACHMENT_UNUSED,
+         };
+         continue;
+      }
+
+      color_refs[i] = (VkAttachmentReference2){
+         .sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,
+         .attachment = att_count,
+         .layout = VK_IMAGE_LAYOUT_GENERAL, /* Shouldn't be used */
+         .aspectMask = 0,                   /* Shouldn't be used */
+      };
+
+      VkAttachmentDescription2 *att = att_desc + att_count++;
+      memset(att, 0, sizeof(*att));
+      att->sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
+      att->format = dyn_info->pColorAttachmentFormats[i];
+      att->samples =
+         sample_info ? sample_info->pColorAttachmentSamples[i] : dyn_info->rasterizationSamples;
+      att->loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+      att->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+      att->initialLayout = VK_IMAGE_LAYOUT_GENERAL;
+      att->finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+   }
+
+   if (dyn_info->depthAttachmentFormat != VK_FORMAT_UNDEFINED ||
+       dyn_info->stencilAttachmentFormat != VK_FORMAT_UNDEFINED) {
+      VkFormat fmt = dyn_info->depthAttachmentFormat != VK_FORMAT_UNDEFINED
+                        ? dyn_info->depthAttachmentFormat
+                        : dyn_info->stencilAttachmentFormat;
+
+      ds_ref = (VkAttachmentReference2){
+         .sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,
+         .attachment = att_count,
+         .layout = VK_IMAGE_LAYOUT_GENERAL, /* Shouldn't be used */
+         .aspectMask = 0,                   /* Shouldn't be used */
+      };
+      subpass.pDepthStencilAttachment = &ds_ref;
+
+      VkAttachmentDescription2 *att = att_desc + att_count++;
+
+      memset(att, 0, sizeof(*att));
+      att->sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
+      att->format = fmt;
+      att->samples =
+         sample_info ? sample_info->depthStencilAttachmentSamples : dyn_info->rasterizationSamples;
+      att->loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+      att->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+      att->stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+      att->stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+   }
+
+   VkRenderPassCreateInfo2 rp_create_info = {
+      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2,
+      .attachmentCount = att_count,
+      .pAttachments = att_desc,
+      .subpassCount = 1,
+      .pSubpasses = &subpass,
+   };
+
+   VkRenderPass rp;
+   result =
+      radv_CreateRenderPass2(radv_device_to_handle(cmd_buffer->device), &rp_create_info, NULL, &rp);
+   if (result != VK_SUCCESS) {
+      cmd_buffer->record_result = result;
+      return;
+   }
+
+   cmd_buffer->state.pass = radv_render_pass_from_handle(rp);
+   cmd_buffer->state.own_render_pass = true;
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 radv_BeginCommandBuffer(VkCommandBuffer commandBuffer, const VkCommandBufferBeginInfo *pBeginInfo)
 {
@@ -4405,6 +4509,8 @@ radv_BeginCommandBuffer(VkCommandBuffer commandBuffer, const VkCommandBufferBegi
       cmd_buffer->state.pass =
          radv_render_pass_from_handle(pBeginInfo->pInheritanceInfo->renderPass);
 
+      radv_inherit_dynamic_rendering(cmd_buffer, pBeginInfo->pInheritanceInfo);
+
       struct radv_subpass *subpass =
          &cmd_buffer->state.pass->subpasses[pBeginInfo->pInheritanceInfo->subpass];
 
@@ -4417,9 +4523,11 @@ radv_BeginCommandBuffer(VkCommandBuffer commandBuffer, const VkCommandBufferBegi
       cmd_buffer->state.inherited_pipeline_statistics =
          pBeginInfo->pInheritanceInfo->pipelineStatistics;
 
-      cmd_buffer->state.subpass = subpass;
-      if (cmd_buffer->state.framebuffer)
-         cmd_buffer->state.dirty |= RADV_CMD_DIRTY_FRAMEBUFFER;
+      if (cmd_buffer->state.pass) {
+         cmd_buffer->state.subpass = subpass;
+         if (cmd_buffer->state.framebuffer)
+            cmd_buffer->state.dirty |= RADV_CMD_DIRTY_FRAMEBUFFER;
+      }
    }
 
    if (unlikely(cmd_buffer->device->trace_bo))
@@ -4449,7 +4557,7 @@ radv_CmdBindVertexBuffers2EXT(VkCommandBuffer commandBuffer, uint32_t firstBindi
 {
    RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
    struct radv_vertex_binding *vb = cmd_buffer->vertex_bindings;
-   struct radv_vs_input_state *state = &cmd_buffer->state.dynamic_vs_input;
+   const struct radv_vs_input_state *state = &cmd_buffer->state.dynamic_vs_input;
    bool changed = false;
 
    /* We have to defer setting up vertex buffer since we need the buffer
@@ -4473,7 +4581,6 @@ radv_CmdBindVertexBuffers2EXT(VkCommandBuffer commandBuffer, uint32_t firstBindi
       vb[idx].buffer = buffer;
       vb[idx].offset = pOffsets[i];
       vb[idx].size = size;
-      /* if pStrides=NULL, it shouldn't overwrite the strides specified by CmdSetVertexInputEXT */
 
       if (chip == GFX6 || chip >= GFX10) {
          const uint32_t bit = 1u << idx;
@@ -4494,6 +4601,7 @@ radv_CmdBindVertexBuffers2EXT(VkCommandBuffer commandBuffer, uint32_t firstBindi
          }
       }
 
+      /* if pStrides=NULL, it shouldn't overwrite the strides specified by CmdSetVertexInputEXT */
       if (pStrides)
          vb[idx].stride = stride;
 
@@ -4849,8 +4957,7 @@ radv_emit_compute_pipeline(struct radv_cmd_buffer *cmd_buffer, struct radv_pipel
    cmd_buffer->compute_scratch_waves_wanted =
       MAX2(cmd_buffer->compute_scratch_waves_wanted, pipeline->max_waves);
 
-   radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs,
-                      pipeline->shaders[MESA_SHADER_COMPUTE]->bo);
+   radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, pipeline->slab->alloc->arena->bo);
 
    if (unlikely(cmd_buffer->device->trace_bo))
       radv_save_pipeline(cmd_buffer, pipeline);
@@ -5478,14 +5585,7 @@ radv_CmdSetVertexInputEXT(VkCommandBuffer commandBuffer, uint32_t vertexBindingD
 
    cmd_buffer->state.vbo_misaligned_mask = 0;
 
-   state->attribute_mask = 0;
-   state->misaligned_mask = 0;
-   state->possibly_misaligned_mask = 0;
-   state->instance_rate_inputs = 0;
-   state->nontrivial_divisors = 0;
-   state->post_shuffle = 0;
-   state->alpha_adjust_lo = 0;
-   state->alpha_adjust_hi = 0;
+   memset(state, 0, sizeof(*state));
 
    enum chip_class chip = cmd_buffer->device->physical_device->rad_info.chip_class;
    for (unsigned i = 0; i < vertexAttributeDescriptionCount; i++) {
@@ -5518,7 +5618,7 @@ radv_CmdSetVertexInputEXT(VkCommandBuffer commandBuffer, uint32_t vertexBindingD
       state->format_sizes[loc] = format_desc->block.bits / 8u;
 
       if (chip == GFX6 || chip >= GFX10) {
-         struct radv_vertex_binding *vb = cmd_buffer->vertex_bindings;
+         const struct radv_vertex_binding *vb = cmd_buffer->vertex_bindings;
          unsigned bit = 1u << loc;
          if (binding->stride & format_align_req_minus_1) {
             state->misaligned_mask |= bit;
@@ -5594,7 +5694,7 @@ radv_CmdExecuteCommands(VkCommandBuffer commandBuffer, uint32_t commandBufferCou
       if (secondary->gds_needed)
          primary->gds_needed = true;
 
-      if (!secondary->state.framebuffer && (primary->state.dirty & RADV_CMD_DIRTY_FRAMEBUFFER)) {
+      if (!secondary->state.framebuffer && primary->state.pass && (primary->state.dirty & RADV_CMD_DIRTY_FRAMEBUFFER)) {
          /* Emit the framebuffer state from primary if secondary
           * has been recorded without a framebuffer, otherwise
           * fast color/depth clears can't work.
@@ -7315,6 +7415,328 @@ radv_CmdEndRenderPass2(VkCommandBuffer commandBuffer, const VkSubpassEndInfo *pS
    radv_cmd_buffer_end_subpass(cmd_buffer);
 
    radv_cmd_buffer_end_render_pass(cmd_buffer);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+radv_CmdBeginRenderingKHR(VkCommandBuffer commandBuffer, const VkRenderingInfoKHR *pRenderingInfo)
+{
+   RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
+   const VkRenderingFragmentShadingRateAttachmentInfoKHR *vrs_info = vk_find_struct_const(
+      pRenderingInfo->pNext, RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_INFO_KHR);
+   VkResult result;
+   /* (normal + resolve) for color attachments and ds and a VRS attachment */
+   VkAttachmentDescription2 att_desc[MAX_RTS * 2 + 3];
+   VkAttachmentDescriptionStencilLayout ds_stencil_att, ds_stencil_resolve_att;
+   VkImageView iviews[MAX_RTS * 2 + 3];
+   VkAttachmentReference2 color_refs[MAX_RTS], color_resolve_refs[MAX_RTS];
+   VkAttachmentReference2 ds_ref, ds_resolve_ref, vrs_ref;
+   VkAttachmentReferenceStencilLayout ds_stencil_ref, ds_stencil_resolve_ref;
+   VkSubpassDescriptionDepthStencilResolve ds_resolve_info;
+   VkFragmentShadingRateAttachmentInfoKHR vrs_subpass_info;
+   VkClearValue clear_values[MAX_RTS * 2 + 3];
+   unsigned att_count = 0;
+
+   VkSubpassDescription2 subpass = {
+      .sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2,
+      .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+      .viewMask = pRenderingInfo->viewMask,
+      .colorAttachmentCount = pRenderingInfo->colorAttachmentCount,
+      .pColorAttachments = color_refs,
+      .pResolveAttachments = color_resolve_refs,
+   };
+
+   for (unsigned i = 0; i < pRenderingInfo->colorAttachmentCount; ++i) {
+      color_refs[i] = (VkAttachmentReference2){
+         .sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,
+         .attachment = VK_ATTACHMENT_UNUSED,
+      };
+      color_resolve_refs[i] = (VkAttachmentReference2){
+         .sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,
+         .attachment = VK_ATTACHMENT_UNUSED,
+      };
+
+      if (pRenderingInfo->pColorAttachments[i].imageView == VK_NULL_HANDLE)
+         continue;
+
+      const VkRenderingAttachmentInfoKHR *info = &pRenderingInfo->pColorAttachments[i];
+      RADV_FROM_HANDLE(radv_image_view, iview, info->imageView);
+      color_refs[i] = (VkAttachmentReference2){.sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,
+                                               .attachment = att_count,
+                                               .layout = info->imageLayout,
+                                               .aspectMask = iview->aspect_mask};
+
+      iviews[att_count] = info->imageView;
+      clear_values[att_count] = info->clearValue;
+      VkAttachmentDescription2 *att = att_desc + att_count++;
+
+      memset(att, 0, sizeof(*att));
+      att->sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
+      att->format = iview->vk_format;
+      att->samples = iview->image->info.samples;
+      att->loadOp = info->loadOp;
+      att->storeOp = info->storeOp;
+      att->initialLayout = info->imageLayout;
+      att->finalLayout = info->imageLayout;
+
+      if (pRenderingInfo->flags & VK_RENDERING_RESUMING_BIT_KHR)
+         att->loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+
+      if (pRenderingInfo->flags & VK_RENDERING_SUSPENDING_BIT_KHR)
+         att->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+      if (info->resolveMode != VK_RESOLVE_MODE_NONE &&
+          !(pRenderingInfo->flags & VK_RENDERING_SUSPENDING_BIT_KHR)) {
+         RADV_FROM_HANDLE(radv_image_view, resolve_iview, info->resolveImageView);
+         color_resolve_refs[i] =
+            (VkAttachmentReference2){.sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,
+                                     .attachment = att_count,
+                                     .layout = info->resolveImageLayout,
+                                     .aspectMask = resolve_iview->aspect_mask};
+
+         iviews[att_count] = info->resolveImageView;
+         att = att_desc + att_count++;
+
+         memset(att, 0, sizeof(*att));
+         att->sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
+         att->format = resolve_iview->vk_format;
+         att->samples = resolve_iview->image->info.samples;
+         att->loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+         att->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+         att->initialLayout = info->resolveImageLayout;
+         att->finalLayout = info->resolveImageLayout;
+      }
+   }
+
+   if (pRenderingInfo->pDepthAttachment || pRenderingInfo->pStencilAttachment) {
+      const VkRenderingAttachmentInfoKHR *common_info = pRenderingInfo->pDepthAttachment
+                                                           ? pRenderingInfo->pDepthAttachment
+                                                           : pRenderingInfo->pStencilAttachment;
+      RADV_FROM_HANDLE(radv_image_view, iview, common_info->imageView);
+
+      if (common_info->imageView != VK_NULL_HANDLE) {
+         ds_ref = (VkAttachmentReference2){
+            .sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,
+            .attachment = att_count,
+            .layout = common_info->imageLayout,
+            .aspectMask = (pRenderingInfo->pDepthAttachment ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) |
+                          (pRenderingInfo->pStencilAttachment ? VK_IMAGE_ASPECT_STENCIL_BIT : 0)};
+         subpass.pDepthStencilAttachment = &ds_ref;
+
+         iviews[att_count] = common_info->imageView;
+         if (pRenderingInfo->pDepthAttachment)
+            clear_values[att_count].depthStencil.depth =
+               pRenderingInfo->pDepthAttachment->clearValue.depthStencil.depth;
+         if (pRenderingInfo->pStencilAttachment)
+            clear_values[att_count].depthStencil.stencil =
+               pRenderingInfo->pStencilAttachment->clearValue.depthStencil.stencil;
+         VkAttachmentDescription2 *att = att_desc + att_count++;
+
+         memset(att, 0, sizeof(*att));
+         att->sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
+         att->format = iview->vk_format;
+         att->samples = iview->image->info.samples;
+
+         if (pRenderingInfo->pDepthAttachment) {
+            att->loadOp = pRenderingInfo->pDepthAttachment->loadOp;
+            att->storeOp = pRenderingInfo->pDepthAttachment->storeOp;
+         } else {
+            att->loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            att->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+         }
+
+         if (pRenderingInfo->pStencilAttachment) {
+            att->stencilLoadOp = pRenderingInfo->pStencilAttachment->loadOp;
+            att->stencilStoreOp = pRenderingInfo->pStencilAttachment->storeOp;
+         } else {
+            att->stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            att->stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+         }
+
+         if (pRenderingInfo->flags & VK_RENDERING_RESUMING_BIT_KHR) {
+            att->loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            att->stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+         }
+
+         if (pRenderingInfo->flags & VK_RENDERING_SUSPENDING_BIT_KHR) {
+            att->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            att->stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+         }
+
+         att->initialLayout = common_info->imageLayout;
+         att->finalLayout = common_info->imageLayout;
+
+         if (pRenderingInfo->pDepthAttachment && pRenderingInfo->pStencilAttachment) {
+            ds_ref.pNext = &ds_stencil_ref;
+            ds_stencil_ref = (VkAttachmentReferenceStencilLayout){
+               .sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_STENCIL_LAYOUT,
+               .stencilLayout = pRenderingInfo->pStencilAttachment->imageLayout};
+
+            att->pNext = &ds_stencil_att;
+            ds_stencil_att = (VkAttachmentDescriptionStencilLayout){
+               .sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_STENCIL_LAYOUT,
+               .stencilInitialLayout = pRenderingInfo->pStencilAttachment->imageLayout,
+               .stencilFinalLayout = pRenderingInfo->pStencilAttachment->imageLayout,
+            };
+         }
+
+         if ((pRenderingInfo->pDepthAttachment &&
+              pRenderingInfo->pDepthAttachment->resolveMode != VK_RESOLVE_MODE_NONE) ||
+             (pRenderingInfo->pStencilAttachment &&
+              pRenderingInfo->pStencilAttachment->resolveMode != VK_RESOLVE_MODE_NONE)) {
+            RADV_FROM_HANDLE(radv_image_view, resolve_iview, common_info->resolveImageView);
+            ds_resolve_ref =
+               (VkAttachmentReference2){.sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,
+                                        .attachment = att_count,
+                                        .layout = common_info->resolveImageLayout,
+                                        .aspectMask = resolve_iview->aspect_mask};
+
+            iviews[att_count] = common_info->resolveImageView;
+            att = att_desc + att_count++;
+
+            memset(att, 0, sizeof(*att));
+            att->sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
+            att->format = resolve_iview->vk_format;
+            att->samples = resolve_iview->image->info.samples;
+            att->loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            att->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            att->initialLayout = common_info->resolveImageLayout;
+            att->finalLayout = common_info->resolveImageLayout;
+
+            ds_resolve_info = (VkSubpassDescriptionDepthStencilResolve){
+               .sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE,
+               .pNext = subpass.pNext,
+               .depthResolveMode =
+                  (pRenderingInfo->pDepthAttachment &&
+                   pRenderingInfo->pDepthAttachment->resolveMode != VK_RESOLVE_MODE_NONE)
+                     ? pRenderingInfo->pDepthAttachment->resolveMode
+                     : VK_RESOLVE_MODE_NONE,
+               .stencilResolveMode =
+                  (pRenderingInfo->pStencilAttachment &&
+                   pRenderingInfo->pStencilAttachment->resolveMode != VK_RESOLVE_MODE_NONE)
+                     ? pRenderingInfo->pStencilAttachment->resolveMode
+                     : VK_RESOLVE_MODE_NONE,
+               .pDepthStencilResolveAttachment = &ds_resolve_ref};
+            subpass.pNext = &ds_resolve_info;
+
+            if (pRenderingInfo->pDepthAttachment && pRenderingInfo->pStencilAttachment &&
+                pRenderingInfo->pDepthAttachment->resolveMode != VK_RESOLVE_MODE_NONE &&
+                pRenderingInfo->pStencilAttachment->resolveMode != VK_RESOLVE_MODE_NONE) {
+               ds_resolve_ref.pNext = &ds_stencil_resolve_ref;
+               ds_stencil_resolve_ref = (VkAttachmentReferenceStencilLayout){
+                  .sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_STENCIL_LAYOUT,
+                  .stencilLayout = pRenderingInfo->pStencilAttachment->resolveImageLayout};
+
+               att->pNext = &ds_stencil_resolve_att;
+               ds_stencil_resolve_att = (VkAttachmentDescriptionStencilLayout){
+                  .sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_STENCIL_LAYOUT,
+                  .stencilInitialLayout = pRenderingInfo->pStencilAttachment->resolveImageLayout,
+                  .stencilFinalLayout = pRenderingInfo->pStencilAttachment->resolveImageLayout,
+               };
+            }
+         }
+      }
+   }
+
+   if (vrs_info && vrs_info->imageView) {
+      RADV_FROM_HANDLE(radv_image_view, iview, vrs_info->imageView);
+      vrs_ref = (VkAttachmentReference2){.sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,
+                                         .attachment = att_count,
+                                         .layout = vrs_info->imageLayout,
+                                         .aspectMask = iview->aspect_mask};
+
+      iviews[att_count] = vrs_info->imageView;
+      VkAttachmentDescription2 *att = att_desc + att_count++;
+
+      memset(att, 0, sizeof(*att));
+      att->sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
+      att->format = iview->vk_format;
+      att->samples = iview->image->info.samples;
+      att->loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+      att->storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+      att->initialLayout = vrs_info->imageLayout;
+      att->finalLayout = vrs_info->imageLayout;
+
+      vrs_subpass_info = (VkFragmentShadingRateAttachmentInfoKHR){
+         .sType = VK_STRUCTURE_TYPE_FRAGMENT_SHADING_RATE_ATTACHMENT_INFO_KHR,
+         .pNext = subpass.pNext,
+         .pFragmentShadingRateAttachment = &vrs_ref,
+         .shadingRateAttachmentTexelSize = vrs_info->shadingRateAttachmentTexelSize,
+      };
+      subpass.pNext = &vrs_subpass_info;
+   }
+
+   VkRenderPassCreateInfo2 rp_create_info = {
+      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2,
+      .attachmentCount = att_count,
+      .pAttachments = att_desc,
+      .subpassCount = 1,
+      .pSubpasses = &subpass,
+   };
+
+   VkRenderPass rp;
+   result =
+      radv_CreateRenderPass2(radv_device_to_handle(cmd_buffer->device), &rp_create_info, NULL, &rp);
+   if (result != VK_SUCCESS) {
+      cmd_buffer->record_result = result;
+      return;
+   }
+
+   unsigned w = MAX_FRAMEBUFFER_WIDTH;
+   unsigned h = MAX_FRAMEBUFFER_HEIGHT;
+   for (unsigned i = 0; i < att_count; ++i) {
+      RADV_FROM_HANDLE(radv_image_view, iview, iviews[i]);
+      w = MIN2(w, iview->extent.width);
+      h = MIN2(h, iview->extent.height);
+   }
+   VkFramebufferCreateInfo fb_create_info = {
+      .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+      .renderPass = rp,
+      .attachmentCount = att_count,
+      .pAttachments = iviews,
+      .width = w,
+      .height = h,
+      .layers = pRenderingInfo->layerCount,
+   };
+
+   VkFramebuffer fb;
+   result =
+      radv_CreateFramebuffer(radv_device_to_handle(cmd_buffer->device), &fb_create_info, NULL, &fb);
+   if (result != VK_SUCCESS) {
+      radv_DestroyRenderPass(radv_device_to_handle(cmd_buffer->device), rp, NULL);
+      cmd_buffer->record_result = result;
+      return;
+   }
+
+   VkRenderPassBeginInfo begin_info = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+                                       .renderPass = rp,
+                                       .framebuffer = fb,
+                                       .renderArea = pRenderingInfo->renderArea,
+                                       .clearValueCount = att_count,
+                                       .pClearValues = clear_values};
+
+   const VkSubpassBeginInfo pass_begin_info = {
+      .sType = VK_STRUCTURE_TYPE_SUBPASS_BEGIN_INFO,
+      .contents = (pRenderingInfo->flags & VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT_KHR)
+                     ? VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS
+                     : VK_SUBPASS_CONTENTS_INLINE,
+   };
+
+   radv_CmdBeginRenderPass2(commandBuffer, &begin_info, &pass_begin_info);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+radv_CmdEndRenderingKHR(VkCommandBuffer commandBuffer)
+{
+   RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
+   struct radv_render_pass *pass = cmd_buffer->state.pass;
+   struct radv_framebuffer *framebuffer = cmd_buffer->state.framebuffer;
+
+   radv_CmdEndRenderPass2(commandBuffer, NULL);
+
+   radv_DestroyFramebuffer(radv_device_to_handle(cmd_buffer->device),
+                           radv_framebuffer_to_handle(framebuffer), NULL);
+   radv_DestroyRenderPass(radv_device_to_handle(cmd_buffer->device),
+                          radv_render_pass_to_handle(pass), NULL);
 }
 
 /*

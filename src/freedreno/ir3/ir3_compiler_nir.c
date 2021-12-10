@@ -2110,6 +2110,12 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
    case nir_intrinsic_load_work_dim:
       dst[0] = create_driver_param(ctx, IR3_DP_WORK_DIM);
       break;
+   case nir_intrinsic_load_subgroup_invocation:
+      assert(ctx->compiler->has_getfiberid);
+      dst[0] = ir3_GETFIBERID(b);
+      dst[0]->cat6.type = TYPE_U32;
+      __ssa_dst(dst[0]);
+      break;
    case nir_intrinsic_discard_if:
    case nir_intrinsic_discard:
    case nir_intrinsic_demote:
@@ -2238,6 +2244,41 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
          ctx->max_stack = MAX2(ctx->max_stack, ctx->stack + 1);
       }
       ir3_split_dest(ctx->block, dst, ballot, 0, components);
+      break;
+   }
+
+   case nir_intrinsic_quad_broadcast: {
+      struct ir3_instruction *src = ir3_get_src(ctx, &intr->src[0])[0];
+      struct ir3_instruction *idx = ir3_get_src(ctx, &intr->src[1])[0];
+
+      type_t dst_type = type_uint_size(nir_dest_bit_size(intr->dest));
+
+      if (dst_type != TYPE_U32)
+         idx = ir3_COV(ctx->block, idx, TYPE_U32, dst_type);
+
+      dst[0] = ir3_QUAD_SHUFFLE_BRCST(ctx->block, src, 0, idx, 0);
+      dst[0]->cat5.type = dst_type;
+      break;
+   }
+
+   case nir_intrinsic_quad_swap_horizontal: {
+      struct ir3_instruction *src = ir3_get_src(ctx, &intr->src[0])[0];
+      dst[0] = ir3_QUAD_SHUFFLE_HORIZ(ctx->block, src, 0);
+      dst[0]->cat5.type = type_uint_size(nir_dest_bit_size(intr->dest));
+      break;
+   }
+
+   case nir_intrinsic_quad_swap_vertical: {
+      struct ir3_instruction *src = ir3_get_src(ctx, &intr->src[0])[0];
+      dst[0] = ir3_QUAD_SHUFFLE_VERT(ctx->block, src, 0);
+      dst[0]->cat5.type = type_uint_size(nir_dest_bit_size(intr->dest));
+      break;
+   }
+
+   case nir_intrinsic_quad_swap_diagonal: {
+      struct ir3_instruction *src = ir3_get_src(ctx, &intr->src[0])[0];
+      dst[0] = ir3_QUAD_SHUFFLE_DIAG(ctx->block, src, 0);
+      dst[0]->cat5.type = type_uint_size(nir_dest_bit_size(intr->dest));
       break;
    }
 
@@ -3573,10 +3614,7 @@ pack_inlocs(struct ir3_context *ctx)
     * use the NIR clip/cull distances to avoid reading ucp_enables in the
     * shader key.
     */
-   unsigned clip_cull_size =
-      ctx->so->shader->nir->info.clip_distance_array_size +
-      ctx->so->shader->nir->info.cull_distance_array_size;
-   unsigned clip_cull_mask = MASK(clip_cull_size);
+   unsigned clip_cull_mask = so->clip_mask | so->cull_mask;
 
    for (unsigned i = 0; i < so->inputs_count; i++) {
       unsigned compmask = 0, maxcomp = 0;

@@ -184,7 +184,7 @@ struct vbo_save_context {
 };
 
 GLboolean
-_vbo_CreateContext(struct gl_context *ctx, bool use_buffer_objects);
+_vbo_CreateContext(struct gl_context *ctx);
 
 void
 _vbo_DestroyContext(struct gl_context *ctx);
@@ -243,11 +243,6 @@ vbo_get_minmax_indices_gallium(struct gl_context *ctx,
 
 const struct gl_array_attributes*
 _vbo_current_attrib(const struct gl_context *ctx, gl_vert_attrib attr);
-
-
-const struct gl_vertex_buffer_binding*
-_vbo_current_binding(const struct gl_context *ctx);
-
 
 void GLAPIENTRY
 _es_Color4f(GLfloat r, GLfloat g, GLfloat b, GLfloat a);

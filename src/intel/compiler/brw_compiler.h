@@ -26,9 +26,10 @@
 
 #include <stdio.h>
 #include "dev/intel_device_info.h"
-#include "main/macros.h"
-#include "main/mtypes.h"
+#include "main/glheader.h"
+#include "main/config.h"
 #include "util/ralloc.h"
+#include "util/u_math.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,7 +38,9 @@ extern "C" {
 struct ra_regs;
 struct nir_shader;
 struct brw_program;
+struct shader_info;
 
+struct nir_shader_compiler_options;
 typedef struct nir_shader nir_shader;
 
 struct brw_compiler {
@@ -74,7 +77,7 @@ struct brw_compiler {
 
    bool scalar_stage[MESA_ALL_SHADER_STAGES];
    bool use_tcs_8_patch;
-   struct gl_shader_compiler_options glsl_compiler_options[MESA_ALL_SHADER_STAGES];
+   struct nir_shader_compiler_options *nir_options[MESA_ALL_SHADER_STAGES];
 
    /**
     * Apply workarounds for SIN and COS output range problems.
@@ -145,6 +148,12 @@ brw_shader_stage_is_bindless(gl_shader_stage stage)
 {
    return stage >= MESA_SHADER_RAYGEN &&
           stage <= MESA_SHADER_CALLABLE;
+}
+
+static inline bool
+brw_shader_stage_is_mesh(gl_shader_stage stage)
+{
+   return stage == MESA_SHADER_TASK || stage == MESA_SHADER_MESH;
 }
 
 /**
@@ -387,6 +396,16 @@ struct brw_gs_prog_key
    unsigned nr_userclip_plane_consts:4;
 };
 
+struct brw_task_prog_key
+{
+   struct brw_base_prog_key base;
+};
+
+struct brw_mesh_prog_key
+{
+   struct brw_base_prog_key base;
+};
+
 enum brw_sf_primitive {
    BRW_SF_PRIM_POINTS = 0,
    BRW_SF_PRIM_LINES = 1,
@@ -547,6 +566,8 @@ union brw_any_prog_key {
    struct brw_wm_prog_key wm;
    struct brw_cs_prog_key cs;
    struct brw_bs_prog_key bs;
+   struct brw_task_prog_key task;
+   struct brw_mesh_prog_key mesh;
 };
 
 /*
@@ -848,6 +869,7 @@ enum brw_pixel_shader_computed_depth_mode {
 struct brw_wm_prog_data {
    struct brw_stage_prog_data base;
 
+   GLuint num_per_primitive_inputs;
    GLuint num_varying_inputs;
 
    uint8_t reg_blocks_8;
@@ -1417,6 +1439,53 @@ struct brw_clip_prog_data {
    uint32_t total_grf;
 };
 
+struct brw_tue_map {
+   int32_t start_dw[VARYING_SLOT_MAX];
+
+   uint32_t size_dw;
+
+   uint32_t per_task_data_start_dw;
+};
+
+struct brw_mue_map {
+   int32_t start_dw[VARYING_SLOT_MAX];
+
+   uint32_t size_dw;
+
+   uint32_t max_primitives;
+   uint32_t per_primitive_start_dw;
+   uint32_t per_primitive_header_size_dw;
+   uint32_t per_primitive_data_size_dw;
+   uint32_t per_primitive_pitch_dw;
+
+   uint32_t max_vertices;
+   uint32_t per_vertex_start_dw;
+   uint32_t per_vertex_header_size_dw;
+   uint32_t per_vertex_data_size_dw;
+   uint32_t per_vertex_pitch_dw;
+};
+
+struct brw_task_prog_data {
+   struct brw_cs_prog_data base;
+   struct brw_tue_map map;
+   bool uses_drawid;
+};
+
+enum brw_mesh_index_format {
+   BRW_INDEX_FORMAT_U32,
+};
+
+struct brw_mesh_prog_data {
+   struct brw_cs_prog_data base;
+   struct brw_mue_map map;
+
+   uint16_t primitive_type;
+
+   enum brw_mesh_index_format index_format;
+
+   bool uses_drawid;
+};
+
 /* brw_any_prog_data is prog_data for any stage that maps to an API stage */
 union brw_any_prog_data {
    struct brw_stage_prog_data base;
@@ -1428,6 +1497,8 @@ union brw_any_prog_data {
    struct brw_wm_prog_data wm;
    struct brw_cs_prog_data cs;
    struct brw_bs_prog_data bs;
+   struct brw_task_prog_data task;
+   struct brw_mesh_prog_data mesh;
 };
 
 #define DEFINE_PROG_DATA_DOWNCAST(STAGE, CHECK)                            \
@@ -1458,6 +1529,9 @@ DEFINE_PROG_DATA_DOWNCAST(vue, prog_data->stage == MESA_SHADER_VERTEX ||
                                prog_data->stage == MESA_SHADER_TESS_CTRL ||
                                prog_data->stage == MESA_SHADER_TESS_EVAL ||
                                prog_data->stage == MESA_SHADER_GEOMETRY)
+
+DEFINE_PROG_DATA_DOWNCAST(task, prog_data->stage == MESA_SHADER_TASK)
+DEFINE_PROG_DATA_DOWNCAST(mesh, prog_data->stage == MESA_SHADER_MESH)
 
 /* These are not really brw_stage_prog_data. */
 DEFINE_PROG_DATA_DOWNCAST(ff_gs, true)
@@ -1615,6 +1689,41 @@ brw_compile_clip(const struct brw_compiler *compiler,
                  struct brw_vue_map *vue_map,
                  unsigned *final_assembly_size);
 
+struct brw_compile_task_params {
+   struct nir_shader *nir;
+
+   const struct brw_task_prog_key *key;
+   struct brw_task_prog_data *prog_data;
+
+   struct brw_compile_stats *stats;
+
+   char *error_str;
+   void *log_data;
+};
+
+const unsigned *
+brw_compile_task(const struct brw_compiler *compiler,
+                 void *mem_ctx,
+                 struct brw_compile_task_params *params);
+
+struct brw_compile_mesh_params {
+   struct nir_shader *nir;
+
+   const struct brw_mesh_prog_key *key;
+   struct brw_mesh_prog_data *prog_data;
+   const struct brw_tue_map *tue_map;
+
+   struct brw_compile_stats *stats;
+
+   char *error_str;
+   void *log_data;
+};
+
+const unsigned *
+brw_compile_mesh(const struct brw_compiler *compiler,
+                 void *mem_ctx,
+                 struct brw_compile_mesh_params *params);
+
 /**
  * Parameters for compiling a fragment shader.
  *
@@ -1625,7 +1734,9 @@ struct brw_compile_fs_params {
 
    const struct brw_wm_prog_key *key;
    struct brw_wm_prog_data *prog_data;
+
    const struct brw_vue_map *vue_map;
+   const struct brw_mue_map *mue_map;
 
    bool shader_time;
    int shader_time_index8;

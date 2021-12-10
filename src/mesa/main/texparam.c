@@ -47,6 +47,8 @@
 #include "program/prog_instruction.h"
 #include "util/u_math.h"
 
+#include "state_tracker/st_cb_texture.h"
+
 /**
  * Use macro to resolve undefined clamping behaviour when using lroundf
  */
@@ -909,8 +911,8 @@ _mesa_texture_parameterf(struct gl_context *ctx,
       }
    }
 
-   if (ctx->Driver.TexParameter && need_update) {
-      ctx->Driver.TexParameter(ctx, texObj, pname);
+   if (need_update) {
+      st_TexParameter(ctx, texObj, pname);
    }
 }
 
@@ -977,8 +979,8 @@ _mesa_texture_parameterfv(struct gl_context *ctx,
       need_update = set_tex_parameterf(ctx, texObj, pname, params, dsa);
    }
 
-   if (ctx->Driver.TexParameter && need_update) {
-      ctx->Driver.TexParameter(ctx, texObj, pname);
+   if (need_update) {
+      st_TexParameter(ctx, texObj, pname);
    }
 }
 
@@ -1021,8 +1023,8 @@ _mesa_texture_parameteri(struct gl_context *ctx,
       }
    }
 
-   if (ctx->Driver.TexParameter && need_update) {
-      ctx->Driver.TexParameter(ctx, texObj, pname);
+   if (need_update) {
+      st_TexParameter(ctx, texObj, pname);
    }
 }
 
@@ -1064,8 +1066,8 @@ _mesa_texture_parameteriv(struct gl_context *ctx,
       need_update = set_tex_parameteri(ctx, texObj, pname, params, dsa);
    }
 
-   if (ctx->Driver.TexParameter && need_update) {
-      ctx->Driver.TexParameter(ctx, texObj, pname);
+   if (need_update) {
+      st_TexParameter(ctx, texObj, pname);
    }
 }
 
@@ -1580,9 +1582,13 @@ _mesa_legal_get_tex_level_parameter_target(struct gl_context *ctx, GLenum target
        *
        * From the OpenGL 3.1 spec:
        * "target may also be TEXTURE_BUFFER, indicating the texture buffer."
+       *
+       * From ARB_texture_buffer_range, GL_TEXTURE is a valid target in
+       * GetTexLevelParameter.
        */
       return (_mesa_is_desktop_gl(ctx) && ctx->Version >= 31) ||
-             _mesa_has_OES_texture_buffer(ctx);
+             _mesa_has_OES_texture_buffer(ctx) ||
+             _mesa_has_ARB_texture_buffer_range(ctx);
    case GL_TEXTURE_CUBE_MAP_ARRAY:
       return _mesa_has_texture_cube_map_array(ctx);
    }

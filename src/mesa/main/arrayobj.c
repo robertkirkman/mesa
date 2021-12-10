@@ -57,6 +57,7 @@
 #include "util/u_math.h"
 #include "util/u_memory.h"
 
+#include "state_tracker/st_cb_bufferobjects.h"
 
 const GLubyte
 _mesa_vao_attribute_map[ATTRIBUTE_MAP_MODE_MAX][VERT_ATTRIB_MAX] =
@@ -850,33 +851,6 @@ _mesa_all_varyings_in_vbos(const struct gl_vertex_array_object *vao)
    return true;
 }
 
-bool
-_mesa_all_buffers_are_unmapped(const struct gl_vertex_array_object *vao)
-{
-   /* Walk the enabled arrays that have a vbo attached */
-   GLbitfield mask = vao->Enabled & vao->VertexAttribBufferMask;
-
-   while (mask) {
-      const int i = ffs(mask) - 1;
-      const struct gl_array_attributes *attrib_array =
-         &vao->VertexAttrib[i];
-      const struct gl_vertex_buffer_binding *buffer_binding =
-         &vao->BufferBinding[attrib_array->BufferBindingIndex];
-
-      /* We have already masked with vao->VertexAttribBufferMask  */
-      assert(buffer_binding->BufferObj);
-
-      /* Bail out once we find the first disallowed mapping */
-      if (_mesa_check_disallowed_mapping(buffer_binding->BufferObj))
-         return false;
-
-      /* We have handled everything that is bound to this buffer_binding. */
-      mask &= ~buffer_binding->_BoundArrays;
-   }
-
-   return true;
-}
-
 
 /**
  * Map buffer objects used in attribute arrays.
@@ -898,7 +872,7 @@ _mesa_vao_map_arrays(struct gl_context *ctx, struct gl_vertex_array_object *vao,
       if (_mesa_bufferobj_mapped(bo, MAP_INTERNAL))
          continue;
 
-      ctx->Driver.MapBufferRange(ctx, 0, bo->Size, access, bo, MAP_INTERNAL);
+      st_bufferobj_map_range(ctx, 0, bo->Size, access, bo, MAP_INTERNAL);
    }
 }
 
@@ -914,7 +888,7 @@ _mesa_vao_map(struct gl_context *ctx, struct gl_vertex_array_object *vao,
 
    /* map the index buffer, if there is one, and not already mapped */
    if (bo && !_mesa_bufferobj_mapped(bo, MAP_INTERNAL))
-      ctx->Driver.MapBufferRange(ctx, 0, bo->Size, access, bo, MAP_INTERNAL);
+      st_bufferobj_map_range(ctx, 0, bo->Size, access, bo, MAP_INTERNAL);
 
    _mesa_vao_map_arrays(ctx, vao, access);
 }
@@ -940,7 +914,7 @@ _mesa_vao_unmap_arrays(struct gl_context *ctx,
       if (!_mesa_bufferobj_mapped(bo, MAP_INTERNAL))
          continue;
 
-      ctx->Driver.UnmapBuffer(ctx, bo, MAP_INTERNAL);
+      st_bufferobj_unmap(ctx, bo, MAP_INTERNAL);
    }
 }
 
@@ -955,7 +929,7 @@ _mesa_vao_unmap(struct gl_context *ctx, struct gl_vertex_array_object *vao)
 
    /* unmap the index buffer, if there is one, and still mapped */
    if (bo && _mesa_bufferobj_mapped(bo, MAP_INTERNAL))
-      ctx->Driver.UnmapBuffer(ctx, bo, MAP_INTERNAL);
+      st_bufferobj_unmap(ctx, bo, MAP_INTERNAL);
 
    _mesa_vao_unmap_arrays(ctx, vao);
 }

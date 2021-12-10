@@ -347,6 +347,13 @@ radv_thread_trace_enabled()
           getenv("RADV_THREAD_TRACE_TRIGGER");
 }
 
+static bool
+radv_spm_trace_enabled()
+{
+   return radv_thread_trace_enabled() &&
+          debug_get_bool_option("RADV_THREAD_TRACE_CACHE_COUNTERS", false);
+}
+
 #if defined(VK_USE_PLATFORM_WAYLAND_KHR) || defined(VK_USE_PLATFORM_XCB_KHR) ||                    \
    defined(VK_USE_PLATFORM_XLIB_KHR) || defined(VK_USE_PLATFORM_DISPLAY_KHR)
 #define RADV_USE_WSI_PLATFORM
@@ -418,6 +425,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .KHR_device_group = true,
       .KHR_draw_indirect_count = true,
       .KHR_driver_properties = true,
+      .KHR_dynamic_rendering = true,
       .KHR_external_fence = true,
       .KHR_external_fence_fd = true,
       .KHR_external_memory = true,
@@ -438,9 +446,11 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .KHR_maintenance4 = true,
       .KHR_multiview = true,
       .KHR_pipeline_executable_properties = true,
-      .KHR_pipeline_library = (device->instance->perftest_flags & RADV_PERFTEST_RT) && !device->use_llvm,
+      .KHR_pipeline_library =
+         (device->instance->perftest_flags & RADV_PERFTEST_RT) && !device->use_llvm,
       .KHR_push_descriptor = true,
-      .KHR_ray_tracing_pipeline = (device->instance->perftest_flags & RADV_PERFTEST_RT) && !device->use_llvm,
+      .KHR_ray_tracing_pipeline =
+         (device->instance->perftest_flags & RADV_PERFTEST_RT) && !device->use_llvm,
       .KHR_relaxed_block_layout = true,
       .KHR_sampler_mirror_clamp_to_edge = true,
       .KHR_sampler_ycbcr_conversion = true,
@@ -560,6 +570,12 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .NV_compute_shader_derivatives = true,
       .VALVE_mutable_descriptor_type = true,
    };
+}
+
+static bool
+radv_is_conformant(const struct radv_physical_device *pdevice)
+{
+   return pdevice->rad_info.chip_class >= GFX8;
 }
 
 static VkResult
@@ -692,7 +708,7 @@ radv_physical_device_try_create(struct radv_instance *instance, drmDevicePtr drm
    device->disk_cache = disk_cache_create(device->name, buf, 0);
 #endif
 
-   if (device->rad_info.chip_class < GFX8 || device->rad_info.chip_class > GFX10)
+   if (!radv_is_conformant(device))
       vk_warn_non_conformant_implementation("radv");
 
    radv_get_driver_uuid(&device->driver_uuid);
@@ -1644,6 +1660,12 @@ radv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          features->synchronization2 = true;
          break;
       }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR: {
+         VkPhysicalDeviceDynamicRenderingFeaturesKHR *features =
+            (VkPhysicalDeviceDynamicRenderingFeaturesKHR *)ext;
+         features->dynamicRendering = true;
+         break;
+      }
       default:
          break;
       }
@@ -1771,8 +1793,8 @@ radv_GetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice,
       .minInterpolationOffset = -2,
       .maxInterpolationOffset = 2,
       .subPixelInterpolationOffsetBits = 8,
-      .maxFramebufferWidth = (1 << 14),
-      .maxFramebufferHeight = (1 << 14),
+      .maxFramebufferWidth = MAX_FRAMEBUFFER_WIDTH,
+      .maxFramebufferHeight = MAX_FRAMEBUFFER_HEIGHT,
       .maxFramebufferLayers = (1 << 10),
       .framebufferColorSampleCounts = sample_counts,
       .framebufferDepthSampleCounts = sample_counts,
@@ -1868,12 +1890,22 @@ radv_get_physical_device_properties_1_2(struct radv_physical_device *pdevice,
    snprintf(p->driverName, VK_MAX_DRIVER_NAME_SIZE, "radv");
    snprintf(p->driverInfo, VK_MAX_DRIVER_INFO_SIZE, "Mesa " PACKAGE_VERSION MESA_GIT_SHA1 "%s",
             radv_get_compiler_string(pdevice));
-   p->conformanceVersion = (VkConformanceVersion){
-      .major = 1,
-      .minor = 2,
-      .subminor = 3,
-      .patch = 0,
-   };
+
+   if (radv_is_conformant(pdevice)) {
+      p->conformanceVersion = (VkConformanceVersion){
+         .major = 1,
+         .minor = 2,
+         .subminor = 7,
+         .patch = 1,
+      };
+   } else {
+      p->conformanceVersion = (VkConformanceVersion){
+         .major = 0,
+         .minor = 0,
+         .subminor = 0,
+         .patch = 0,
+      };
+   }
 
    /* On AMD hardware, denormals and rounding modes for fp16/fp64 are
     * controlled by the same config register.
@@ -2863,6 +2895,9 @@ fail_create:
 static void
 radv_device_finish_vrs_image(struct radv_device *device)
 {
+   if (!device->vrs.image)
+      return;
+
    radv_FreeMemory(radv_device_to_handle(device), radv_device_memory_to_handle(device->vrs.mem),
                    &device->meta_state.alloc);
    radv_DestroyBuffer(radv_device_to_handle(device), radv_buffer_to_handle(device->vrs.buffer),
@@ -2975,7 +3010,15 @@ radv_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCr
 
    struct vk_device_dispatch_table dispatch_table;
 
-   if (radv_thread_trace_enabled()) {
+   if (physical_device->instance->vk.app_info.app_name &&
+       !strcmp(physical_device->instance->vk.app_info.app_name, "metroexodus")) {
+      /* Metro Exodus (Linux native) calls vkGetSemaphoreCounterValue() with a NULL semaphore and it
+       * crashes sometimes.  Workaround this game bug by enabling an internal layer. Remove this
+       * when the game is fixed.
+       */
+      vk_device_dispatch_table_from_entrypoints(&dispatch_table, &metro_exodus_device_entrypoints, true);
+      vk_device_dispatch_table_from_entrypoints(&dispatch_table, &radv_device_entrypoints, false);
+   } else if (radv_thread_trace_enabled()) {
       vk_device_dispatch_table_from_entrypoints(&dispatch_table, &sqtt_device_entrypoints, true);
       vk_device_dispatch_table_from_entrypoints(&dispatch_table, &radv_device_entrypoints, false);
    } else {
@@ -3129,9 +3172,20 @@ radv_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCr
          goto fail;
 
       fprintf(stderr, "radv: Thread trace support is enabled (initial buffer size: %u MiB, "
-                      "instruction timing: %s).\n",
+                      "instruction timing: %s, cache counters: %s).\n",
               device->thread_trace.buffer_size / (1024 * 1024),
-              radv_is_instruction_timing_enabled() ? "enabled" : "disabled");
+              radv_is_instruction_timing_enabled() ? "enabled" : "disabled",
+              radv_spm_trace_enabled() ? "enabled" : "disabled");
+
+      if (radv_spm_trace_enabled()) {
+         if (device->physical_device->rad_info.chip_class < GFX10) {
+            fprintf(stderr, "SPM isn't supported for this GPU!\n");
+            abort();
+         }
+
+         if (!radv_spm_init(device))
+            goto fail;
+      }
    }
 
    if (getenv("RADV_TRAP_HANDLER")) {
@@ -3194,28 +3248,6 @@ radv_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCr
          goto fail;
    }
 
-   for (int family = 0; family < RADV_MAX_QUEUE_FAMILIES; ++family) {
-      device->empty_cs[family] = device->ws->cs_create(device->ws, family);
-      if (!device->empty_cs[family])
-         goto fail;
-
-      switch (family) {
-      case RADV_QUEUE_GENERAL:
-         radeon_emit(device->empty_cs[family], PKT3(PKT3_CONTEXT_CONTROL, 1, 0));
-         radeon_emit(device->empty_cs[family], CC0_UPDATE_LOAD_ENABLES(1));
-         radeon_emit(device->empty_cs[family], CC1_UPDATE_SHADOW_ENABLES(1));
-         break;
-      case RADV_QUEUE_COMPUTE:
-         radeon_emit(device->empty_cs[family], PKT3(PKT3_NOP, 0, 0));
-         radeon_emit(device->empty_cs[family], 0);
-         break;
-      }
-
-      result = device->ws->cs_finalize(device->empty_cs[family]);
-      if (result != VK_SUCCESS)
-         goto fail;
-   }
-
    if (device->physical_device->rad_info.chip_class >= GFX7)
       cik_create_gfx_config(device);
 
@@ -3252,6 +3284,8 @@ fail_meta:
    radv_device_finish_meta(device);
 fail:
    radv_thread_trace_finish(device);
+
+   radv_spm_finish(device);
 
    radv_trap_handler_finish(device);
    radv_finish_trace(device);
@@ -3299,8 +3333,6 @@ radv_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
          radv_queue_finish(&device->queues[i][q]);
       if (device->queue_count[i])
          vk_free(&device->vk.alloc, device->queues[i]);
-      if (device->empty_cs[i])
-         device->ws->cs_destroy(device->empty_cs[i]);
    }
 
    for (unsigned i = 0; i < RADV_NUM_HW_CTX; i++) {
@@ -3321,6 +3353,8 @@ radv_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
    u_cnd_monotonic_destroy(&device->timeline_cond);
 
    radv_thread_trace_finish(device);
+
+   radv_spm_finish(device);
 
    vk_device_finish(&device->vk);
    vk_free(&device->vk.alloc, device);
@@ -4702,9 +4736,9 @@ radv_queue_submit_deferred(struct radv_deferred_queue_submission *submission,
    }
 
    if (!submission->cmd_buffer_count) {
-      result = queue->device->ws->cs_submit(ctx, queue->vk.index_in_family,
-                                            &queue->device->empty_cs[queue->vk.queue_family_index], 1,
-                                            NULL, NULL, &sem_info, false);
+      result =
+         queue->device->ws->cs_submit(ctx, queue->vk.queue_family_index, queue->vk.index_in_family,
+                                      NULL, 0, NULL, NULL, &sem_info, false);
       if (result != VK_SUCCESS)
          goto fail;
    } else {
@@ -4733,9 +4767,9 @@ radv_queue_submit_deferred(struct radv_deferred_queue_submission *submission,
          sem_info.cs_emit_wait = j == 0;
          sem_info.cs_emit_signal = j + advance == submission->cmd_buffer_count;
 
-         result = queue->device->ws->cs_submit(ctx, queue->vk.index_in_family, cs_array + j, advance,
-                                               initial_preamble, continue_preamble_cs, &sem_info,
-                                               can_patch);
+         result = queue->device->ws->cs_submit(
+            ctx, queue->vk.queue_family_index, queue->vk.index_in_family, cs_array + j, advance,
+            initial_preamble, continue_preamble_cs, &sem_info, can_patch);
          if (result != VK_SUCCESS) {
             free(cs_array);
             goto fail;
@@ -4954,8 +4988,8 @@ radv_queue_internal_submit(struct radv_queue *queue, struct radeon_cmdbuf *cs)
       return false;
 
    result =
-      queue->device->ws->cs_submit(ctx, queue->vk.index_in_family, &cs, 1,
-                                   NULL, NULL, &sem_info, false);
+      queue->device->ws->cs_submit(ctx, queue->vk.queue_family_index, queue->vk.index_in_family,
+                                   &cs, 1, NULL, NULL, &sem_info, false);
    radv_free_sem_info(&sem_info);
    if (result != VK_SUCCESS)
       return false;

@@ -66,7 +66,6 @@ with_aco_tests = get_option('build-aco-tests')
 with_glx_read_only_text = get_option('glx-read-only-text')
 with_glx_direct = get_option('glx-direct')
 with_osmesa = get_option('osmesa')
-with_swr_arches = get_option('swr-arches')
 with_vulkan_overlay_layer = get_option('vulkan-layers').contains('overlay')
 with_vulkan_device_select_layer = get_option('vulkan-layers').contains('device-select')
 with_tools = get_option('tools')
@@ -174,33 +173,9 @@ with_shared_glapi = with_shared_glapi and with_any_opengl
 system_has_kms_drm = ['openbsd', 'netbsd', 'freebsd', 'gnu/kfreebsd', 'dragonfly', 'linux', 'sunos'].contains(host_machine.system())
 
 dri_drivers = get_option('dri-drivers')
-if dri_drivers.contains('auto')
-  if system_has_kms_drm
-    # TODO: PPC, Sparc
-    if ['x86', 'x86_64'].contains(host_machine.cpu_family())
-      dri_drivers = ['i915', 'i965', 'r100', 'r200', 'nouveau']
-    elif ['arm', 'aarch64'].contains(host_machine.cpu_family())
-      dri_drivers = []
-    elif ['mips', 'mips64', 'riscv32', 'riscv64'].contains(host_machine.cpu_family())
-      dri_drivers = ['r100', 'r200', 'nouveau']
-    else
-      error('Unknown architecture @0@. Please pass -Ddri-drivers to set driver options. Patches gladly accepted to fix this.'.format(
-            host_machine.cpu_family()))
-    endif
-  elif ['darwin', 'windows', 'cygwin', 'haiku'].contains(host_machine.system())
-    # only swrast would make sense here, but gallium swrast is a much better default
-    dri_drivers = []
-  else
-    error('Unknown OS @0@. Please pass -Ddri-drivers to set driver options. Patches gladly accepted to fix this.'.format(
-          host_machine.system()))
-  endif
+if dri_drivers.length() != 0
+  error('Mesa\'s main branch no longer has any "classic" drivers, use the "amber" branch instead.')
 endif
-
-with_dri_i915 = dri_drivers.contains('i915')
-with_dri_i965 = dri_drivers.contains('i965')
-with_dri_r100 = dri_drivers.contains('r100')
-with_dri_r200 = dri_drivers.contains('r200')
-with_dri_nouveau = dri_drivers.contains('nouveau')
 
 with_dri = dri_drivers.length() != 0
 
@@ -211,7 +186,7 @@ if gallium_drivers.contains('auto')
     if ['x86', 'x86_64'].contains(host_machine.cpu_family())
       gallium_drivers = [
         'r300', 'r600', 'radeonsi', 'nouveau', 'virgl', 'svga', 'swrast',
-        'iris', 'crocus'
+        'iris', 'crocus', 'i915'
       ]
     elif ['arm', 'aarch64'].contains(host_machine.cpu_family())
       gallium_drivers = [
@@ -249,7 +224,6 @@ with_gallium_iris = gallium_drivers.contains('iris')
 with_gallium_i915 = gallium_drivers.contains('i915')
 with_gallium_svga = gallium_drivers.contains('svga')
 with_gallium_virgl = gallium_drivers.contains('virgl')
-with_gallium_swr = gallium_drivers.contains('swr')
 with_gallium_lima = gallium_drivers.contains('lima')
 with_gallium_zink = gallium_drivers.contains('zink')
 with_gallium_d3d12 = gallium_drivers.contains('d3d12')
@@ -299,13 +273,10 @@ with_broadcom_vk = _vulkan_drivers.contains('broadcom')
 with_any_vk = _vulkan_drivers.length() != 0
 
 with_any_broadcom = with_gallium_vc4 or with_gallium_v3d or with_broadcom_vk
-with_any_intel = with_dri_i965 or with_intel_vk or with_gallium_iris or with_gallium_crocus
+with_any_intel = with_intel_vk or with_gallium_iris or with_gallium_crocus
 
 if with_swrast_vk and not with_gallium_softpipe
   error('swrast vulkan requires gallium swrast')
-endif
-if with_dri_i915 and with_gallium_i915
-  error('Only one i915 provider can be built')
 endif
 if with_gallium_tegra and not with_gallium_nouveau
   error('tegra driver requires nouveau driver')
@@ -508,57 +479,66 @@ foreach platform : _platforms
   pre_args += '-DHAVE_@0@_PLATFORM'.format(platform.to_upper())
 endforeach
 
-use_elf_tls = false
-if not with_platform_windows or not with_shared_glapi
-  pre_args += '-DUSE_ELF_TLS'
-  use_elf_tls = true
+use_elf_tls = true
+pre_args += '-DUSE_ELF_TLS'
 
-  if with_platform_android and get_option('platform-sdk-version') >= 29
-    # By default the NDK compiler, at least, emits emutls references instead of
-    # ELF TLS, even when building targeting newer API levels.  Make it actually do
-    # ELF TLS instead.
-    c_args += '-fno-emulated-tls'
-    cpp_args += '-fno-emulated-tls'
-  endif
+if with_platform_android and get_option('platform-sdk-version') >= 29
+  # By default the NDK compiler, at least, emits emutls references instead of
+  # ELF TLS, even when building targeting newer API levels.  Make it actually do
+  # ELF TLS instead.
+  c_args += '-fno-emulated-tls'
+  cpp_args += '-fno-emulated-tls'
+endif
 
-  # -mtls-dialect=gnu2 speeds up non-initial-exec TLS significantly but requires
-  # full toolchain (including libc) support.
-  have_mtls_dialect = false
-  foreach c_arg : get_option('c_args')
-    if c_arg.startswith('-mtls-dialect=')
-      have_mtls_dialect = true
-      break
-    endif
-  endforeach
-  if not have_mtls_dialect
-    # need .run to check libc support. meson aborts when calling .run when
-    # cross-compiling, but because this is just an optimization we can skip it
-    if meson.is_cross_build()
-      warning('cannot auto-detect -mtls-dialect when cross-compiling, using compiler default')
-    else
-      # -fpic to force dynamic tls, otherwise TLS relaxation defeats check
-      gnu2_test = cc.run('int __thread x; int main() { return x; }', args: ['-mtls-dialect=gnu2', '-fpic'], name: '-mtls-dialect=gnu2')
-      if gnu2_test.returncode() == 0
-        c_args += '-mtls-dialect=gnu2'
-        cpp_args += '-mtls-dialect=gnu2'
-      endif
+# -mtls-dialect=gnu2 speeds up non-initial-exec TLS significantly but requires
+# full toolchain (including libc) support.
+have_mtls_dialect = false
+foreach c_arg : get_option('c_args')
+  if c_arg.startswith('-mtls-dialect=')
+    have_mtls_dialect = true
+    break
+  endif
+endforeach
+if not have_mtls_dialect
+  # need .run to check libc support. meson aborts when calling .run when
+  # cross-compiling, but because this is just an optimization we can skip it
+  if meson.is_cross_build() and not meson.has_exe_wrapper()
+    warning('cannot auto-detect -mtls-dialect when cross-compiling, using compiler default')
+  else
+    # -fpic to force dynamic tls, otherwise TLS relaxation defeats check
+    gnu2_test = cc.run('int __thread x; int main() { return x; }', args: ['-mtls-dialect=gnu2', '-fpic'], name: '-mtls-dialect=gnu2')
+    if gnu2_test.returncode() == 0 and (
+          host_machine.cpu_family() != 'x86_64' or
+          # https://github.com/mesonbuild/meson/issues/6377
+          #cc.get_linker_id() != 'ld.lld' or
+          cc.links('''int __thread x; int y; int main() { __asm__(
+                "leaq x@TLSDESC(%rip), %rax\n"
+                "movq y@GOTPCREL(%rip), %rdx\n"
+                "call *x@TLSCALL(%rax)\n"); }''', name: 'split TLSDESC')
+          )
+      c_args += '-mtls-dialect=gnu2'
+      cpp_args += '-mtls-dialect=gnu2'
     endif
   endif
+endif
+
+if with_platform_windows and with_shared_glapi
+  # Windows doesn't support DLL exports/imports being TLS variables. When using shared
+  # glapi, libglapi.dll hosts the TLS, but other DLLs need to use them. Instead of falling
+  # all the way back to using globals and manual per-thread data, keep using TLS but just
+  # put accesses to it behind a function so the variable doesn't need to be exported.
+  pre_args += '-DUSE_TLS_BEHIND_FUNCTIONS'
 endif
 
 if with_glx != 'disabled'
   if not (with_platform_x11 and with_any_opengl)
     error('Cannot build GLX support without X11 platform support and at least one OpenGL API')
-  elif with_glx == 'gallium-xlib'
-    if not with_gallium
-      error('Gallium-xlib based GLX requires at least one gallium driver')
-    elif not with_gallium_softpipe
-      error('Gallium-xlib based GLX requires softpipe or llvmpipe.')
-    elif with_dri
-      error('gallium-xlib conflicts with any dri driver')
-    endif
   elif with_glx == 'xlib'
-    if with_dri
+    if not with_gallium
+      error('xlib based GLX requires at least one gallium driver')
+    elif not with_gallium_softpipe
+      error('xlib based GLX requires softpipe or llvmpipe.')
+    elif with_dri
       error('xlib conflicts with any dri driver')
     endif
   elif with_glx == 'dri'
@@ -573,7 +553,7 @@ glvnd_vendor_name = get_option('glvnd-vendor-name')
 if with_glvnd
   if with_platform_windows
     error('glvnd cannot be used on Windows')
-  elif with_glx == 'xlib' or with_glx == 'gallium-xlib'
+  elif with_glx == 'xlib'
     error('Cannot build glvnd support for GLX that is not DRI based.')
   elif with_glx == 'disabled' and not with_egl
     error('glvnd requires DRI based GLX and/or EGL')
@@ -1493,8 +1473,6 @@ if cc.has_function('dl_iterate_phdr')
   pre_args += '-DHAVE_DL_ITERATE_PHDR'
 elif with_intel_vk
   error('Intel "Anvil" Vulkan driver requires the dl_iterate_phdr function')
-elif with_dri_i965 and with_shader_cache
-  error('Intel i965 GL driver requires dl_iterate_phdr when built with shader caching.')
 endif
 
 # Determine whether or not the rt library is needed for time functions
@@ -1584,26 +1562,14 @@ _drm_amdgpu_ver = '2.4.107'
 _drm_radeon_ver = '2.4.71'
 _drm_nouveau_ver = '2.4.102'
 _drm_intel_ver = '2.4.75'
-_drm_ver = '2.4.81'
+_drm_ver = '2.4.109'
 
 _libdrm_checks = [
-  ['intel', with_dri_i915 or with_gallium_i915],
+  ['intel', with_gallium_i915],
   ['amdgpu', (with_amd_vk and not with_platform_windows) or with_gallium_radeonsi],
-  ['radeon', (with_gallium_radeonsi or with_dri_r100 or with_dri_r200 or
-              with_gallium_r300 or with_gallium_r600)],
-  ['nouveau', (with_gallium_nouveau or with_dri_nouveau)],
+  ['radeon', (with_gallium_radeonsi or with_gallium_r300 or with_gallium_r600)],
+  ['nouveau', with_gallium_nouveau],
 ]
-
-# VC4 only needs core libdrm support of this version, not a libdrm_vc4
-# library.
-if with_gallium_vc4
-  _drm_ver = '2.4.89'
-endif
-
-# etnaviv only needs core libdrm
-if with_gallium_etnaviv
-  _drm_ver = '2.4.89'
-endif
 
 # Loop over the enables versions and get the highest libdrm requirement for all
 # active drivers.
@@ -1675,8 +1641,6 @@ elif with_clc
   _llvm_version = '>= 10.0.0'
 elif with_gallium_opencl
   _llvm_version = '>= 8.0.0'
-elif with_gallium_swr
-  _llvm_version = '>= 6.0.0'
 else
   _llvm_version = '>= 3.9.0'
 endif
@@ -1723,8 +1687,8 @@ if _llvm != 'disabled'
     modules : llvm_modules,
     optional_modules : llvm_optional_modules,
     required : (
-      with_amd_vk or with_gallium_radeonsi or with_gallium_swr or
-      with_gallium_opencl or with_clc or _llvm == 'enabled'
+      with_amd_vk or with_gallium_radeonsi or with_gallium_opencl or with_clc
+      or _llvm == 'enabled'
     ),
     static : not _shared_llvm,
     method : _llvm_method,
@@ -1742,8 +1706,6 @@ if with_llvm
     pre_args += '-DDRAW_LLVM_AVAILABLE'
   elif with_swrast_vk
     error('Lavapipe requires LLVM draw support.')
-  elif with_gallium_swr
-    error('SWR requires LLVM draw support.')
   endif
 
   if cc.get_id() != 'msvc'
@@ -1777,7 +1739,7 @@ if with_llvm
   endif
 elif with_amd_vk and with_aco_tests
   error('ACO tests require LLVM, but LLVM is disabled.')
-elif with_gallium_radeonsi or with_gallium_swr or with_swrast_vk
+elif with_gallium_radeonsi or with_swrast_vk
   error('The following drivers require LLVM: RadeonSI, SWR, Lavapipe. One of these is enabled, but LLVM is disabled.')
 elif with_gallium_opencl
   error('The OpenCL "Clover" state tracker requires LLVM, but LLVM is disabled.')
@@ -2001,7 +1963,7 @@ if with_platform_wayland
   else
     wl_scanner_arg = 'code'
   endif
-  dep_wl_protocols = dependency('wayland-protocols', version : '>= 1.8')
+  dep_wl_protocols = dependency('wayland-protocols', version : '>= 1.24')
   dep_wayland_client = dependency('wayland-client', version : '>=1.18')
   dep_wayland_server = dependency('wayland-server', version : '>=1.18')
   if with_egl
@@ -2244,8 +2206,6 @@ if with_glx != 'disabled'
     lines += 'GLX:             DRI-based'
   elif with_glx == 'xlib'
     lines += 'GLX:             Xlib-based'
-  elif with_glx == 'gallium-xlib'
-    lines += 'GLX:             Xlib-based (Gallium)'
   else
     lines += 'GLX:             ' + with_glx
   endif

@@ -76,15 +76,6 @@ _mesa_ClipPlanex(GLenum plane, const GLfixed *equation)
 }
 
 void GL_APIENTRY
-_es_Color4ub(GLubyte red, GLubyte green, GLubyte blue, GLubyte alpha)
-{
-    _es_Color4f((GLfloat) (red / 255.0f),
-                (GLfloat) (green / 255.0f),
-                (GLfloat) (blue / 255.0f),
-                (GLfloat) (alpha / 255.0f));
-}
-
-void GL_APIENTRY
 _mesa_Color4x(GLfixed red, GLfixed green, GLfixed blue, GLfixed alpha)
 {
     _es_Color4f((GLfloat) (red / 65536.0f),
@@ -403,12 +394,6 @@ _mesa_GetTexEnvxv(GLenum target, GLenum pname, GLfixed *params)
          params[i] = (GLfixed) converted_params[i];
       }
    }
-}
-
-void GL_APIENTRY
-_check_GetTexGenivOES(GLenum coord, GLenum pname, GLint *params)
-{
-   _mesa_GetTexGeniv(coord, pname, params);
 }
 
 void GL_APIENTRY
@@ -854,18 +839,6 @@ _mesa_TexEnvxv(GLenum target, GLenum pname, const GLfixed *params)
                   "glTexEnvxv(pname=0x%x)", pname);
       return;
    }
-}
-
-void GL_APIENTRY
-_check_TexGeniOES(GLenum coord, GLenum pname, GLint param)
-{
-   _es_TexGenf(coord, pname, (GLfloat) param);
-}
-
-void GL_APIENTRY
-_check_TexGenivOES(GLenum coord, GLenum pname, const GLint *params)
-{
-   _es_TexGenf(coord, pname, (GLfloat) params[0]);
 }
 
 void GL_APIENTRY

@@ -1707,12 +1707,23 @@ emit_frag_end(struct v3d_compile *c)
                 c->s->info.fs.early_fragment_tests = true;
         }
 
-        /* By default, the FEP will perform early fragment tests. This can be
-         * disabled when needed (Z writes from shader, discards, etc), by
-         * setting c->writes_z to True, in which case, the QPUs need to write
-         * the Z value.
+        /* By default, Z buffer writes are implicit using the Z values produced
+         * from FEP (Z value produced from rasterization). When this is not
+         * desirable (shader writes Z explicitly, has discards, etc) we need
+         * to let the hardware know by setting c->writes_z to true, in which
+         * case we always need to write a Z value from the QPU, even if it is
+         * just the passthrough Z value produced from FEP.
+         *
+         * Also, from the V3D 4.2 spec:
+         *
+         * "If a shader performs a Z read the “Fragment shader does Z writes”
+         *  bit in the shader record must be enabled to ensure deterministic
+         *  results"
+         *
+         * So if c->reads_z is set we always need to write Z, even if it is
+         * a passthrough from the Z value produced from FEP.
          */
-        if (!c->s->info.fs.early_fragment_tests) {
+        if (!c->s->info.fs.early_fragment_tests || c->reads_z) {
                 c->writes_z = true;
                 uint8_t tlb_specifier = TLB_TYPE_DEPTH;
                 struct qinst *inst;
@@ -1732,6 +1743,7 @@ emit_frag_end(struct v3d_compile *c)
                         /* Shader doesn't write to gl_FragDepth, take Z from
                          * FEP.
                          */
+                        c->writes_z_from_fep = true;
                         inst = vir_MOV_dest(c, tlbu_reg, vir_nop_reg());
 
                         if (c->devinfo->ver >= 42) {
@@ -1757,6 +1769,7 @@ emit_frag_end(struct v3d_compile *c)
                 inst->uniform = vir_get_uniform_index(c, QUNIFORM_CONSTANT,
                                                       tlb_specifier |
                                                       0xffffff00);
+                inst->is_tlb_z_write = true;
         }
 
         /* XXX: Performance improvement: Merge Z write and color writes TLB
@@ -2451,8 +2464,14 @@ ntq_emit_load_input(struct v3d_compile *c, nir_intrinsic_instr *instr)
         } else {
                 for (int i = 0; i < instr->num_components; i++) {
                         int comp = nir_intrinsic_component(instr) + i;
-                        ntq_store_dest(c, &instr->dest, i,
-                                       vir_MOV(c, c->inputs[offset * 4 + comp]));
+                        struct qreg input = c->inputs[offset * 4 + comp];
+                        ntq_store_dest(c, &instr->dest, i, vir_MOV(c, input));
+
+                        if (c->s->info.stage == MESA_SHADER_FRAGMENT &&
+                            input.file == c->payload_z.file &&
+                            input.index == c->payload_z.index) {
+                                c->reads_z = true;
+                        }
                 }
         }
 }

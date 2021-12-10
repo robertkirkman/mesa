@@ -240,6 +240,7 @@ files_libnir = files(
   'nir_opt_offsets.c',
   'nir_opt_peephole_select.c',
   'nir_opt_phi_precision.c',
+  'nir_opt_ray_queries.c',
   'nir_opt_rematerialize_compares.c',
   'nir_opt_remove_phis.c',
   'nir_opt_shrink_vectors.c',
@@ -420,5 +421,18 @@ if with_tests
     # TODO: Use a negative filter for gtest instead of the expect failure here.
     should_fail : meson.get_cross_property('xfail', '').contains('load_store_vectorizer'),
     protocol : gtest_test_protocol,
+  )
+
+  test(
+    'nir_opt_dce',
+    executable(
+      'nir_opt_dce_tests',
+      files('tests/dce_tests.cpp'),
+      cpp_args : [cpp_msvc_compat_args],
+      gnu_symbol_visibility : 'hidden',
+      include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
+      dependencies : [dep_thread, idep_gtest, idep_nir, idep_mesautil],
+    ),
+    suite : ['compiler', 'nir'],
   )
 endif
