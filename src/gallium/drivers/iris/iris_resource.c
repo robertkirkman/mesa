@@ -412,7 +412,8 @@ iris_resource_disable_aux(struct iris_resource *res)
 
 static uint32_t
 iris_resource_alloc_flags(const struct iris_screen *screen,
-                          const struct pipe_resource *templ)
+                          const struct pipe_resource *templ,
+                          enum isl_aux_usage aux_usage)
 {
    if (templ->flags & IRIS_RESOURCE_FLAG_DEVICE_MEM)
       return 0;
@@ -442,6 +443,9 @@ iris_resource_alloc_flags(const struct iris_screen *screen,
    if (templ->flags & (PIPE_RESOURCE_FLAG_MAP_COHERENT |
                        PIPE_RESOURCE_FLAG_MAP_PERSISTENT))
       flags |= BO_ALLOC_SMEM;
+
+   if (screen->devinfo.verx10 >= 125 && isl_aux_usage_has_ccs(aux_usage))
+      flags |= BO_ALLOC_LMEM;
 
    if ((templ->bind & PIPE_BIND_SHARED) ||
        util_format_get_num_planes(templ->format) > 1)
@@ -537,20 +541,34 @@ create_aux_state_map(struct iris_resource *res, enum isl_aux_state initial)
 }
 
 static unsigned
-iris_get_aux_clear_color_state_size(struct iris_screen *screen)
+iris_get_aux_clear_color_state_size(struct iris_screen *screen,
+                                    struct iris_resource *res)
 {
-   const struct intel_device_info *devinfo = &screen->devinfo;
-   return devinfo->ver >= 10 ? screen->isl_dev.ss.clear_color_state_size : 0;
+   if (!isl_aux_usage_has_fast_clears(res->aux.usage))
+      return 0;
+
+   assert(!isl_surf_usage_is_stencil(res->surf.usage));
+
+   /* Depth packets can't specify indirect clear values. The only time depth
+    * buffers can use indirect clear values is when they're accessed by the
+    * sampler via render surface state objects.
+    */
+   if (isl_surf_usage_is_depth(res->surf.usage) &&
+       res->aux.sampler_usages == 1 << ISL_AUX_USAGE_NONE)
+      return 0;
+
+   return screen->isl_dev.ss.clear_color_state_size;
 }
 
 static void
 map_aux_addresses(struct iris_screen *screen, struct iris_resource *res,
                   enum isl_format format, unsigned plane)
 {
-   const struct intel_device_info *devinfo = &screen->devinfo;
-   if (devinfo->ver >= 12 && isl_aux_usage_has_ccs(res->aux.usage)) {
-      void *aux_map_ctx = iris_bufmgr_get_aux_map_context(screen->bufmgr);
-      assert(aux_map_ctx);
+   void *aux_map_ctx = iris_bufmgr_get_aux_map_context(screen->bufmgr);
+   if (!aux_map_ctx)
+      return;
+
+   if (isl_aux_usage_has_ccs(res->aux.usage)) {
       const unsigned aux_offset = res->aux.extra_aux.surf.size_B > 0 ?
          res->aux.extra_aux.offset : res->aux.offset;
       const uint64_t format_bits =
@@ -694,11 +712,10 @@ iris_resource_configure_main(const struct iris_screen *screen,
 }
 
 static bool
-iris_get_ccs_surf(const struct isl_device *dev,
-                  const struct isl_surf *surf,
-                  struct isl_surf *aux_surf,
-                  struct isl_surf *extra_aux_surf,
-                  uint32_t row_pitch_B)
+iris_get_ccs_surf_or_support(const struct isl_device *dev,
+                             const struct isl_surf *surf,
+                             struct isl_surf *aux_surf,
+                             struct isl_surf *extra_aux_surf)
 {
    assert(extra_aux_surf->size_B == 0);
 
@@ -714,8 +731,15 @@ iris_get_ccs_surf(const struct isl_device *dev,
       ccs_surf = aux_surf;
    }
 
-   return isl_surf_get_ccs_surf(dev, surf, hiz_or_mcs_surf,
-                                ccs_surf, row_pitch_B);
+   if (dev->info->verx10 >= 125) {
+      /* CCS doesn't require VMA on XeHP. So, instead of creating a separate
+       * surface, we can just return whether CCS is supported for the given
+       * input surfaces.
+       */
+      return isl_surf_supports_ccs(dev, surf, hiz_or_mcs_surf);
+   } else  {
+      return isl_surf_get_ccs_surf(dev, surf, hiz_or_mcs_surf, ccs_surf, 0);
+   }
 }
 
 /**
@@ -739,8 +763,8 @@ iris_resource_configure_aux(struct iris_screen *screen,
       isl_surf_get_hiz_surf(&screen->isl_dev, &res->surf, &res->aux.surf);
 
    const bool has_ccs = !INTEL_DEBUG(DEBUG_NO_RBC) &&
-      iris_get_ccs_surf(&screen->isl_dev, &res->surf, &res->aux.surf,
-                        &res->aux.extra_aux.surf, 0);
+      iris_get_ccs_surf_or_support(&screen->isl_dev, &res->surf,
+                                   &res->aux.surf, &res->aux.extra_aux.surf);
 
    if (has_mcs) {
       assert(!res->mod_info);
@@ -785,8 +809,6 @@ iris_resource_configure_aux(struct iris_screen *screen,
       res->aux.sampler_usages = res->aux.possible_usages;
 
    enum isl_aux_state initial_state;
-   assert(!res->aux.bo);
-
    switch (res->aux.usage) {
    case ISL_AUX_USAGE_NONE:
       /* Having no aux buffer is only okay if there's no modifier with aux. */
@@ -814,24 +836,37 @@ iris_resource_configure_aux(struct iris_screen *screen,
    case ISL_AUX_USAGE_GFX12_CCS_E:
    case ISL_AUX_USAGE_STC_CCS:
    case ISL_AUX_USAGE_MC:
-      /* When CCS_E is used, we need to ensure that the CCS starts off in
-       * a valid state.  From the Sky Lake PRM, "MCS Buffer for Render
-       * Target(s)":
-       *
-       *    "If Software wants to enable Color Compression without Fast
-       *     clear, Software needs to initialize MCS with zeros."
-       *
-       * A CCS value of 0 indicates that the corresponding block is in the
-       * pass-through state which is what we want.
-       *
-       * For CCS_D, do the same thing.  On Gfx9+, this avoids having any
-       * undefined bits in the aux buffer.
-       */
       if (imported) {
          assert(res->aux.usage != ISL_AUX_USAGE_STC_CCS);
          initial_state =
             isl_drm_modifier_get_default_aux_state(res->mod_info->modifier);
+      } else if (devinfo->verx10 >= 125) {
+         assert(res->aux.surf.size_B == 0);
+         /* From Bspec 47709, "MCS/CCS Buffers for Render Target(s)":
+          *
+          *    "CCS surface does not require initialization. Illegal CCS
+          *     [values] are treated as uncompressed memory."
+          *
+          * Even if we wanted to, we can't initialize the CCS via CPU map. So,
+          * we choose an aux state which describes the current state and helps
+          * avoid ambiguating (something not currently supported for STC_CCS).
+          */
+         assert(isl_aux_usage_has_compression(res->aux.usage));
+         initial_state = isl_aux_usage_has_fast_clears(res->aux.usage) ?
+                         ISL_AUX_STATE_COMPRESSED_CLEAR :
+                         ISL_AUX_STATE_COMPRESSED_NO_CLEAR;
       } else {
+         assert(res->aux.surf.size_B > 0);
+         /* When CCS is used, we need to ensure that it starts off in a valid
+          * state. From the Sky Lake PRM, "MCS Buffer for Render Target(s)":
+          *
+          *    "If Software wants to enable Color Compression without Fast
+          *     clear, Software needs to initialize MCS with zeros."
+          *
+          * A CCS surface initialized to zero is in the pass-through state.
+          * This state can avoid the need to ambiguate in some cases. We'll
+          * map and zero the CCS later on in iris_resource_init_aux_buf.
+          */
          initial_state = ISL_AUX_STATE_PASS_THROUGH;
       }
       break;
@@ -853,10 +888,10 @@ iris_resource_configure_aux(struct iris_screen *screen,
  * Returns false on unexpected error (e.g. mapping a BO failed).
  */
 static bool
-iris_resource_init_aux_buf(struct iris_resource *res,
-                           unsigned clear_color_state_size)
+iris_resource_init_aux_buf(struct iris_screen *screen,
+                           struct iris_resource *res)
 {
-   void *map = iris_bo_map(NULL, res->aux.bo, MAP_WRITE | MAP_RAW);
+   void *map = iris_bo_map(NULL, res->bo, MAP_WRITE | MAP_RAW);
 
    if (!map)
       return false;
@@ -873,12 +908,18 @@ iris_resource_init_aux_buf(struct iris_resource *res,
 
    /* Zero the indirect clear color to match ::fast_clear_color. */
    memset((char *)map + res->aux.clear_color_offset, 0,
-          clear_color_state_size);
+          iris_get_aux_clear_color_state_size(screen, res));
 
-   iris_bo_unmap(res->aux.bo);
+   iris_bo_unmap(res->bo);
 
-   if (clear_color_state_size > 0) {
-      res->aux.clear_color_bo = res->aux.bo;
+   if (res->aux.surf.size_B > 0) {
+      res->aux.bo = res->bo;
+      iris_bo_reference(res->aux.bo);
+      map_aux_addresses(screen, res, res->surf.format, 0);
+   }
+
+   if (iris_get_aux_clear_color_state_size(screen, res) > 0) {
+      res->aux.clear_color_bo = res->bo;
       iris_bo_reference(res->aux.clear_color_bo);
    }
 
@@ -940,11 +981,11 @@ iris_resource_finish_aux_import(struct pipe_screen *pscreen,
        * starts at a 4K alignment to avoid some unknown issues.  See the
        * matching comment in iris_resource_create_with_modifiers().
        */
-      if (iris_get_aux_clear_color_state_size(screen) > 0) {
+      if (iris_get_aux_clear_color_state_size(screen, res) > 0) {
          res->aux.clear_color_bo =
             iris_bo_alloc(screen->bufmgr, "clear color_buffer",
-                          iris_get_aux_clear_color_state_size(screen), 4096,
-                          IRIS_MEMZONE_OTHER, BO_ALLOC_ZEROED);
+                          iris_get_aux_clear_color_state_size(screen, res),
+                          4096, IRIS_MEMZONE_OTHER, BO_ALLOC_ZEROED);
       }
       break;
    case I915_FORMAT_MOD_Y_TILED_GEN12_RC_CCS_CC:
@@ -1015,7 +1056,7 @@ iris_resource_create_for_buffer(struct pipe_screen *pscreen,
       name = "bindless surface state";
    }
 
-   unsigned flags = iris_resource_alloc_flags(screen, templ);
+   unsigned flags = iris_resource_alloc_flags(screen, templ, res->aux.usage);
 
    res->bo =
       iris_bo_alloc(screen->bufmgr, name, templ->width0, 1, memzone, flags);
@@ -1058,19 +1099,19 @@ iris_resource_create_with_modifiers(struct pipe_screen *pscreen,
       iris_resource_configure_main(screen, res, templ, modifier, 0);
    assert(isl_surf_created_successfully);
 
+   if (!iris_resource_configure_aux(screen, res, false))
+      goto fail;
+
    const char *name = "miptree";
    enum iris_memory_zone memzone = IRIS_MEMZONE_OTHER;
 
-   unsigned int flags = iris_resource_alloc_flags(screen, templ);
+   unsigned flags = iris_resource_alloc_flags(screen, templ, res->aux.usage);
 
    /* These are for u_upload_mgr buffers only */
    assert(!(templ->flags & (IRIS_RESOURCE_FLAG_SHADER_MEMZONE |
                             IRIS_RESOURCE_FLAG_SURFACE_MEMZONE |
                             IRIS_RESOURCE_FLAG_DYNAMIC_MEMZONE |
                             IRIS_RESOURCE_FLAG_BINDLESS_MEMZONE)));
-
-   if (!iris_resource_configure_aux(screen, res, false))
-      goto fail;
 
    /* Modifiers require the aux data to be in the same buffer as the main
     * surface, but we combine them even when a modifier is not being used.
@@ -1096,10 +1137,10 @@ iris_resource_create_with_modifiers(struct pipe_screen *pscreen,
     * starts at a 4K alignment. We believe that 256B might be enough, but due
     * to lack of testing we will leave this as 4K for now.
     */
-   if (res->aux.surf.size_B > 0) {
+   if (iris_get_aux_clear_color_state_size(screen, res) > 0) {
       res->aux.clear_color_offset = ALIGN(bo_size, 4096);
       bo_size = res->aux.clear_color_offset +
-                iris_get_aux_clear_color_state_size(screen);
+                iris_get_aux_clear_color_state_size(screen, res);
    }
 
    uint32_t alignment = MAX2(4096, res->surf.alignment_B);
@@ -1109,15 +1150,9 @@ iris_resource_create_with_modifiers(struct pipe_screen *pscreen,
    if (!res->bo)
       goto fail;
 
-   if (res->aux.surf.size_B > 0) {
-      res->aux.bo = res->bo;
-      iris_bo_reference(res->aux.bo);
-      unsigned clear_color_state_size =
-         iris_get_aux_clear_color_state_size(screen);
-      if (!iris_resource_init_aux_buf(res, clear_color_state_size))
-         goto fail;
-      map_aux_addresses(screen, res, res->surf.format, 0);
-   }
+   if (res->aux.usage != ISL_AUX_USAGE_NONE &&
+       !iris_resource_init_aux_buf(screen, res))
+      goto fail;
 
    if (templ->bind & PIPE_BIND_SHARED) {
       iris_bo_mark_exported(res->bo);

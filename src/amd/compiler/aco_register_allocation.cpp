@@ -1934,10 +1934,9 @@ get_reg_for_operand(ra_ctx& ctx, RegisterFile& register_file,
       dst = operand.physReg();
 
    } else {
+      /* clear the operand in case it's only a stride mismatch */
+      register_file.clear(src, operand.regClass());
       dst = get_reg(ctx, register_file, operand.getTemp(), parallelcopy, instr, operand_index);
-      update_renames(
-         ctx, register_file, parallelcopy, instr,
-         instr->opcode != aco_opcode::p_create_vector ? rename_not_killed_ops : (UpdateRenames)0);
    }
 
    Operand pc_op = operand;
@@ -2580,10 +2579,17 @@ register_allocation(Program* program, std::vector<IDSet>& live_out_per_block, ra
               (instr->opcode == aco_opcode::v_pk_fma_f16 && program->chip_class >= GFX10) ||
               (instr->opcode == aco_opcode::v_dot4_i32_i8 && program->family != CHIP_VEGA20)) &&
              instr->operands[2].isTemp() && instr->operands[2].isKillBeforeDef() &&
-             instr->operands[2].getTemp().type() == RegType::vgpr && instr->operands[1].isTemp() &&
-             instr->operands[1].getTemp().type() == RegType::vgpr && !instr->usesModifiers() &&
-             instr->operands[0].physReg().byte() == 0 && instr->operands[1].physReg().byte() == 0 &&
-             instr->operands[2].physReg().byte() == 0) {
+             instr->operands[2].getTemp().type() == RegType::vgpr &&
+             ((instr->operands[0].isTemp() &&
+               instr->operands[0].getTemp().type() == RegType::vgpr) ||
+              (instr->operands[1].isTemp() &&
+               instr->operands[1].getTemp().type() == RegType::vgpr)) &&
+             !instr->usesModifiers() && instr->operands[0].physReg().byte() == 0 &&
+             instr->operands[1].physReg().byte() == 0 && instr->operands[2].physReg().byte() == 0) {
+            if (!instr->operands[1].isTemp() ||
+                instr->operands[1].getTemp().type() != RegType::vgpr)
+               std::swap(instr->operands[0], instr->operands[1]);
+
             unsigned def_id = instr->definitions[0].tempId();
             bool use_vop2 = true;
             if (ctx.assignments[def_id].affinity) {

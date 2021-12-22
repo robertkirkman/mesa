@@ -221,7 +221,6 @@ fs_inst::is_send_from_grf() const
 {
    switch (opcode) {
    case SHADER_OPCODE_SEND:
-   case SHADER_OPCODE_SHADER_TIME_ADD:
    case FS_OPCODE_INTERPOLATE_AT_SAMPLE:
    case FS_OPCODE_INTERPOLATE_AT_SHARED_OFFSET:
    case FS_OPCODE_INTERPOLATE_AT_PER_SLOT_OFFSET:
@@ -310,7 +309,6 @@ fs_inst::is_payload(unsigned arg) const
    case VEC4_OPCODE_UNTYPED_SURFACE_READ:
    case VEC4_OPCODE_UNTYPED_SURFACE_WRITE:
    case FS_OPCODE_INTERPOLATE_AT_PER_SLOT_OFFSET:
-   case SHADER_OPCODE_SHADER_TIME_ADD:
    case FS_OPCODE_INTERPOLATE_AT_SAMPLE:
    case FS_OPCODE_INTERPOLATE_AT_SHARED_OFFSET:
    case SHADER_OPCODE_INTERLOCK:
@@ -588,83 +586,6 @@ fs_visitor::get_timestamp(const fs_builder &bld)
    bld.group(4, 0).exec_all().MOV(dst, ts);
 
    return dst;
-}
-
-void
-fs_visitor::emit_shader_time_begin()
-{
-   /* We want only the low 32 bits of the timestamp.  Since it's running
-    * at the GPU clock rate of ~1.2ghz, it will roll over every ~3 seconds,
-    * which is plenty of time for our purposes.  It is identical across the
-    * EUs, but since it's tracking GPU core speed it will increment at a
-    * varying rate as render P-states change.
-    */
-   shader_start_time = component(
-      get_timestamp(bld.annotate("shader time start")), 0);
-}
-
-void
-fs_visitor::emit_shader_time_end()
-{
-   /* Insert our code just before the final SEND with EOT. */
-   exec_node *end = this->instructions.get_tail();
-   assert(end && ((fs_inst *) end)->eot);
-   const fs_builder ibld = bld.annotate("shader time end")
-                              .exec_all().at(NULL, end);
-   const fs_reg timestamp = get_timestamp(ibld);
-
-   /* We only use the low 32 bits of the timestamp - see
-    * emit_shader_time_begin()).
-    *
-    * We could also check if render P-states have changed (or anything
-    * else that might disrupt timing) by setting smear to 2 and checking if
-    * that field is != 0.
-    */
-   const fs_reg shader_end_time = component(timestamp, 0);
-
-   /* Check that there weren't any timestamp reset events (assuming these
-    * were the only two timestamp reads that happened).
-    */
-   const fs_reg reset = component(timestamp, 2);
-   set_condmod(BRW_CONDITIONAL_Z,
-               ibld.AND(ibld.null_reg_ud(), reset, brw_imm_ud(1u)));
-   ibld.IF(BRW_PREDICATE_NORMAL);
-
-   fs_reg start = shader_start_time;
-   start.negate = true;
-   const fs_reg diff = component(fs_reg(VGRF, alloc.allocate(1),
-                                        BRW_REGISTER_TYPE_UD),
-                                 0);
-   const fs_builder cbld = ibld.group(1, 0);
-   cbld.group(1, 0).ADD(diff, start, shader_end_time);
-
-   /* If there were no instructions between the two timestamp gets, the diff
-    * is 2 cycles.  Remove that overhead, so I can forget about that when
-    * trying to determine the time taken for single instructions.
-    */
-   cbld.ADD(diff, diff, brw_imm_ud(-2u));
-   SHADER_TIME_ADD(cbld, 0, diff);
-   SHADER_TIME_ADD(cbld, 1, brw_imm_ud(1u));
-   ibld.emit(BRW_OPCODE_ELSE);
-   SHADER_TIME_ADD(cbld, 2, brw_imm_ud(1u));
-   ibld.emit(BRW_OPCODE_ENDIF);
-}
-
-void
-fs_visitor::SHADER_TIME_ADD(const fs_builder &bld,
-                            int shader_time_subindex,
-                            fs_reg value)
-{
-   int index = shader_time_index * 3 + shader_time_subindex;
-   struct brw_reg offset = brw_imm_d(index * BRW_SHADER_TIME_STRIDE);
-
-   fs_reg payload;
-   if (dispatch_width == 8)
-      payload = vgrf(glsl_type::uvec2_type);
-   else
-      payload = vgrf(glsl_type::uint_type);
-
-   bld.emit(SHADER_OPCODE_SHADER_TIME_ADD, fs_reg(), payload, offset, value);
 }
 
 void
@@ -1234,7 +1155,6 @@ void
 fs_visitor::import_uniforms(fs_visitor *v)
 {
    this->push_constant_loc = v->push_constant_loc;
-   this->pull_constant_loc = v->pull_constant_loc;
    this->uniforms = v->uniforms;
    this->subgroup_id = v->subgroup_id;
    for (unsigned i = 0; i < ARRAY_SIZE(this->group_size); i++)
@@ -1308,17 +1228,17 @@ centroid_to_pixel(enum brw_barycentric_mode bary)
    return (enum brw_barycentric_mode) ((unsigned) bary - 1);
 }
 
-fs_reg *
+fs_reg
 fs_visitor::emit_frontfacing_interpolation()
 {
-   fs_reg *reg = new(this->mem_ctx) fs_reg(vgrf(glsl_type::bool_type));
+   fs_reg ff = bld.vgrf(BRW_REGISTER_TYPE_D);
 
    if (devinfo->ver >= 12) {
       fs_reg g1 = fs_reg(retype(brw_vec1_grf(1, 1), BRW_REGISTER_TYPE_W));
 
       fs_reg tmp = bld.vgrf(BRW_REGISTER_TYPE_W);
       bld.ASR(tmp, g1, brw_imm_d(15));
-      bld.NOT(*reg, tmp);
+      bld.NOT(ff, tmp);
    } else if (devinfo->ver >= 6) {
       /* Bit 15 of g0.0 is 0 if the polygon is front facing. We want to create
        * a boolean result from this (~0/true or 0/false).
@@ -1334,7 +1254,7 @@ fs_visitor::emit_frontfacing_interpolation()
       fs_reg g0 = fs_reg(retype(brw_vec1_grf(0, 0), BRW_REGISTER_TYPE_W));
       g0.negate = true;
 
-      bld.ASR(*reg, g0, brw_imm_d(15));
+      bld.ASR(ff, g0, brw_imm_d(15));
    } else {
       /* Bit 31 of g1.6 is 0 if the polygon is front facing. We want to create
        * a boolean result from this (1/true or 0/false).
@@ -1349,45 +1269,32 @@ fs_visitor::emit_frontfacing_interpolation()
       fs_reg g1_6 = fs_reg(retype(brw_vec1_grf(1, 6), BRW_REGISTER_TYPE_D));
       g1_6.negate = true;
 
-      bld.ASR(*reg, g1_6, brw_imm_d(31));
+      bld.ASR(ff, g1_6, brw_imm_d(31));
    }
 
-   return reg;
+   return ff;
 }
 
-void
-fs_visitor::compute_sample_position(fs_reg dst, fs_reg int_sample_pos)
+fs_reg
+fs_visitor::emit_samplepos_setup()
 {
    assert(stage == MESA_SHADER_FRAGMENT);
    struct brw_wm_prog_data *wm_prog_data = brw_wm_prog_data(this->prog_data);
-   assert(dst.type == BRW_REGISTER_TYPE_F);
+   assert(devinfo->ver >= 6);
 
-   if (wm_prog_data->persample_dispatch) {
-      /* Convert int_sample_pos to floating point */
-      bld.MOV(dst, int_sample_pos);
-      /* Scale to the range [0, 1] */
-      bld.MUL(dst, dst, brw_imm_f(1 / 16.0f));
-   }
-   else {
+   const fs_builder abld = bld.annotate("compute sample position");
+   fs_reg pos = abld.vgrf(BRW_REGISTER_TYPE_F, 2);
+
+   if (!wm_prog_data->persample_dispatch) {
       /* From ARB_sample_shading specification:
        * "When rendering to a non-multisample buffer, or if multisample
        *  rasterization is disabled, gl_SamplePosition will always be
        *  (0.5, 0.5).
        */
-      bld.MOV(dst, brw_imm_f(0.5f));
+      bld.MOV(offset(pos, bld, 0), brw_imm_f(0.5f));
+      bld.MOV(offset(pos, bld, 1), brw_imm_f(0.5f));
+      return pos;
    }
-}
-
-fs_reg *
-fs_visitor::emit_samplepos_setup()
-{
-   assert(devinfo->ver >= 6);
-
-   const fs_builder abld = bld.annotate("compute sample position");
-   fs_reg *reg = new(this->mem_ctx) fs_reg(vgrf(glsl_type::vec2_type));
-   fs_reg pos = *reg;
-   fs_reg int_sample_x = vgrf(glsl_type::int_type);
-   fs_reg int_sample_y = vgrf(glsl_type::int_type);
 
    /* WM will be run in MSDISPMODE_PERSAMPLE. So, only one of SIMD8 or SIMD16
     * mode will be enabled.
@@ -1403,17 +1310,20 @@ fs_visitor::emit_samplepos_setup()
    const fs_reg sample_pos_reg =
       fetch_payload_reg(abld, payload.sample_pos_reg, BRW_REGISTER_TYPE_W);
 
-   /* Compute gl_SamplePosition.x */
-   abld.MOV(int_sample_x, subscript(sample_pos_reg, BRW_REGISTER_TYPE_B, 0));
-   compute_sample_position(offset(pos, abld, 0), int_sample_x);
+   for (unsigned i = 0; i < 2; i++) {
+      fs_reg tmp_d = bld.vgrf(BRW_REGISTER_TYPE_D);
+      abld.MOV(tmp_d, subscript(sample_pos_reg, BRW_REGISTER_TYPE_B, i));
+      /* Convert int_sample_pos to floating point */
+      fs_reg tmp_f = bld.vgrf(BRW_REGISTER_TYPE_F);
+      abld.MOV(tmp_f, tmp_d);
+      /* Scale to the range [0, 1] */
+      abld.MUL(offset(pos, abld, i), tmp_f, brw_imm_f(1 / 16.0f));
+   }
 
-   /* Compute gl_SamplePosition.y */
-   abld.MOV(int_sample_y, subscript(sample_pos_reg, BRW_REGISTER_TYPE_B, 1));
-   compute_sample_position(offset(pos, abld, 1), int_sample_y);
-   return reg;
+   return pos;
 }
 
-fs_reg *
+fs_reg
 fs_visitor::emit_sampleid_setup()
 {
    assert(stage == MESA_SHADER_FRAGMENT);
@@ -1421,14 +1331,14 @@ fs_visitor::emit_sampleid_setup()
    assert(devinfo->ver >= 6);
 
    const fs_builder abld = bld.annotate("compute sample id");
-   fs_reg *reg = new(this->mem_ctx) fs_reg(vgrf(glsl_type::uint_type));
+   fs_reg sample_id = abld.vgrf(BRW_REGISTER_TYPE_UD);
 
    if (!key->multisample_fbo) {
       /* As per GL_ARB_sample_shading specification:
        * "When rendering to a non-multisample buffer, or if multisample
        *  rasterization is disabled, gl_SampleID will always be zero."
        */
-      abld.MOV(*reg, brw_imm_d(0));
+      abld.MOV(sample_id, brw_imm_d(0));
    } else if (devinfo->ver >= 8) {
       /* Sample ID comes in as 4-bit numbers in g1.0:
        *
@@ -1468,7 +1378,7 @@ fs_visitor::emit_sampleid_setup()
                   brw_imm_v(0x44440000));
       }
 
-      abld.AND(*reg, tmp, brw_imm_w(0xf));
+      abld.AND(sample_id, tmp, brw_imm_w(0xf));
    } else {
       const fs_reg t1 = component(abld.vgrf(BRW_REGISTER_TYPE_UD), 0);
       const fs_reg t2 = abld.vgrf(BRW_REGISTER_TYPE_UW);
@@ -1514,20 +1424,20 @@ fs_visitor::emit_sampleid_setup()
       /* This special instruction takes care of setting vstride=1,
        * width=4, hstride=0 of t2 during an ADD instruction.
        */
-      abld.emit(FS_OPCODE_SET_SAMPLE_ID, *reg, t1, t2);
+      abld.emit(FS_OPCODE_SET_SAMPLE_ID, sample_id, t1, t2);
    }
 
-   return reg;
+   return sample_id;
 }
 
-fs_reg *
+fs_reg
 fs_visitor::emit_samplemaskin_setup()
 {
    assert(stage == MESA_SHADER_FRAGMENT);
    struct brw_wm_prog_data *wm_prog_data = brw_wm_prog_data(this->prog_data);
    assert(devinfo->ver >= 6);
 
-   fs_reg *reg = new(this->mem_ctx) fs_reg(vgrf(glsl_type::int_type));
+   fs_reg mask = bld.vgrf(BRW_REGISTER_TYPE_D);
 
    /* The HW doesn't provide us with expected values. */
    assert(!wm_prog_data->per_coarse_pixel_dispatch);
@@ -1549,28 +1459,27 @@ fs_visitor::emit_samplemaskin_setup()
       const fs_builder abld = bld.annotate("compute gl_SampleMaskIn");
 
       if (nir_system_values[SYSTEM_VALUE_SAMPLE_ID].file == BAD_FILE)
-         nir_system_values[SYSTEM_VALUE_SAMPLE_ID] = *emit_sampleid_setup();
+         nir_system_values[SYSTEM_VALUE_SAMPLE_ID] = emit_sampleid_setup();
 
       fs_reg one = vgrf(glsl_type::int_type);
       fs_reg enabled_mask = vgrf(glsl_type::int_type);
       abld.MOV(one, brw_imm_d(1));
       abld.SHL(enabled_mask, one, nir_system_values[SYSTEM_VALUE_SAMPLE_ID]);
-      abld.AND(*reg, enabled_mask, coverage_mask);
+      abld.AND(mask, enabled_mask, coverage_mask);
    } else {
       /* In per-pixel mode, the coverage mask is sufficient. */
-      *reg = coverage_mask;
+      mask = coverage_mask;
    }
-   return reg;
+   return mask;
 }
 
-fs_reg *
+fs_reg
 fs_visitor::emit_shading_rate_setup()
 {
    assert(devinfo->ver >= 11);
 
    const fs_builder abld = bld.annotate("compute fragment shading rate");
-
-   fs_reg *reg = new(this->mem_ctx) fs_reg(bld.vgrf(BRW_REGISTER_TYPE_UD));
+   fs_reg rate = abld.vgrf(BRW_REGISTER_TYPE_UD);
 
    struct brw_wm_prog_data *wm_prog_data =
       brw_wm_prog_data(bld.shader->stage_prog_data);
@@ -1596,12 +1505,12 @@ fs_visitor::emit_shading_rate_setup()
       abld.SHR(int_rate_y, actual_y, brw_imm_ud(1));
       abld.SHR(int_rate_x, actual_x, brw_imm_ud(1));
       abld.SHL(int_rate_x, int_rate_x, brw_imm_ud(2));
-      abld.OR(*reg, int_rate_x, int_rate_y);
+      abld.OR(rate, int_rate_x, int_rate_y);
    } else {
-      abld.MOV(*reg, brw_imm_ud(0));
+      abld.MOV(rate, brw_imm_ud(0));
    }
 
-   return reg;
+   return rate;
 }
 
 fs_reg
@@ -1801,7 +1710,6 @@ fs_visitor::assign_curb_setup()
 
    uint64_t want_zero = used & stage_prog_data->zero_push_reg;
    if (want_zero) {
-      assert(!compiler->compact_params);
       fs_builder ubld = bld.exec_all().group(8, 0).at(
          cfg->first_block(), cfg->first_block()->start());
 
@@ -2141,22 +2049,17 @@ fs_visitor::assign_gs_urb_setup()
 /**
  * Split large virtual GRFs into separate components if we can.
  *
- * This is mostly duplicated with what brw_fs_vector_splitting does,
- * but that's really conservative because it's afraid of doing
- * splitting that doesn't result in real progress after the rest of
- * the optimization phases, which would cause infinite looping in
- * optimization.  We can do it once here, safely.  This also has the
- * opportunity to split interpolated values, or maybe even uniforms,
- * which we don't have at the IR level.
- *
- * We want to split, because virtual GRFs are what we register
- * allocate and spill (due to contiguousness requirements for some
- * instructions), and they're what we naturally generate in the
- * codegen process, but most virtual GRFs don't actually need to be
- * contiguous sets of GRFs.  If we split, we'll end up with reduced
- * live intervals and better dead code elimination and coalescing.
+ * This pass aggressively splits VGRFs into as small a chunks as possible,
+ * down to single registers if it can.  If no VGRFs can be split, we return
+ * false so this pass can safely be used inside an optimization loop.  We
+ * want to split, because virtual GRFs are what we register allocate and
+ * spill (due to contiguousness requirements for some instructions), and
+ * they're what we naturally generate in the codegen process, but most
+ * virtual GRFs don't actually need to be contiguous sets of GRFs.  If we
+ * split, we'll end up with reduced live intervals and better dead code
+ * elimination and coalescing.
  */
-void
+bool
 fs_visitor::split_virtual_grfs()
 {
    /* Compact the register file so we eliminate dead vgrfs.  This
@@ -2227,10 +2130,15 @@ fs_visitor::split_virtual_grfs()
       }
    }
 
+   /* Bitset of which registers have been split */
+   bool *vgrf_has_split = new bool[num_vars];
+   memset(vgrf_has_split, 0, num_vars * sizeof(*vgrf_has_split));
+
    int *new_virtual_grf = new int[reg_count];
    int *new_reg_offset = new int[reg_count];
 
    int reg = 0;
+   bool has_splits = false;
    for (int i = 0; i < num_vars; i++) {
       /* The first one should always be 0 as a quick sanity check. */
       assert(split_points[reg] == false);
@@ -2246,6 +2154,8 @@ fs_visitor::split_virtual_grfs()
           * new virtual GRF for the previous offset many registers
           */
          if (split_points[reg]) {
+            has_splits = true;
+            vgrf_has_split[i] = true;
             assert(offset <= MAX_VGRF_SIZE);
             int grf = alloc.allocate(offset);
             for (int k = reg - offset; k < reg; k++)
@@ -2265,42 +2175,74 @@ fs_visitor::split_virtual_grfs()
    }
    assert(reg == reg_count);
 
+   bool progress;
+   if (!has_splits) {
+      progress = false;
+      goto cleanup;
+   }
+
    foreach_block_and_inst_safe(block, fs_inst, inst, cfg) {
       if (inst->opcode == SHADER_OPCODE_UNDEF) {
-         const fs_builder ibld(this, block, inst);
-         assert(inst->size_written % REG_SIZE == 0);
-         unsigned reg_offset = 0;
-         while (reg_offset < inst->size_written / REG_SIZE) {
-            reg = vgrf_to_reg[inst->dst.nr] + reg_offset;
-            ibld.UNDEF(fs_reg(VGRF, new_virtual_grf[reg], inst->dst.type));
-            reg_offset += alloc.sizes[new_virtual_grf[reg]];
+         assert(inst->dst.file == VGRF);
+         if (vgrf_has_split[inst->dst.nr]) {
+            const fs_builder ibld(this, block, inst);
+            assert(inst->size_written % REG_SIZE == 0);
+            unsigned reg_offset = 0;
+            while (reg_offset < inst->size_written / REG_SIZE) {
+               reg = vgrf_to_reg[inst->dst.nr] + reg_offset;
+               ibld.UNDEF(fs_reg(VGRF, new_virtual_grf[reg], inst->dst.type));
+               reg_offset += alloc.sizes[new_virtual_grf[reg]];
+            }
+            inst->remove(block);
+         } else {
+            reg = vgrf_to_reg[inst->dst.nr];
+            assert(new_reg_offset[reg] == 0);
+            assert(new_virtual_grf[reg] == (int)inst->dst.nr);
          }
-         inst->remove(block);
          continue;
       }
 
       if (inst->dst.file == VGRF) {
          reg = vgrf_to_reg[inst->dst.nr] + inst->dst.offset / REG_SIZE;
-         inst->dst.nr = new_virtual_grf[reg];
-         inst->dst.offset = new_reg_offset[reg] * REG_SIZE +
-                            inst->dst.offset % REG_SIZE;
-         assert((unsigned)new_reg_offset[reg] < alloc.sizes[new_virtual_grf[reg]]);
+         if (vgrf_has_split[inst->dst.nr]) {
+            inst->dst.nr = new_virtual_grf[reg];
+            inst->dst.offset = new_reg_offset[reg] * REG_SIZE +
+                               inst->dst.offset % REG_SIZE;
+            assert((unsigned)new_reg_offset[reg] <
+                   alloc.sizes[new_virtual_grf[reg]]);
+         } else {
+            assert(new_reg_offset[reg] == inst->dst.offset / REG_SIZE);
+            assert(new_virtual_grf[reg] == (int)inst->dst.nr);
+         }
       }
       for (int i = 0; i < inst->sources; i++) {
-	 if (inst->src[i].file == VGRF) {
-            reg = vgrf_to_reg[inst->src[i].nr] + inst->src[i].offset / REG_SIZE;
+	 if (inst->src[i].file != VGRF)
+            continue;
+
+         reg = vgrf_to_reg[inst->src[i].nr] + inst->src[i].offset / REG_SIZE;
+         if (vgrf_has_split[inst->src[i].nr]) {
             inst->src[i].nr = new_virtual_grf[reg];
             inst->src[i].offset = new_reg_offset[reg] * REG_SIZE +
                                   inst->src[i].offset % REG_SIZE;
-            assert((unsigned)new_reg_offset[reg] < alloc.sizes[new_virtual_grf[reg]]);
+            assert((unsigned)new_reg_offset[reg] <
+                   alloc.sizes[new_virtual_grf[reg]]);
+         } else {
+            assert(new_reg_offset[reg] == inst->src[i].offset / REG_SIZE);
+            assert(new_virtual_grf[reg] == (int)inst->src[i].nr);
          }
       }
    }
    invalidate_analysis(DEPENDENCY_INSTRUCTION_DETAIL | DEPENDENCY_VARIABLES);
 
+   progress = true;
+
+cleanup:
    delete[] split_points;
+   delete[] vgrf_has_split;
    delete[] new_virtual_grf;
    delete[] new_reg_offset;
+
+   return progress;
 }
 
 /**
@@ -2397,109 +2339,6 @@ get_subgroup_id_param_index(const intel_device_info *devinfo,
 }
 
 /**
- * Struct for handling complex alignments.
- *
- * A complex alignment is stored as multiplier and an offset.  A value is
- * considered to be aligned if it is {offset} larger than a multiple of {mul}.
- * For instance, with an alignment of {8, 2}, cplx_align_apply would do the
- * following:
- *
- *  N  | cplx_align_apply({8, 2}, N)
- * ----+-----------------------------
- *  4  | 6
- *  6  | 6
- *  8  | 14
- *  10 | 14
- *  12 | 14
- *  14 | 14
- *  16 | 22
- */
-struct cplx_align {
-   unsigned mul:4;
-   unsigned offset:4;
-};
-
-#define CPLX_ALIGN_MAX_MUL 8
-
-static void
-cplx_align_assert_sane(struct cplx_align a)
-{
-   assert(a.mul > 0 && util_is_power_of_two_nonzero(a.mul));
-   assert(a.offset < a.mul);
-}
-
-/**
- * Combines two alignments to produce a least multiple of sorts.
- *
- * The returned alignment is the smallest (in terms of multiplier) such that
- * anything aligned to both a and b will be aligned to the new alignment.
- * This function will assert-fail if a and b are not compatible, i.e. if the
- * offset parameters are such that no common alignment is possible.
- */
-static struct cplx_align
-cplx_align_combine(struct cplx_align a, struct cplx_align b)
-{
-   cplx_align_assert_sane(a);
-   cplx_align_assert_sane(b);
-
-   /* Assert that the alignments agree. */
-   assert((a.offset & (b.mul - 1)) == (b.offset & (a.mul - 1)));
-
-   return a.mul > b.mul ? a : b;
-}
-
-/**
- * Apply a complex alignment
- *
- * This function will return the smallest number greater than or equal to
- * offset that is aligned to align.
- */
-static unsigned
-cplx_align_apply(struct cplx_align align, unsigned offset)
-{
-   return ALIGN(offset - align.offset, align.mul) + align.offset;
-}
-
-#define UNIFORM_SLOT_SIZE 4
-
-struct uniform_slot_info {
-   /** True if the given uniform slot is live */
-   unsigned is_live:1;
-
-   /** True if this slot and the next slot must remain contiguous */
-   unsigned contiguous:1;
-
-   struct cplx_align align;
-};
-
-static void
-mark_uniform_slots_read(struct uniform_slot_info *slots,
-                        unsigned num_slots, unsigned alignment)
-{
-   assert(alignment > 0 && util_is_power_of_two_nonzero(alignment));
-   assert(alignment <= CPLX_ALIGN_MAX_MUL);
-
-   /* We can't align a slot to anything less than the slot size */
-   alignment = MAX2(alignment, UNIFORM_SLOT_SIZE);
-
-   struct cplx_align align = {alignment, 0};
-   cplx_align_assert_sane(align);
-
-   for (unsigned i = 0; i < num_slots; i++) {
-      slots[i].is_live = true;
-      if (i < num_slots - 1)
-         slots[i].contiguous = true;
-
-      align.offset = (i * UNIFORM_SLOT_SIZE) & (align.mul - 1);
-      if (slots[i].align.mul == 0) {
-         slots[i].align = align;
-      } else {
-         slots[i].align = cplx_align_combine(slots[i].align, align);
-      }
-   }
-}
-
-/**
  * Assign UNIFORM file registers to either push constants or pull constants.
  *
  * We allow a fragment shader to have more than the specified minimum
@@ -2512,197 +2351,12 @@ void
 fs_visitor::assign_constant_locations()
 {
    /* Only the first compile gets to decide on locations. */
-   if (push_constant_loc) {
-      assert(pull_constant_loc);
+   if (push_constant_loc)
       return;
-   }
 
-   if (compiler->compact_params) {
-      struct uniform_slot_info slots[uniforms + 1];
-      memset(slots, 0, sizeof(slots));
-
-      foreach_block_and_inst_safe(block, fs_inst, inst, cfg) {
-         for (int i = 0 ; i < inst->sources; i++) {
-            if (inst->src[i].file != UNIFORM)
-               continue;
-
-            /* NIR tightly packs things so the uniform number might not be
-             * aligned (if we have a double right after a float, for
-             * instance).  This is fine because the process of re-arranging
-             * them will ensure that things are properly aligned.  The offset
-             * into that uniform, however, must be aligned.
-             *
-             * In Vulkan, we have explicit offsets but everything is crammed
-             * into a single "variable" so inst->src[i].nr will always be 0.
-             * Everything will be properly aligned relative to that one base.
-             */
-            assert(inst->src[i].offset % type_sz(inst->src[i].type) == 0);
-
-            unsigned u = inst->src[i].nr +
-                         inst->src[i].offset / UNIFORM_SLOT_SIZE;
-
-            if (u >= uniforms)
-               continue;
-
-            unsigned slots_read;
-            if (inst->opcode == SHADER_OPCODE_MOV_INDIRECT && i == 0) {
-               slots_read = DIV_ROUND_UP(inst->src[2].ud, UNIFORM_SLOT_SIZE);
-            } else {
-               unsigned bytes_read = inst->components_read(i) *
-                                     type_sz(inst->src[i].type);
-               slots_read = DIV_ROUND_UP(bytes_read, UNIFORM_SLOT_SIZE);
-            }
-
-            assert(u + slots_read <= uniforms);
-            mark_uniform_slots_read(&slots[u], slots_read,
-                                    type_sz(inst->src[i].type));
-         }
-      }
-
-      int subgroup_id_index = get_subgroup_id_param_index(devinfo,
-                                                          stage_prog_data);
-
-      /* Only allow 16 registers (128 uniform components) as push constants.
-       *
-       * Just demote the end of the list.  We could probably do better
-       * here, demoting things that are rarely used in the program first.
-       *
-       * If changing this value, note the limitation about total_regs in
-       * brw_curbe.c.
-       */
-      unsigned int max_push_components = 16 * 8;
-      if (subgroup_id_index >= 0)
-         max_push_components--; /* Save a slot for the thread ID */
-
-      /* We push small arrays, but no bigger than 16 floats.  This is big
-       * enough for a vec4 but hopefully not large enough to push out other
-       * stuff.  We should probably use a better heuristic at some point.
-       */
-      const unsigned int max_chunk_size = 16;
-
-      unsigned int num_push_constants = 0;
-      unsigned int num_pull_constants = 0;
-
-      push_constant_loc = ralloc_array(mem_ctx, int, uniforms);
-      pull_constant_loc = ralloc_array(mem_ctx, int, uniforms);
-
-      /* Default to -1 meaning no location */
-      memset(push_constant_loc, -1, uniforms * sizeof(*push_constant_loc));
-      memset(pull_constant_loc, -1, uniforms * sizeof(*pull_constant_loc));
-
-      int chunk_start = -1;
-      struct cplx_align align;
-      for (unsigned u = 0; u < uniforms; u++) {
-         if (!slots[u].is_live) {
-            assert(chunk_start == -1);
-            continue;
-         }
-
-         /* Skip subgroup_id_index to put it in the last push register. */
-         if (subgroup_id_index == (int)u)
-            continue;
-
-         if (chunk_start == -1) {
-            chunk_start = u;
-            align = slots[u].align;
-         } else {
-            /* Offset into the chunk */
-            unsigned chunk_offset = (u - chunk_start) * UNIFORM_SLOT_SIZE;
-
-            /* Shift the slot alignment down by the chunk offset so it is
-             * comparable with the base chunk alignment.
-             */
-            struct cplx_align slot_align = slots[u].align;
-            slot_align.offset =
-               (slot_align.offset - chunk_offset) & (align.mul - 1);
-
-            align = cplx_align_combine(align, slot_align);
-         }
-
-         /* Sanity check the alignment */
-         cplx_align_assert_sane(align);
-
-         if (slots[u].contiguous)
-            continue;
-
-         /* Adjust the alignment to be in terms of slots, not bytes */
-         assert((align.mul & (UNIFORM_SLOT_SIZE - 1)) == 0);
-         assert((align.offset & (UNIFORM_SLOT_SIZE - 1)) == 0);
-         align.mul /= UNIFORM_SLOT_SIZE;
-         align.offset /= UNIFORM_SLOT_SIZE;
-
-         unsigned push_start_align = cplx_align_apply(align, num_push_constants);
-         unsigned chunk_size = u - chunk_start + 1;
-         if ((!compiler->supports_pull_constants && u < UBO_START) ||
-             (chunk_size < max_chunk_size &&
-              push_start_align + chunk_size <= max_push_components)) {
-            /* Align up the number of push constants */
-            num_push_constants = push_start_align;
-            for (unsigned i = 0; i < chunk_size; i++)
-               push_constant_loc[chunk_start + i] = num_push_constants++;
-         } else {
-            /* We need to pull this one */
-            num_pull_constants = cplx_align_apply(align, num_pull_constants);
-            for (unsigned i = 0; i < chunk_size; i++)
-               pull_constant_loc[chunk_start + i] = num_pull_constants++;
-         }
-
-         /* Reset the chunk and start again */
-         chunk_start = -1;
-      }
-
-      /* Add the CS local thread ID uniform at the end of the push constants */
-      if (subgroup_id_index >= 0)
-         push_constant_loc[subgroup_id_index] = num_push_constants++;
-
-      /* As the uniforms are going to be reordered, stash the old array and
-       * create two new arrays for push/pull params.
-       */
-      uint32_t *param = stage_prog_data->param;
-      stage_prog_data->nr_params = num_push_constants;
-      if (num_push_constants) {
-         stage_prog_data->param = rzalloc_array(mem_ctx, uint32_t,
-                                                num_push_constants);
-      } else {
-         stage_prog_data->param = NULL;
-      }
-      assert(stage_prog_data->nr_pull_params == 0);
-      assert(stage_prog_data->pull_param == NULL);
-      if (num_pull_constants > 0) {
-         stage_prog_data->nr_pull_params = num_pull_constants;
-         stage_prog_data->pull_param = rzalloc_array(mem_ctx, uint32_t,
-                                                     num_pull_constants);
-      }
-
-      /* Up until now, the param[] array has been indexed by reg + offset
-       * of UNIFORM registers.  Move pull constants into pull_param[] and
-       * condense param[] to only contain the uniforms we chose to push.
-       *
-       * NOTE: Because we are condensing the params[] array, we know that
-       * push_constant_loc[i] <= i and we can do it in one smooth loop without
-       * having to make a copy.
-       */
-      for (unsigned int i = 0; i < uniforms; i++) {
-         uint32_t value = param[i];
-         if (pull_constant_loc[i] != -1) {
-            stage_prog_data->pull_param[pull_constant_loc[i]] = value;
-         } else if (push_constant_loc[i] != -1) {
-            stage_prog_data->param[push_constant_loc[i]] = value;
-         }
-      }
-      ralloc_free(param);
-   } else {
-      /* If we don't want to compact anything, just set up dummy push/pull
-       * arrays.  All the rest of the compiler cares about are these arrays.
-       */
-      push_constant_loc = ralloc_array(mem_ctx, int, uniforms);
-      pull_constant_loc = ralloc_array(mem_ctx, int, uniforms);
-
-      for (unsigned u = 0; u < uniforms; u++)
-         push_constant_loc[u] = u;
-
-      memset(pull_constant_loc, -1, uniforms * sizeof(*pull_constant_loc));
-   }
+   push_constant_loc = ralloc_array(mem_ctx, int, uniforms);
+   for (unsigned u = 0; u < uniforms; u++)
+      push_constant_loc[u] = u;
 
    /* Now that we know how many regular uniforms we'll push, reduce the
     * UBO push ranges so we don't exceed the 3DSTATE_CONSTANT limits.
@@ -2733,33 +2387,22 @@ fs_visitor::get_pull_locs(const fs_reg &src,
 {
    assert(src.file == UNIFORM);
 
-   if (src.nr >= UBO_START) {
-      const struct brw_ubo_range *range =
-         &prog_data->ubo_ranges[src.nr - UBO_START];
+   if (src.nr < UBO_START)
+      return false;
 
-      /* If this access is in our (reduced) range, use the push data. */
-      if (src.offset / 32 < range->length)
-         return false;
+   const struct brw_ubo_range *range =
+      &prog_data->ubo_ranges[src.nr - UBO_START];
 
-      *out_surf_index = prog_data->binding_table.ubo_start + range->block;
-      *out_pull_index = (32 * range->start + src.offset) / 4;
+   /* If this access is in our (reduced) range, use the push data. */
+   if (src.offset / 32 < range->length)
+      return false;
 
-      prog_data->has_ubo_pull = true;
-      return true;
-   }
+   *out_surf_index = range->block;
+   *out_pull_index = (32 * range->start + src.offset) / 4;
 
-   const unsigned location = src.nr + src.offset / 4;
+   prog_data->has_ubo_pull = true;
 
-   if (location < uniforms && pull_constant_loc[location] != -1) {
-      /* A regular uniform push constant */
-      *out_surf_index = stage_prog_data->binding_table.pull_constants_start;
-      *out_pull_index = pull_constant_loc[location];
-
-      prog_data->has_ubo_pull = true;
-      return true;
-   }
-
-   return false;
+   return true;
 }
 
 /**
@@ -5277,7 +4920,6 @@ lower_sampler_logical_send_gfx7(const fs_builder &bld, fs_inst *inst, opcode op,
       brw_reg_type_from_bit_size(payload_type_bit_size, BRW_REGISTER_TYPE_UD);
    const enum brw_reg_type payload_signed_type =
       brw_reg_type_from_bit_size(payload_type_bit_size, BRW_REGISTER_TYPE_D);
-   const brw_stage_prog_data *prog_data = bld.shader->stage_prog_data;
    unsigned reg_width = bld.dispatch_width() / 8;
    unsigned header_size = 0, length = 0;
    fs_reg sources[MAX_SAMPLER_MESSAGE_SIZE];
@@ -5562,25 +5204,10 @@ lower_sampler_logical_send_gfx7(const fs_builder &bld, fs_inst *inst, opcode op,
    const unsigned msg_type =
       sampler_msg_type(devinfo, op, inst->shadow_compare);
 
-   uint32_t base_binding_table_index;
-   switch (op) {
-   case SHADER_OPCODE_TG4:
-   case SHADER_OPCODE_TG4_OFFSET:
-      base_binding_table_index = prog_data->binding_table.gather_texture_start;
-      break;
-   case SHADER_OPCODE_IMAGE_SIZE_LOGICAL:
-      base_binding_table_index = prog_data->binding_table.image_start;
-      break;
-   default:
-      base_binding_table_index = prog_data->binding_table.texture_start;
-      break;
-   }
-
    inst->sfid = BRW_SFID_SAMPLER;
    if (surface.file == IMM &&
        (sampler.file == IMM || sampler_handle.file != BAD_FILE)) {
-      inst->desc = brw_sampler_desc(devinfo,
-                                    surface.ud + base_binding_table_index,
+      inst->desc = brw_sampler_desc(devinfo, surface.ud,
                                     sampler.file == IMM ? sampler.ud % 16 : 0,
                                     msg_type,
                                     simd_mode,
@@ -5636,8 +5263,6 @@ lower_sampler_logical_send_gfx7(const fs_builder &bld, fs_inst *inst, opcode op,
             ubld.OR(desc, desc, surface);
          }
       }
-      if (base_binding_table_index)
-         ubld.ADD(desc, desc, brw_imm_ud(base_binding_table_index));
       ubld.AND(desc, desc, brw_imm_ud(0xfff));
 
       inst->src[0] = component(desc, 0);
@@ -8657,9 +8282,6 @@ fs_visitor::optimize()
 
    validate();
 
-   split_virtual_grfs();
-   validate();
-
 #define OPT(pass, args...) ({                                           \
       pass_num++;                                                       \
       bool this_progress = pass(args);                                  \
@@ -8689,6 +8311,8 @@ fs_visitor::optimize()
    bool progress = false;
    int iteration = 0;
    int pass_num = 0;
+
+   OPT(split_virtual_grfs);
 
    /* Before anything else, eliminate dead code.  The results of some NIR
     * instructions may effectively be calculated twice.  Once when the
@@ -8762,7 +8386,7 @@ fs_visitor::optimize()
    OPT(opt_redundant_halt);
 
    if (OPT(lower_load_payload)) {
-      split_virtual_grfs();
+      OPT(split_virtual_grfs);
 
       /* Lower 64 bit MOVs generated by payload lowering. */
       if (!devinfo->has_64bit_float && !devinfo->has_64bit_int)
@@ -9028,46 +8652,61 @@ fs_visitor::allocate_registers(bool allow_spilling)
    static const enum instruction_scheduler_mode pre_modes[] = {
       SCHEDULE_PRE,
       SCHEDULE_PRE_NON_LIFO,
+      SCHEDULE_NONE,
       SCHEDULE_PRE_LIFO,
    };
 
    static const char *scheduler_mode_name[] = {
       "top-down",
       "non-lifo",
+      "none",
       "lifo"
    };
 
    bool spill_all = allow_spilling && INTEL_DEBUG(DEBUG_SPILL_FS);
+
+   /* Before we schedule anything, stash off the instruction order as an array
+    * of fs_inst *.  This way, we can reset it between scheduling passes to
+    * prevent dependencies between the different scheduling modes.
+    */
+   int num_insts = cfg->last_block()->end_ip + 1;
+   fs_inst **inst_arr = ralloc_array(mem_ctx, fs_inst *, num_insts);
+
+   int ip = 0;
+   foreach_block_and_inst(block, fs_inst, inst, cfg) {
+      assert(ip >= block->start_ip && ip <= block->end_ip);
+      inst_arr[ip++] = inst;
+   }
+   assert(ip == num_insts);
 
    /* Try each scheduling heuristic to see if it can successfully register
     * allocate without spilling.  They should be ordered by decreasing
     * performance but increasing likelihood of allocating.
     */
    for (unsigned i = 0; i < ARRAY_SIZE(pre_modes); i++) {
-      schedule_instructions(pre_modes[i]);
+      if (i > 0) {
+         /* Unless we're the first pass, reset back to the original order */
+         ip = 0;
+         foreach_block (block, cfg) {
+            block->instructions.make_empty();
+
+            assert(ip == block->start_ip);
+            for (; ip <= block->end_ip; ip++)
+               block->instructions.push_tail(inst_arr[ip]);
+         }
+         assert(ip == num_insts);
+
+         invalidate_analysis(DEPENDENCY_INSTRUCTIONS);
+      }
+
+      if (pre_modes[i] != SCHEDULE_NONE)
+         schedule_instructions(pre_modes[i]);
       this->shader_stats.scheduler_mode = scheduler_mode_name[i];
 
       if (0) {
          assign_regs_trivial();
          allocated = true;
          break;
-      }
-
-      /* Scheduling may create additional opportunities for CMOD propagation,
-       * so let's do it again.  If CMOD propagation made any progress,
-       * eliminate dead code one more time.
-       */
-      bool progress = false;
-      const int iteration = 99;
-      int pass_num = 0;
-
-      if (OPT(opt_cmod_propagation)) {
-         /* dead_code_eliminate "undoes" the fixing done by
-          * fixup_3src_null_dest, so we have to do it again if
-          * dead_code_eliminiate makes any progress.
-          */
-         if (OPT(dead_code_eliminate))
-            fixup_3src_null_dest();
       }
 
       bool can_spill = allow_spilling &&
@@ -9151,18 +8790,12 @@ fs_visitor::run_vs()
 
    setup_vs_payload();
 
-   if (shader_time_index >= 0)
-      emit_shader_time_begin();
-
    emit_nir_code();
 
    if (failed)
       return false;
 
    emit_urb_writes();
-
-   if (shader_time_index >= 0)
-      emit_shader_time_end();
 
    calculate_cfg();
 
@@ -9242,9 +8875,6 @@ fs_visitor::run_tcs()
                          tcs_key->input_vertices;
    }
 
-   if (shader_time_index >= 0)
-      emit_shader_time_begin();
-
    /* Initialize gl_InvocationID */
    set_tcs_invocation_id();
 
@@ -9279,9 +8909,6 @@ fs_visitor::run_tcs()
    inst->mlen = 3;
    inst->eot = true;
 
-   if (shader_time_index >= 0)
-      emit_shader_time_end();
-
    if (failed)
       return false;
 
@@ -9306,18 +8933,12 @@ fs_visitor::run_tes()
    /* R0: thread header, R1-3: gl_TessCoord.xyz, R4: URB handles */
    payload.num_regs = 5;
 
-   if (shader_time_index >= 0)
-      emit_shader_time_begin();
-
    emit_nir_code();
 
    if (failed)
       return false;
 
    emit_urb_writes();
-
-   if (shader_time_index >= 0)
-      emit_shader_time_end();
 
    calculate_cfg();
 
@@ -9355,15 +8976,9 @@ fs_visitor::run_gs()
       }
    }
 
-   if (shader_time_index >= 0)
-      emit_shader_time_begin();
-
    emit_nir_code();
 
    emit_gs_thread_end();
-
-   if (shader_time_index >= 0)
-      emit_shader_time_end();
 
    if (failed)
       return false;
@@ -9427,9 +9042,6 @@ fs_visitor::run_fs(bool allow_spilling, bool do_rep_send)
       assert(dispatch_width == 16);
       emit_repclear_shader();
    } else {
-      if (shader_time_index >= 0)
-         emit_shader_time_begin();
-
       if (nir->info.inputs_read > 0 ||
           BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_FRAG_COORD) ||
           (nir->info.outputs_read > 0 && !wm_key->coherent_fb_fetch)) {
@@ -9467,16 +9079,13 @@ fs_visitor::run_fs(bool allow_spilling, bool do_rep_send)
 
       emit_fb_writes();
 
-      if (shader_time_index >= 0)
-         emit_shader_time_end();
-
       calculate_cfg();
 
       optimize();
 
       assign_curb_setup();
 
-      if (devinfo->ver >= 9)
+      if (devinfo->ver == 9)
          gfx9_ps_header_only_workaround(wm_prog_data);
 
       assign_urb_setup();
@@ -9499,9 +9108,6 @@ fs_visitor::run_cs(bool allow_spilling)
 
    setup_cs_payload();
 
-   if (shader_time_index >= 0)
-      emit_shader_time_begin();
-
    if (devinfo->platform == INTEL_PLATFORM_HSW && prog_data->total_shared > 0) {
       /* Move SLM index from g0.0[27:24] to sr0.1[11:8] */
       const fs_builder abld = bld.exec_all().group(1, 0);
@@ -9515,9 +9121,6 @@ fs_visitor::run_cs(bool allow_spilling)
       return false;
 
    emit_cs_terminate();
-
-   if (shader_time_index >= 0)
-      emit_shader_time_end();
 
    calculate_cfg();
 
@@ -9542,9 +9145,6 @@ fs_visitor::run_bs(bool allow_spilling)
    /* R0: thread header, R1: stack IDs, R2: argument addresses */
    payload.num_regs = 3;
 
-   if (shader_time_index >= 0)
-      emit_shader_time_begin();
-
    emit_nir_code();
 
    if (failed)
@@ -9552,9 +9152,6 @@ fs_visitor::run_bs(bool allow_spilling)
 
    /* TODO(RT): Perhaps rename this? */
    emit_cs_terminate();
-
-   if (shader_time_index >= 0)
-      emit_shader_time_end();
 
    calculate_cfg();
 
@@ -9596,18 +9193,12 @@ fs_visitor::run_task(bool allow_spilling)
     */
    payload.num_regs = dispatch_width == 32 ? 4 : 3;
 
-   if (shader_time_index >= 0)
-      emit_shader_time_begin();
-
    emit_nir_code();
 
    if (failed)
       return false;
 
    emit_cs_terminate();
-
-   if (shader_time_index >= 0)
-      emit_shader_time_end();
 
    calculate_cfg();
 
@@ -9649,18 +9240,12 @@ fs_visitor::run_mesh(bool allow_spilling)
     */
    payload.num_regs = dispatch_width == 32 ? 4 : 3;
 
-   if (shader_time_index >= 0)
-      emit_shader_time_begin();
-
    emit_nir_code();
 
    if (failed)
       return false;
 
    emit_cs_terminate();
-
-   if (shader_time_index >= 0)
-      emit_shader_time_end();
 
    calculate_cfg();
 
@@ -9943,7 +9528,10 @@ brw_nir_populate_wm_prog_data(const nir_shader *shader,
        * persample dispatch, we hard-code it to 0.5.
        */
       prog_data->uses_pos_offset = prog_data->persample_dispatch &&
-         BITSET_TEST(shader->info.system_values_read, SYSTEM_VALUE_SAMPLE_POS);
+         (BITSET_TEST(shader->info.system_values_read,
+                      SYSTEM_VALUE_SAMPLE_POS) ||
+          BITSET_TEST(shader->info.system_values_read,
+                      SYSTEM_VALUE_SAMPLE_POS_OR_CENTER));
    }
 
    prog_data->has_render_target_reads = shader->info.outputs_read != 0ull;
@@ -10039,7 +9627,6 @@ brw_compile_fs(const struct brw_compiler *compiler,
 
    v8 = new fs_visitor(compiler, params->log_data, mem_ctx, &key->base,
                        &prog_data->base, nir, 8,
-                       params->shader_time ? params->shader_time_index8 : -1,
                        debug_enabled);
    if (!v8->run_fs(allow_spilling, false /* do_rep_send */)) {
       params->error_str = ralloc_strdup(mem_ctx, v8->fail_msg);
@@ -10080,7 +9667,6 @@ brw_compile_fs(const struct brw_compiler *compiler,
       /* Try a SIMD16 compile */
       v16 = new fs_visitor(compiler, params->log_data, mem_ctx, &key->base,
                            &prog_data->base, nir, 16,
-                           params->shader_time ? params->shader_time_index16 : -1,
                            debug_enabled);
       v16->import_uniforms(v8);
       if (!v16->run_fs(allow_spilling, params->use_rep_send)) {
@@ -10108,7 +9694,6 @@ brw_compile_fs(const struct brw_compiler *compiler,
       /* Try a SIMD32 compile */
       v32 = new fs_visitor(compiler, params->log_data, mem_ctx, &key->base,
                            &prog_data->base, nir, 32,
-                           params->shader_time ? params->shader_time_index32 : -1,
                            debug_enabled);
       v32->import_uniforms(v8);
       if (!v32->run_fs(allow_spilling, false)) {
@@ -10228,28 +9813,28 @@ brw_compile_fs(const struct brw_compiler *compiler,
    return g.get_assembly();
 }
 
-fs_reg *
+fs_reg
 fs_visitor::emit_work_group_id_setup()
 {
    assert(gl_shader_stage_uses_workgroup(stage));
 
-   fs_reg *reg = new(this->mem_ctx) fs_reg(vgrf(glsl_type::uvec3_type));
+   fs_reg id = bld.vgrf(BRW_REGISTER_TYPE_UD, 3);
 
    struct brw_reg r0_1(retype(brw_vec1_grf(0, 1), BRW_REGISTER_TYPE_UD));
-   bld.MOV(*reg, r0_1);
+   bld.MOV(id, r0_1);
 
    if (gl_shader_stage_is_compute(stage)) {
       struct brw_reg r0_6(retype(brw_vec1_grf(0, 6), BRW_REGISTER_TYPE_UD));
       struct brw_reg r0_7(retype(brw_vec1_grf(0, 7), BRW_REGISTER_TYPE_UD));
-      bld.MOV(offset(*reg, bld, 1), r0_6);
-      bld.MOV(offset(*reg, bld, 2), r0_7);
+      bld.MOV(offset(id, bld, 1), r0_6);
+      bld.MOV(offset(id, bld, 2), r0_7);
    } else {
       /* Task/Mesh have a single Workgroup ID dimension in the HW. */
-      bld.MOV(offset(*reg, bld, 1), brw_imm_ud(0));
-      bld.MOV(offset(*reg, bld, 2), brw_imm_ud(0));
+      bld.MOV(offset(id, bld, 1), brw_imm_ud(0));
+      bld.MOV(offset(id, bld, 2), brw_imm_ud(0));
    }
 
-   return reg;
+   return id;
 }
 
 unsigned
@@ -10365,7 +9950,6 @@ brw_compile_cs(const struct brw_compiler *compiler,
    const nir_shader *nir = params->nir;
    const struct brw_cs_prog_key *key = params->key;
    struct brw_cs_prog_data *prog_data = params->prog_data;
-   int shader_time_index = params->shader_time ? params->shader_time_index : -1;
 
    const bool debug_enabled =
       INTEL_DEBUG(params->debug_flag ? params->debug_flag : DEBUG_CS);
@@ -10407,7 +9991,7 @@ brw_compile_cs(const struct brw_compiler *compiler,
 
       v[simd] = new fs_visitor(compiler, params->log_data, mem_ctx, &key->base,
                                &prog_data->base, shader, dispatch_width,
-                               shader_time_index, debug_enabled);
+                               debug_enabled);
 
       if (prog_data->prog_mask) {
          unsigned first = ffs(prog_data->prog_mask) - 1;
@@ -10539,7 +10123,7 @@ compile_single_bs(const struct brw_compiler *compiler, void *log_data,
    if (!INTEL_DEBUG(DEBUG_NO8)) {
       v8 = new fs_visitor(compiler, log_data, mem_ctx, &key->base,
                           &prog_data->base, shader,
-                          8, -1 /* shader time */, debug_enabled);
+                          8, debug_enabled);
       const bool allow_spilling = true;
       if (!v8->run_bs(allow_spilling)) {
          if (error_str)
@@ -10557,7 +10141,7 @@ compile_single_bs(const struct brw_compiler *compiler, void *log_data,
    if (!has_spilled && !INTEL_DEBUG(DEBUG_NO16)) {
       v16 = new fs_visitor(compiler, log_data, mem_ctx, &key->base,
                            &prog_data->base, shader,
-                           16, -1 /* shader time */, debug_enabled);
+                           16, debug_enabled);
       const bool allow_spilling = (v == NULL);
       if (!v16->run_bs(allow_spilling)) {
          brw_shader_perf_log(compiler, log_data,
@@ -10619,22 +10203,20 @@ brw_bsr(const struct intel_device_info *devinfo,
 }
 
 const unsigned *
-brw_compile_bs(const struct brw_compiler *compiler, void *log_data,
+brw_compile_bs(const struct brw_compiler *compiler,
                void *mem_ctx,
-               const struct brw_bs_prog_key *key,
-               struct brw_bs_prog_data *prog_data,
-               nir_shader *shader,
-               unsigned num_resume_shaders,
-               struct nir_shader **resume_shaders,
-               struct brw_compile_stats *stats,
-               char **error_str)
+               struct brw_compile_bs_params *params)
 {
+   nir_shader *shader = params->nir;
+   struct brw_bs_prog_data *prog_data = params->prog_data;
+   unsigned num_resume_shaders = params->num_resume_shaders;
+   nir_shader **resume_shaders = params->resume_shaders;
    const bool debug_enabled = INTEL_DEBUG(DEBUG_RT);
 
    prog_data->base.stage = shader->info.stage;
    prog_data->max_stack_size = 0;
 
-   fs_generator g(compiler, log_data, mem_ctx, &prog_data->base,
+   fs_generator g(compiler, params->log_data, mem_ctx, &prog_data->base,
                   false, shader->info.stage);
    if (unlikely(debug_enabled)) {
       char *name = ralloc_asprintf(mem_ctx, "%s %s shader %s",
@@ -10646,8 +10228,9 @@ brw_compile_bs(const struct brw_compiler *compiler, void *log_data,
    }
 
    prog_data->simd_size =
-      compile_single_bs(compiler, log_data, mem_ctx, key, prog_data,
-                        shader, &g, stats, NULL, error_str);
+      compile_single_bs(compiler, params->log_data, mem_ctx,
+                        params->key, prog_data,
+                        shader, &g, params->stats, NULL, &params->error_str);
    if (prog_data->simd_size == 0)
       return NULL;
 
@@ -10665,8 +10248,9 @@ brw_compile_bs(const struct brw_compiler *compiler, void *log_data,
       /* TODO: Figure out shader stats etc. for resume shaders */
       int offset = 0;
       uint8_t simd_size =
-         compile_single_bs(compiler, log_data, mem_ctx, key, prog_data,
-                           resume_shaders[i], &g, NULL, &offset, error_str);
+         compile_single_bs(compiler, params->log_data, mem_ctx, params->key,
+                           prog_data, resume_shaders[i], &g, NULL, &offset,
+                           &params->error_str);
       if (simd_size == 0)
          return NULL;
 

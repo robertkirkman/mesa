@@ -437,27 +437,6 @@ anv_update_meminfo(struct anv_physical_device *device, int fd)
 static VkResult
 anv_physical_device_init_heaps(struct anv_physical_device *device, int fd)
 {
-   if (anv_gem_get_context_param(fd, 0, I915_CONTEXT_PARAM_GTT_SIZE,
-                                 &device->gtt_size) == -1) {
-      /* If, for whatever reason, we can't actually get the GTT size from the
-       * kernel (too old?) fall back to the aperture size.
-       */
-      anv_perf_warn(VK_LOG_NO_OBJS(&device->instance->vk),
-                    "Failed to get I915_CONTEXT_PARAM_GTT_SIZE: %m");
-
-      if (device->info.aperture_bytes == 0) {
-         return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                          "failed to get aperture size: %m");
-      }
-      device->gtt_size = device->info.aperture_bytes;
-   }
-
-   /* We only allow 48-bit addresses with softpin because knowing the actual
-    * address is required for the vertex cache flush workaround.
-    */
-   device->supports_48bit_addresses = (device->info.ver >= 8) &&
-                                      device->gtt_size > (4ULL << 30 /* GiB */);
-
    VkResult result = anv_init_meminfo(device, fd);
    if (result != VK_SUCCESS)
       return result;
@@ -889,6 +868,15 @@ anv_physical_device_try_create(struct anv_instance *instance,
       device->max_context_priority = priorities[i];
    }
 
+   device->gtt_size = device->info.gtt_size ? device->info.gtt_size :
+                                              device->info.aperture_bytes;
+
+   /* We only allow 48-bit addresses with softpin because knowing the actual
+    * address is required for the vertex cache flush workaround.
+    */
+   device->supports_48bit_addresses = (device->info.ver >= 8) &&
+                                      device->gtt_size > (4ULL << 30 /* GiB */);
+
    /* Initialize memory regions struct to 0. */
    memset(&device->vram, 0, sizeof(device->vram));
    memset(&device->sys, 0, sizeof(device->sys));
@@ -974,11 +962,9 @@ anv_physical_device_try_create(struct anv_instance *instance,
    }
    device->compiler->shader_debug_log = compiler_debug_log;
    device->compiler->shader_perf_log = compiler_perf_log;
-   device->compiler->supports_pull_constants = false;
    device->compiler->constant_buffer_0_is_relative =
       device->info.ver < 8 || !device->has_context_isolation;
    device->compiler->supports_shader_constants = true;
-   device->compiler->compact_params = false;
    device->compiler->indirect_ubos_use_sampler = device->info.ver < 12;
 
    isl_device_init(&device->isl_dev, &device->info);
@@ -3039,6 +3025,7 @@ VkResult anv_CreateDevice(
    }
 
    device->vk.check_status = anv_device_check_status;
+   device->vk.create_sync_for_memory = anv_create_sync_for_memory;
    vk_device_set_drm_fd(&device->vk, device->fd);
 
    uint32_t num_queues = 0;
@@ -3241,7 +3228,8 @@ VkResult anv_CreateDevice(
       result = anv_state_pool_init(&device->binding_table_pool, device,
                                    "binding table pool",
                                    SURFACE_STATE_POOL_MIN_ADDRESS,
-                                   bt_pool_offset, 4096);
+                                   bt_pool_offset,
+                                   BINDING_TABLE_POOL_BLOCK_SIZE);
       if (result != VK_SUCCESS)
          goto fail_surface_state_pool;
    }
