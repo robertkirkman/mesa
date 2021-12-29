@@ -950,6 +950,9 @@ emit_uav(struct ntd_context *ctx, unsigned binding, unsigned space, unsigned cou
    add_resource(ctx, res_kind == DXIL_RESOURCE_KIND_RAW_BUFFER ? DXIL_RES_UAV_RAW : DXIL_RES_UAV_TYPED, &layout);
    if (res_kind == DXIL_RESOURCE_KIND_RAW_BUFFER)
       ctx->mod.raw_and_structured_buffers = true;
+   if (ctx->mod.shader_kind != DXIL_PIXEL_SHADER &&
+       ctx->mod.shader_kind != DXIL_COMPUTE_SHADER)
+      ctx->mod.feats.uavs_at_every_stage = true;
 
    if (!ctx->opts->vulkan_environment) {
       for (unsigned i = 0; i < count; ++i) {
@@ -1233,6 +1236,8 @@ get_module_flags(struct ntd_context *ctx)
       flags |= (1 << 13);
    if (ctx->mod.feats.use_64uavs)
       flags |= (1 << 15);
+   if (ctx->mod.feats.uavs_at_every_stage)
+      flags |= (1 << 16);
    if (ctx->mod.feats.cs_4x_raw_sb)
       flags |= (1 << 17);
    if (ctx->mod.feats.wave_ops)
@@ -2455,10 +2460,12 @@ emit_load_ssbo(struct ntd_context *ctx, nir_intrinsic_instr *intr)
 {
    const struct dxil_value *int32_undef = get_int32_undef(&ctx->mod);
 
-   nir_variable *var = nir_get_binding_variable(ctx->shader, nir_chase_binding(intr->src[0]));
    enum dxil_resource_class class = DXIL_RESOURCE_CLASS_UAV;
-   if (var && var->data.access & ACCESS_NON_WRITEABLE)
-      class = DXIL_RESOURCE_CLASS_SRV;
+   if (ctx->opts->vulkan_environment) {
+      nir_variable *var = nir_get_binding_variable(ctx->shader, nir_chase_binding(intr->src[0]));
+      if (var && var->data.access & ACCESS_NON_WRITEABLE)
+         class = DXIL_RESOURCE_CLASS_SRV;
+   }
 
    const struct dxil_value *handle = get_ubo_ssbo_handle(ctx, &intr->src[0], class, 0);
    const struct dxil_value *offset =
@@ -4368,13 +4375,15 @@ emit_module(struct ntd_context *ctx, const struct nir_to_dxil_options *opts)
    }
 
    /* Handle read-only SSBOs as SRVs */
-   nir_foreach_variable_with_modes(var, ctx->shader, nir_var_mem_ssbo) {
-      if ((var->data.access & ACCESS_NON_WRITEABLE) != 0) {
-         unsigned count = 1;
-         if (glsl_type_is_array(var->type))
-            count = glsl_get_length(var->type);
-         if (!emit_srv(ctx, var, count))
-            return false;
+   if (ctx->opts->vulkan_environment) {
+      nir_foreach_variable_with_modes(var, ctx->shader, nir_var_mem_ssbo) {
+         if ((var->data.access & ACCESS_NON_WRITEABLE) != 0) {
+            unsigned count = 1;
+            if (glsl_type_is_array(var->type))
+               count = glsl_get_length(var->type);
+            if (!emit_srv(ctx, var, count))
+               return false;
+         }
       }
    }
 
@@ -4415,7 +4424,7 @@ emit_module(struct ntd_context *ctx, const struct nir_to_dxil_options *opts)
          return false;
       if (!emit_global_consts(ctx))
          return false;
-   } else {
+   } else if (ctx->opts->vulkan_environment) {
       /* Handle read/write SSBOs as UAVs */
       nir_foreach_variable_with_modes(var, ctx->shader, nir_var_mem_ssbo) {
          if ((var->data.access & ACCESS_NON_WRITEABLE) == 0) {
@@ -4428,6 +4437,14 @@ emit_module(struct ntd_context *ctx, const struct nir_to_dxil_options *opts)
                return false;
             
          }
+      }
+   } else {
+      for (unsigned i = 0; i < ctx->shader->info.num_ssbos; ++i) {
+         char name[64];
+         snprintf(name, sizeof(name), "__ssbo%d", i);
+         if (!emit_uav(ctx, i, 0, 1, DXIL_COMP_TYPE_INVALID,
+                       DXIL_RESOURCE_KIND_RAW_BUFFER, name))
+            return false;
       }
    }
 

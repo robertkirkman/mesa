@@ -1774,7 +1774,7 @@ radv_GetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice,
       .maxFragmentInputComponents = 128,
       .maxFragmentOutputAttachments = 8,
       .maxFragmentDualSrcAttachments = 1,
-      .maxFragmentCombinedOutputResources = 8,
+      .maxFragmentCombinedOutputResources = max_descriptor_set_size,
       .maxComputeSharedMemorySize = pdevice->rad_info.chip_class >= GFX7 ? 65536 : 32768,
       .maxComputeWorkGroupCount = {65535, 65535, 65535},
       .maxComputeWorkGroupInvocations = 1024,
@@ -4875,11 +4875,15 @@ wait_for_submission_timelines_available(struct radv_deferred_queue_submission *s
       points[syncobj_idx] = submission->wait_values[i];
       ++syncobj_idx;
    }
-   bool success = device->ws->wait_timeline_syncobj(device->ws, syncobj, points, syncobj_idx, true,
-                                                    true, timeout);
+
+   VkResult result = VK_SUCCESS;
+   if (syncobj_idx > 0) {
+      result = device->ws->wait_timeline_syncobj(device->ws, syncobj, points, syncobj_idx, true,
+                                                 true, timeout);
+   }
 
    free(points);
-   return success ? VK_SUCCESS : VK_TIMEOUT;
+   return result;
 }
 
 static int
@@ -5473,11 +5477,6 @@ radv_MapMemory(VkDevice _device, VkDeviceMemory _memory, VkDeviceSize offset, Vk
    RADV_FROM_HANDLE(radv_device, device, _device);
    RADV_FROM_HANDLE(radv_device_memory, mem, _memory);
 
-   if (mem == NULL) {
-      *ppData = NULL;
-      return VK_SUCCESS;
-   }
-
    if (mem->user_ptr)
       *ppData = mem->user_ptr;
    else
@@ -5496,9 +5495,6 @@ radv_UnmapMemory(VkDevice _device, VkDeviceMemory _memory)
 {
    RADV_FROM_HANDLE(radv_device, device, _device);
    RADV_FROM_HANDLE(radv_device_memory, mem, _memory);
-
-   if (mem == NULL)
-      return;
 
    if (mem->user_ptr == NULL)
       device->ws->buffer_unmap(mem->bo);
@@ -5747,8 +5743,11 @@ radv_QueueBindSparse(VkQueue _queue, uint32_t bindInfoCount, const VkBindSparseI
       VkSemaphoreSubmitInfoKHR *signal_semaphore_infos =
          malloc(sizeof(*signal_semaphore_infos) * pBindInfo[i].signalSemaphoreCount);
 
-      if (!wait_semaphore_infos || !signal_semaphore_infos)
+      if (!wait_semaphore_infos || !signal_semaphore_infos) {
+         free(wait_semaphore_infos);
+         free(signal_semaphore_infos);
          return VK_ERROR_OUT_OF_HOST_MEMORY;
+      }
 
       for (uint32_t j = 0; j < pBindInfo[i].waitSemaphoreCount; j++) {
          wait_semaphore_infos[j] = (VkSemaphoreSubmitInfoKHR) {
@@ -6277,11 +6276,11 @@ radv_WaitSemaphores(VkDevice _device, const VkSemaphoreWaitInfo *pWaitInfo, uint
       handles[i] = semaphore->permanent.syncobj;
    }
 
-   bool success =
+   VkResult result =
       device->ws->wait_timeline_syncobj(device->ws, handles, pWaitInfo->pValues,
                                         pWaitInfo->semaphoreCount, wait_all, false, abs_timeout);
    free(handles);
-   return success ? VK_SUCCESS : VK_TIMEOUT;
+   return result;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL

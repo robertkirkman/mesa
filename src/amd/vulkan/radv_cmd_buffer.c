@@ -2473,6 +2473,7 @@ radv_emit_framebuffer_state(struct radv_cmd_buffer *cmd_buffer)
    int i;
    struct radv_framebuffer *framebuffer = cmd_buffer->state.framebuffer;
    const struct radv_subpass *subpass = cmd_buffer->state.subpass;
+   bool disable_constant_encode_ac01 = false;
 
    for (i = 0; i < 8; ++i) {
       if (i >= subpass->color_count ||
@@ -2495,6 +2496,14 @@ radv_emit_framebuffer_state(struct radv_cmd_buffer *cmd_buffer)
                                in_render_loop, cmd_buffer->state.attachments[idx].disable_dcc);
 
       radv_load_color_clear_metadata(cmd_buffer, iview, i);
+
+      if (cmd_buffer->device->physical_device->rad_info.chip_class >= GFX9 &&
+          iview->image->dcc_sign_reinterpret) {
+         /* Disable constant encoding with the clear value of "1" with different DCC signedness
+          * because the hardware will fill "1" instead of the clear value.
+          */
+         disable_constant_encode_ac01 = true;
+      }
    }
 
    if (subpass->depth_stencil_attachment) {
@@ -2572,6 +2581,7 @@ radv_emit_framebuffer_state(struct radv_cmd_buffer *cmd_buffer)
       radeon_set_context_reg(cmd_buffer->cs, R_028424_CB_DCC_CONTROL,
                              S_028424_OVERWRITE_COMBINER_MRT_SHARING_DISABLE(chip_class <= GFX9) |
                                 S_028424_OVERWRITE_COMBINER_WATERMARK(watermark) |
+                                S_028424_DISABLE_CONSTANT_ENCODE_AC01(disable_constant_encode_ac01) |
                                 S_028424_DISABLE_CONSTANT_ENCODE_REG(disable_constant_encode));
    }
 
@@ -4689,7 +4699,6 @@ radv_bind_descriptor_set(struct radv_cmd_buffer *cmd_buffer, VkPipelineBindPoint
    radv_set_descriptor_set(cmd_buffer, bind_point, set, idx);
 
    assert(set);
-   assert(!(set->header.layout->flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR));
 
    if (!cmd_buffer->device->use_global_bo_list) {
       for (unsigned j = 0; j < set->header.buffer_count; ++j)
@@ -4727,7 +4736,7 @@ radv_CmdBindDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBindPoint pi
          radv_bind_descriptor_set(cmd_buffer, pipelineBindPoint, set, set_idx);
       }
 
-      for (unsigned j = 0; j < set->header.layout->dynamic_offset_count; ++j, ++dyn_idx) {
+      for (unsigned j = 0; j < layout->set[set_idx].dynamic_offset_count; ++j, ++dyn_idx) {
          unsigned idx = j + layout->set[i + firstSet].dynamic_offset_start;
          uint32_t *dst = descriptors_state->dynamic_buffers + idx * 4;
          assert(dyn_idx < dynamicOffsetCount);
@@ -4753,7 +4762,7 @@ radv_CmdBindDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBindPoint pi
             }
          }
 
-         cmd_buffer->push_constant_stages |= set->header.layout->dynamic_shader_stages;
+         cmd_buffer->push_constant_stages |= layout->set[set_idx].dynamic_offset_stages;
       }
    }
 }
