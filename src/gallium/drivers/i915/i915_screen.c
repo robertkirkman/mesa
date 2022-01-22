@@ -106,6 +106,7 @@ i915_get_name(struct pipe_screen *screen)
 }
 
 static const nir_shader_compiler_options i915_compiler_options = {
+   .fdot_replicates = true,
    .fuse_ffma32 = true,
    .lower_bitops = true, /* required for !CAP_INTEGERS nir_to_tgsi */
    .lower_extract_byte = true,
@@ -122,6 +123,7 @@ static const nir_shader_compiler_options i915_compiler_options = {
 };
 
 static const struct nir_shader_compiler_options gallivm_nir_options = {
+   .fdot_replicates = true,
    .lower_bitops = true, /* required for !CAP_INTEGERS nir_to_tgsi */
    .lower_scmp = true,
    .lower_flrp32 = true,
@@ -283,7 +285,13 @@ i915_get_shader_param(struct pipe_screen *screen, enum pipe_shader_type shader,
        */
       return 0;
 
+   /* i915 can't do these, and even if gallivm NIR can we call nir_to_tgsi
+    * manually and TGSI can't.
+    */
    case PIPE_SHADER_CAP_INT16:
+   case PIPE_SHADER_CAP_FP16:
+   case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+   case PIPE_SHADER_CAP_FP16_CONST_BUFFERS:
       return 0;
 
    case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
@@ -343,9 +351,6 @@ i915_get_shader_param(struct pipe_screen *screen, enum pipe_shader_type shader,
       case PIPE_SHADER_CAP_SUBROUTINES:
          return 0;
       case PIPE_SHADER_CAP_INT64_ATOMICS:
-      case PIPE_SHADER_CAP_FP16:
-      case PIPE_SHADER_CAP_FP16_DERIVATIVES:
-      case PIPE_SHADER_CAP_FP16_CONST_BUFFERS:
       case PIPE_SHADER_CAP_INT16:
       case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
          return 0;
@@ -434,10 +439,6 @@ i915_get_param(struct pipe_screen *screen, enum pipe_cap cap)
 
    case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
       return 16;
-
-   /* Features we can lie about (boolean caps). */
-   case PIPE_CAP_OCCLUSION_QUERY:
-      return is->debug.lie ? 1 : 0;
 
    /* Texturing. */
    case PIPE_CAP_MAX_TEXTURE_2D_SIZE:

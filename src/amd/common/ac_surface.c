@@ -662,6 +662,7 @@ static int gfx6_compute_level(ADDR_HANDLE addrlib, const struct ac_surf_config *
       if (level == 0) {
          surf->prt_tile_width = AddrSurfInfoOut->pitchAlign;
          surf->prt_tile_height = AddrSurfInfoOut->heightAlign;
+         surf->prt_tile_depth = AddrSurfInfoOut->depthAlign;
       }
       if (surf_level->nblk_x >= surf->prt_tile_width &&
           surf_level->nblk_y >= surf->prt_tile_height) {
@@ -1489,6 +1490,12 @@ static bool gfx10_DCN_requires_independent_64B_blocks(const struct radeon_info *
 void ac_modifier_max_extent(const struct radeon_info *info,
                             uint64_t modifier, uint32_t *width, uint32_t *height)
 {
+   /* DCC is supported with any size. The maximum width per display pipe is 5760, but multiple
+    * display pipes can be used to drive the display.
+    */
+   *width = 16384;
+   *height = 16384;
+
    if (ac_modifier_has_dcc(modifier)) {
       bool independent_64B_blocks = AMD_FMT_MOD_GET(DCC_INDEPENDENT_64B, modifier);
 
@@ -1496,15 +1503,7 @@ void ac_modifier_max_extent(const struct radeon_info *info,
          /* For 4K, DCN requires INDEPENDENT_64B_BLOCKS = 1 and MAX_COMPRESSED_BLOCK_SIZE = 64B. */
          *width = 2560;
          *height = 2560;
-      } else {
-         /* DCC is not supported on surfaces above resolutions af 5760. */
-         *width = 5760;
-         *height = 5760;
       }
-   } else {
-      /* Non-dcc modifiers */
-      *width = 16384;
-      *height = 16384;
    }
 }
 
@@ -1522,10 +1521,6 @@ static bool is_dcc_supported_by_DCN(const struct radeon_info *info,
 
    /* Handle unaligned DCC. */
    if (info->use_display_dcc_unaligned && (rb_aligned || pipe_aligned))
-      return false;
-
-   /* Big resolutions don't support DCC. */
-   if (config->info.width > 5760 || config->info.height > 5760)
       return false;
 
    switch (info->chip_class) {
@@ -1647,13 +1642,9 @@ static int gfx9_compute_miptree(struct ac_addrlib *addrlib, const struct radeon_
    if (in->flags.prt) {
       surf->prt_tile_width = out.blockWidth;
       surf->prt_tile_height = out.blockHeight;
+      surf->prt_tile_depth = out.blockSlices;
 
-      for (surf->first_mip_tail_level = 0; surf->first_mip_tail_level < in->numMipLevels;
-           ++surf->first_mip_tail_level) {
-         if(mip_info[surf->first_mip_tail_level].pitch < out.blockWidth ||
-            mip_info[surf->first_mip_tail_level].height < out.blockHeight)
-            break;
-      }
+      surf->first_mip_tail_level = out.firstMipIdInTail;
 
       for (unsigned i = 0; i < in->numMipLevels; i++) {
          surf->u.gfx9.prt_level_offset[i] = mip_info[i].macroBlockOffset + mip_info[i].mipTailOffset;
@@ -2885,14 +2876,14 @@ uint64_t ac_surface_get_plane_offset(enum chip_class chip_class,
 
 uint64_t ac_surface_get_plane_stride(enum chip_class chip_class,
                                     const struct radeon_surf *surf,
-                                    unsigned plane)
+                                    unsigned plane, unsigned level)
 {
    switch (plane) {
    case 0:
       if (chip_class >= GFX9) {
-         return surf->u.gfx9.surf_pitch * surf->bpe;
+         return (surf->is_linear ? surf->u.gfx9.pitch[level] : surf->u.gfx9.surf_pitch) * surf->bpe;
       } else {
-         return surf->u.legacy.level[0].nblk_x * surf->bpe;
+         return surf->u.legacy.level[level].nblk_x * surf->bpe;
       }
    case 1:
       return 1 + (surf->display_dcc_offset ?

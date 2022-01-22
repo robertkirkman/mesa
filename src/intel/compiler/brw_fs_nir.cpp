@@ -562,17 +562,16 @@ fs_visitor::optimize_frontfacing_ternary(nir_alu_instr *instr,
 
       /* For (gl_FrontFacing ? 1.0 : -1.0), emit:
        *
-       *    or(8)  tmp.1<2>W  g0.0<0,1,0>W  0x00003f80W
+       *    or(8)  tmp.1<2>W  g1.1<0,1,0>W  0x00003f80W
        *    and(8) dst<1>D    tmp<8,8,1>D   0xbf800000D
        *
-       * and negate the result for (gl_FrontFacing ? -1.0 : 1.0).
+       * and negate g1.1<0,1,0>W for (gl_FrontFacing ? -1.0 : 1.0).
        */
+      if (value1 == -1.0f)
+         g1.negate = true;
+
       bld.OR(subscript(tmp, BRW_REGISTER_TYPE_W, 1),
              g1, brw_imm_uw(0x3f80));
-
-      if (value1 == -1.0f)
-         bld.MOV(tmp, negate(tmp));
-
    } else if (devinfo->ver >= 6) {
       /* Bit 15 of g0.0 is 0 if the polygon is front facing. */
       fs_reg g0 = fs_reg(retype(brw_vec1_grf(0, 0), BRW_REGISTER_TYPE_W));
@@ -6070,7 +6069,7 @@ fs_visitor::nir_emit_texture(const fs_builder &bld, nir_tex_instr *instr)
           * Compiler should send U,V,R parameters even if V,R are 0.
           */
          if (instr->sampler_dim == GLSL_SAMPLER_DIM_CUBE && devinfo->verx10 == 125)
-            assert(instr->coord_components == 3u + instr->is_array);
+            assert(instr->coord_components >= 3u);
          break;
       case nir_tex_src_ddx:
          srcs[TEX_LOGICAL_SRC_LOD] = retype(src, BRW_REGISTER_TYPE_F);

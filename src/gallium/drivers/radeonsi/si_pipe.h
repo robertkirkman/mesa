@@ -237,6 +237,7 @@ enum
    DBG_NO_TILING,
    DBG_NO_DISPLAY_TILING,
    DBG_NO_DISPLAY_DCC,
+   DBG_NO_EXPORTED_DCC,
    DBG_NO_DCC,
    DBG_NO_DCC_CLEAR,
    DBG_NO_DCC_STORE,
@@ -1566,6 +1567,8 @@ void si_print_texture_info(struct si_screen *sscreen, struct si_texture *tex,
                            struct u_log_context *log);
 struct pipe_resource *si_texture_create(struct pipe_screen *screen,
                                         const struct pipe_resource *templ);
+bool si_texture_commit(struct si_context *ctx, struct si_resource *res, unsigned level,
+                       struct pipe_box *box, bool commit);
 bool vi_dcc_formats_compatible(struct si_screen *sscreen, enum pipe_format format1,
                                enum pipe_format format2);
 bool vi_dcc_formats_are_incompatible(struct pipe_resource *tex, unsigned level,

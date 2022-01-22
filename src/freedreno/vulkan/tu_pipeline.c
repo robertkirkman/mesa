@@ -617,6 +617,30 @@ tu6_emit_xs(struct tu_cs *cs,
          tu_cs_emit_qw(cs, iova + start);
       }
    }
+
+   /* emit FS driver param */
+   if (stage == MESA_SHADER_FRAGMENT && const_state->num_driver_params > 0) {
+      uint32_t base = const_state->offsets.driver_param;
+      int32_t size = DIV_ROUND_UP(const_state->num_driver_params, 4);
+      size = MAX2(MIN2(size + base, xs->constlen) - base, 0);
+
+      if (size > 0) {
+         tu_cs_emit_pkt7(cs, tu6_stage2opcode(stage), 3 + size * 4);
+         tu_cs_emit(cs, CP_LOAD_STATE6_0_DST_OFF(base) |
+                    CP_LOAD_STATE6_0_STATE_TYPE(ST6_CONSTANTS) |
+                    CP_LOAD_STATE6_0_STATE_SRC(SS6_DIRECT) |
+                    CP_LOAD_STATE6_0_STATE_BLOCK(tu6_stage2shadersb(stage)) |
+                    CP_LOAD_STATE6_0_NUM_UNIT(size));
+         tu_cs_emit(cs, CP_LOAD_STATE6_1_EXT_SRC_ADDR(0));
+         tu_cs_emit(cs, CP_LOAD_STATE6_2_EXT_SRC_ADDR_HI(0));
+
+         assert(size == 1);
+         tu_cs_emit(cs, xs->info.double_threadsize ? 128 : 64);
+         tu_cs_emit(cs, 0);
+         tu_cs_emit(cs, 0);
+         tu_cs_emit(cs, 0);
+      }
+   }
 }
 
 static void
@@ -877,13 +901,13 @@ tu6_emit_link_map(struct tu_cs *cs,
 }
 
 static uint16_t
-gl_primitive_to_tess(uint16_t primitive) {
+primitive_to_tess(enum shader_prim primitive) {
    switch (primitive) {
-   case GL_POINTS:
+   case SHADER_PRIM_POINTS:
       return TESS_POINTS;
-   case GL_LINE_STRIP:
+   case SHADER_PRIM_LINE_STRIP:
       return TESS_LINES;
-   case GL_TRIANGLE_STRIP:
+   case SHADER_PRIM_TRIANGLE_STRIP:
       return TESS_CW_TRIS;
    default:
       unreachable("");
@@ -1178,7 +1202,7 @@ tu6_emit_vpc(struct tu_cs *cs,
       uint32_t output;
       if (tess_info->tess.point_mode)
          output = TESS_POINTS;
-      else if (tess_info->tess.primitive_mode == GL_ISOLINES)
+      else if (tess_info->tess._primitive_mode == TESS_PRIMITIVE_ISOLINES)
          output = TESS_LINES;
       else if (tess_info->tess.ccw)
          output = TESS_CCW_TRIS;
@@ -1220,7 +1244,7 @@ tu6_emit_vpc(struct tu_cs *cs,
             tu6_emit_link_map(cs, vs, gs, SB6_GS_SHADER);
          }
          vertices_out = gs->shader->nir->info.gs.vertices_out - 1;
-         output = gl_primitive_to_tess(gs->shader->nir->info.gs.output_primitive);
+         output = primitive_to_tess(gs->shader->nir->info.gs.output_primitive);
          invocations = gs->shader->nir->info.gs.invocations - 1;
          /* Size of per-primitive alloction in ldlw memory in vec4s. */
          vec4_size = gs->shader->nir->info.gs.vertices_in *
@@ -2285,15 +2309,15 @@ tu_pipeline_shader_key_init(struct ir3_shader_key *key,
 static uint32_t
 tu6_get_tessmode(struct tu_shader* shader)
 {
-   uint32_t primitive_mode = shader->ir3_shader->nir->info.tess.primitive_mode;
+   enum tess_primitive_mode primitive_mode = shader->ir3_shader->nir->info.tess._primitive_mode;
    switch (primitive_mode) {
-   case GL_ISOLINES:
+   case TESS_PRIMITIVE_ISOLINES:
       return IR3_TESS_ISOLINES;
-   case GL_TRIANGLES:
+   case TESS_PRIMITIVE_TRIANGLES:
       return IR3_TESS_TRIANGLES;
-   case GL_QUADS:
+   case TESS_PRIMITIVE_QUADS:
       return IR3_TESS_QUADS;
-   case GL_NONE:
+   case TESS_PRIMITIVE_UNSPECIFIED:
       return IR3_TESS_NONE;
    default:
       unreachable("bad tessmode");
@@ -2402,7 +2426,7 @@ tu_pipeline_builder_compile_shaders(struct tu_pipeline_builder *builder,
          continue;
 
       struct tu_shader *shader =
-         tu_shader_create(builder->device, nir[stage],
+         tu_shader_create(builder->device, nir[stage], stage_infos[stage],
                           builder->multiview_mask, builder->layout,
                           builder->alloc);
       if (!shader)
@@ -3343,7 +3367,7 @@ tu_compute_pipeline_create(VkDevice device,
       nir_shader_as_str(nir, pipeline->executables_mem_ctx) : NULL;
 
    struct tu_shader *shader =
-      tu_shader_create(dev, nir, 0, layout, pAllocator);
+      tu_shader_create(dev, nir, stage_info, 0, layout, pAllocator);
    if (!shader) {
       result = VK_ERROR_OUT_OF_HOST_MEMORY;
       goto fail;
@@ -3582,6 +3606,14 @@ tu_GetPipelineExecutableStatisticsKHR(
                 "A better metric to estimate the impact of SS syncs.");
       stat->format = VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR;
       stat->value.u64 = exe->stats.sstall;
+   }
+
+   vk_outarray_append(&out, stat) {
+      WRITE_STR(stat->name, "Estimated cycles stalled on SY");
+      WRITE_STR(stat->description,
+                "A better metric to estimate the impact of SY syncs.");
+      stat->format = VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR;
+      stat->value.u64 = exe->stats.systall;
    }
 
    for (int i = 0; i < ARRAY_SIZE(exe->stats.instrs_per_cat); i++) {

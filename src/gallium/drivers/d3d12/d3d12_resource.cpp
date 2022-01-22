@@ -221,6 +221,19 @@ init_texture(struct d3d12_screen *screen,
        */
    }
 
+   if (screen->support_shader_images && templ->nr_samples <= 1) {
+      /* Ideally, we'd key off of PIPE_BIND_SHADER_IMAGE for this, but it doesn't
+       * seem to be set properly. So, all UAV-capable resources need the UAV flag.
+       */
+      D3D12_FEATURE_DATA_FORMAT_SUPPORT support = { desc.Format };
+      if (SUCCEEDED(screen->dev->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))) &&
+         (support.Support2 & (D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD | D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE)) ==
+         (D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD | D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE)) {
+         desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+         desc.Format = d3d12_get_typeless_format(templ->format);
+      }
+   }
+
    desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
    if (templ->bind & (PIPE_BIND_SCANOUT |
                       PIPE_BIND_SHARED | PIPE_BIND_LINEAR))
@@ -1295,8 +1308,8 @@ d3d12_transfer_map(struct pipe_context *pctx,
          range.Begin = aligned_x;
       }
 
-      pipe_resource_usage staging_usage = (usage & (PIPE_MAP_READ | PIPE_MAP_READ_WRITE)) ?
-         PIPE_USAGE_STAGING : PIPE_USAGE_STREAM;
+      pipe_resource_usage staging_usage = (usage & (PIPE_MAP_DISCARD_RANGE | PIPE_MAP_DISCARD_WHOLE_RESOURCE)) ?
+         PIPE_USAGE_STREAM : PIPE_USAGE_STAGING;
 
       trans->staging_res = pipe_buffer_create(pctx->screen, 0,
                                               staging_usage,
@@ -1306,7 +1319,7 @@ d3d12_transfer_map(struct pipe_context *pctx,
 
       struct d3d12_resource *staging_res = d3d12_resource(trans->staging_res);
 
-      if (usage & PIPE_MAP_READ) {
+      if ((usage & (PIPE_MAP_DISCARD_RANGE | PIPE_MAP_DISCARD_WHOLE_RESOURCE | TC_TRANSFER_MAP_THREADED_UNSYNC)) == 0) {
          bool ret = true;
          if (pres->target == PIPE_BUFFER) {
             uint64_t src_offset = box->x;

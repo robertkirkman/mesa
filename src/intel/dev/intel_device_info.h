@@ -41,7 +41,7 @@ struct drm_i915_query_topology_info;
 #define INTEL_DEVICE_MAX_SLICES           8
 #define INTEL_DEVICE_MAX_SUBSLICES        (8)  /* Maximum on gfx11 */
 #define INTEL_DEVICE_MAX_EUS_PER_SUBSLICE (16) /* Maximum on gfx12 */
-#define INTEL_DEVICE_MAX_PIXEL_PIPES      (3)  /* Maximum on gfx12 */
+#define INTEL_DEVICE_MAX_PIXEL_PIPES      (16) /* Maximum on DG2 */
 
 #define INTEL_PLATFORM_GROUP_START(group, new_enum) \
    new_enum, INTEL_PLATFORM_ ## group ## _START = new_enum
@@ -93,8 +93,22 @@ struct intel_device_info
    int ver;
    int verx10;
    int display_ver;
+
+   /**
+    * This revision is from ioctl (I915_PARAM_REVISION) unlike
+    * pci_revision_id from drm device. Its value is not always
+    * same as the pci_revision_id.
+    */
    int revision;
    int gt;
+
+   /* PCI info */
+   uint16_t pci_domain;
+   uint8_t pci_bus;
+   uint8_t pci_dev;
+   uint8_t pci_func;
+   uint16_t pci_device_id;
+   uint8_t pci_revision_id;
 
    enum intel_platform platform;
 
@@ -171,7 +185,7 @@ struct intel_device_info
    /**
     * Number of subslices for each slice (used to be uniform until CNL).
     */
-   unsigned num_subslices[INTEL_DEVICE_MAX_SUBSLICES];
+   unsigned num_subslices[INTEL_DEVICE_MAX_SLICES];
 
    /**
     * Maximum number of subslices per slice present on this device (can be
@@ -186,17 +200,9 @@ struct intel_device_info
    unsigned ppipe_subslices[INTEL_DEVICE_MAX_PIXEL_PIPES];
 
    /**
-    * Upper bound of number of EU per subslice (some SKUs might have just 1 EU
-    * fused across all subslices, like 47 EUs, in which case this number won't
-    * be acurate for one subslice).
+    * Maximum number of EUs per subslice (some EUs can be fused off).
     */
-   unsigned num_eu_per_subslice;
-
-   /**
-    * Maximum number of EUs per subslice (can be more than num_eu_per_subslice
-    * if some EUs are fused off).
-    */
-   unsigned max_eu_per_subslice;
+   unsigned max_eus_per_subslice;
 
    /**
     * Number of threads per eu, varies between 4 and 8 between generations.
@@ -261,6 +267,8 @@ struct intel_device_info
     * - For max_wm_threads, the total should be PSD threads * #PSDs.
     */
    unsigned max_wm_threads;
+
+   unsigned max_threads_per_psd;
 
    /**
     * Maximum Compute Shader threads.
@@ -355,19 +363,19 @@ struct intel_device_info
    int simulator_id;
 
    /**
-    * holds the pci device id
-    */
-   uint32_t chipset_id;
-
-   /**
     * holds the name of the device
     */
    char name[INTEL_DEVICE_MAX_NAME_SIZE];
 
    /**
-    * no_hw is true when the chipset_id pci device id has been overridden
+    * no_hw is true when the pci_device_id has been overridden
     */
    bool no_hw;
+
+   /**
+    * apply_hwconfig is true when the platform should apply hwconfig values
+    */
+   bool apply_hwconfig;
    /** @} */
 };
 
@@ -384,6 +392,14 @@ struct intel_device_info
     (devinfo)->platform == INTEL_PLATFORM_GLK)
 
 #endif
+
+static inline bool
+intel_device_info_slice_available(const struct intel_device_info *devinfo,
+                                  int slice)
+{
+   assert(slice < INTEL_DEVICE_MAX_SLICES);
+   return (devinfo->slice_masks & (1U << slice)) != 0;
+}
 
 static inline bool
 intel_device_info_subslice_available(const struct intel_device_info *devinfo,
@@ -439,7 +455,12 @@ static inline uint64_t
 intel_device_info_timebase_scale(const struct intel_device_info *devinfo,
                                  uint64_t gpu_timestamp)
 {
-   return (1000000000ull * gpu_timestamp) / devinfo->timestamp_frequency;
+   /* Try to avoid going over the 64bits when doing the scaling */
+   uint64_t upper_ts = gpu_timestamp >> 32;
+   uint64_t lower_ts = gpu_timestamp & 0xffffffff;
+   uint64_t upper_scaled_ts = upper_ts * 1000000000ull / devinfo->timestamp_frequency;
+   uint64_t lower_scaled_ts = lower_ts * 1000000000ull / devinfo->timestamp_frequency;
+   return (upper_scaled_ts << 32) + lower_scaled_ts;
 }
 
 bool intel_get_device_info_from_fd(int fh, struct intel_device_info *devinfo);

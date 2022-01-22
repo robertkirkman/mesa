@@ -310,6 +310,13 @@ iris_blorp_exec(struct blorp_batch *blorp_batch,
                               params->y1 - params->y0, scale);
    }
 
+#if GFX_VERx10 == 125
+   iris_use_pinned_bo(batch, iris_resource_bo(ice->state.pixel_hashing_tables),
+                      false, IRIS_DOMAIN_NONE);
+#else
+   assert(!ice->state.pixel_hashing_tables);
+#endif
+
 #if GFX_VER >= 12
    genX(invalidate_aux_map_state)(batch);
 #endif
@@ -396,10 +403,28 @@ blorp_measure_start(struct blorp_batch *blorp_batch,
    struct iris_context *ice = blorp_batch->blorp->driver_ctx;
    struct iris_batch *batch = blorp_batch->driver_batch;
 
+   trace_intel_begin_blorp(&batch->trace, batch);
+
    if (batch->measure == NULL)
       return;
 
    iris_measure_snapshot(ice, batch, params->snapshot_type, NULL, NULL, NULL);
+}
+
+
+static void
+blorp_measure_end(struct blorp_batch *blorp_batch,
+                    const struct blorp_params *params)
+{
+   struct iris_batch *batch = blorp_batch->driver_batch;
+
+   trace_intel_end_blorp(&batch->trace, batch,
+                         params->x1 - params->x0,
+                         params->y1 - params->y0,
+                         params->hiz_op,
+                         params->fast_clear_op,
+                         params->shader_type,
+                         params->shader_pipeline);
 }
 
 void

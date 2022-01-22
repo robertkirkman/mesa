@@ -63,6 +63,7 @@
 
 static const driOptionDescription anv_dri_options[] = {
    DRI_CONF_SECTION_PERFORMANCE
+      DRI_CONF_ADAPTIVE_SYNC(true)
       DRI_CONF_VK_X11_OVERRIDE_MIN_IMAGE_COUNT(0)
       DRI_CONF_VK_X11_STRICT_IMAGE_COUNT(false)
       DRI_CONF_VK_XWAYLAND_WAIT_READY(true)
@@ -352,7 +353,7 @@ anv_gather_meminfo(struct anv_physical_device *device, int fd, bool update)
 	                sizeof(struct drm_i915_memory_region_info)];
 
    struct drm_i915_query_memory_regions *mem_regions =
-      intel_i915_query_alloc(fd, DRM_I915_QUERY_MEMORY_REGIONS);
+      intel_i915_query_alloc(fd, DRM_I915_QUERY_MEMORY_REGIONS, NULL);
    if (mem_regions == NULL) {
       if (device->info.has_local_mem) {
          return vk_errorf(device, VK_ERROR_INCOMPATIBLE_DRIVER,
@@ -561,8 +562,8 @@ anv_physical_device_init_uuids(struct anv_physical_device *device)
     */
    _mesa_sha1_init(&sha1_ctx);
    _mesa_sha1_update(&sha1_ctx, build_id_data(note), build_id_len);
-   _mesa_sha1_update(&sha1_ctx, &device->info.chipset_id,
-                     sizeof(device->info.chipset_id));
+   _mesa_sha1_update(&sha1_ctx, &device->info.pci_device_id,
+                     sizeof(device->info.pci_device_id));
    _mesa_sha1_update(&sha1_ctx, &device->always_use_bindless,
                      sizeof(device->always_use_bindless));
    _mesa_sha1_update(&sha1_ctx, &device->has_a64_buffer_access,
@@ -575,7 +576,7 @@ anv_physical_device_init_uuids(struct anv_physical_device *device)
    memcpy(device->pipeline_cache_uuid, sha1, VK_UUID_SIZE);
 
    intel_uuid_compute_driver_id(device->driver_uuid, &device->info, VK_UUID_SIZE);
-   intel_uuid_compute_device_id(device->device_uuid, &device->isl_dev, VK_UUID_SIZE);
+   intel_uuid_compute_device_id(device->device_uuid, &device->info, VK_UUID_SIZE);
 
    return VK_SUCCESS;
 }
@@ -586,7 +587,7 @@ anv_physical_device_init_disk_cache(struct anv_physical_device *device)
 #ifdef ENABLE_SHADER_CACHE
    char renderer[10];
    ASSERTED int len = snprintf(renderer, sizeof(renderer), "anv_%04x",
-                               device->info.chipset_id);
+                               device->info.pci_device_id);
    assert(len == sizeof(renderer) - 2);
 
    char timestamp[41];
@@ -800,11 +801,6 @@ anv_physical_device_try_create(struct anv_instance *instance,
 
    device->info = devinfo;
    device->is_alpha = is_alpha;
-
-   device->pci_info.domain = drm_device->businfo.pci->domain;
-   device->pci_info.bus = drm_device->businfo.pci->bus;
-   device->pci_info.device = drm_device->businfo.pci->dev;
-   device->pci_info.function = drm_device->businfo.pci->func;
 
    device->cmd_parser_version = -1;
    if (device->info.ver == 7) {
@@ -1129,6 +1125,8 @@ VkResult anv_CreateInstance(
    VG(VALGRIND_CREATE_MEMPOOL(instance, 0, false));
 
    anv_init_dri_options(instance);
+
+   intel_driver_ds_init();
 
    *pInstance = anv_instance_to_handle(instance);
 
@@ -1879,7 +1877,7 @@ void anv_GetPhysicalDeviceProperties(
       .maxFragmentInputComponents               = 116, /* 128 components - (PSIZ, CLIP_DIST0, CLIP_DIST1) */
       .maxFragmentOutputAttachments             = 8,
       .maxFragmentDualSrcAttachments            = 1,
-      .maxFragmentCombinedOutputResources       = 8,
+      .maxFragmentCombinedOutputResources       = MAX_RTS + max_ssbos + max_images,
       .maxComputeSharedMemorySize               = 64 * 1024,
       .maxComputeWorkGroupCount                 = { 65535, 65535, 65535 },
       .maxComputeWorkGroupInvocations           = max_workgroup_size,
@@ -1953,7 +1951,7 @@ void anv_GetPhysicalDeviceProperties(
       .apiVersion = ANV_API_VERSION,
       .driverVersion = vk_get_driver_version(),
       .vendorID = 0x8086,
-      .deviceID = pdevice->info.chipset_id,
+      .deviceID = pdevice->info.pci_device_id,
       .deviceType = pdevice->info.has_local_mem ?
                     VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU :
                     VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
@@ -2319,10 +2317,10 @@ void anv_GetPhysicalDeviceProperties2(
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PCI_BUS_INFO_PROPERTIES_EXT: {
          VkPhysicalDevicePCIBusInfoPropertiesEXT *properties =
             (VkPhysicalDevicePCIBusInfoPropertiesEXT *)ext;
-         properties->pciDomain = pdevice->pci_info.domain;
-         properties->pciBus = pdevice->pci_info.bus;
-         properties->pciDevice = pdevice->pci_info.device;
-         properties->pciFunction = pdevice->pci_info.function;
+         properties->pciDomain = pdevice->info.pci_domain;
+         properties->pciBus = pdevice->info.pci_bus;
+         properties->pciDevice = pdevice->info.pci_dev;
+         properties->pciFunction = pdevice->info.pci_func;
          break;
       }
 
@@ -3301,6 +3299,8 @@ VkResult anv_CreateDevice(
 
    anv_device_perf_init(device);
 
+   anv_device_utrace_init(device);
+
    *pDevice = anv_device_to_handle(device);
 
    return VK_SUCCESS;
@@ -3367,6 +3367,8 @@ void anv_DestroyDevice(
 
    if (!device)
       return;
+
+   anv_device_utrace_finish(device);
 
    anv_device_finish_blorp(device);
 
@@ -3652,13 +3654,6 @@ VkResult anv_AllocateMemory(
        (host_ptr_info && host_ptr_info->handleType)) {
       /* Anything imported or exported is EXTERNAL */
       alloc_flags |= ANV_BO_ALLOC_EXTERNAL;
-
-      /* We can't have implicit CCS on external memory with an AUX-table.
-       * Doing so would require us to sync the aux tables across processes
-       * which is impractical.
-       */
-      if (device->info.has_aux_map)
-         alloc_flags &= ~ANV_BO_ALLOC_IMPLICIT_CCS;
    }
 
    /* Check if we need to support Android HW buffer export. If so,
@@ -4651,8 +4646,14 @@ vk_icdNegotiateLoaderICDInterfaceVersion(uint32_t* pSupportedVersion)
     *
     *    - Loader interface v4 differs from v3 in:
     *        - The ICD must implement vk_icdGetPhysicalDeviceProcAddr().
+    * 
+    *    - Loader interface v5 differs from v4 in:
+    *        - The ICD must support Vulkan API version 1.1 and must not return 
+    *          VK_ERROR_INCOMPATIBLE_DRIVER from vkCreateInstance() unless a
+    *          Vulkan Loader with interface v4 or smaller is being used and the
+    *          application provides an API version that is greater than 1.0.
     */
-   *pSupportedVersion = MIN2(*pSupportedVersion, 4u);
+   *pSupportedVersion = MIN2(*pSupportedVersion, 5u);
    return VK_SUCCESS;
 }
 

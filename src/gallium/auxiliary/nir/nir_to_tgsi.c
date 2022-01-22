@@ -41,13 +41,11 @@ struct ntt_compile {
    struct ureg_program *ureg;
 
    bool needs_texcoord_semantic;
-   bool any_reg_as_address;
    bool native_integers;
    bool has_txf_lz;
 
-   int next_addr_reg;
-   bool addr_declared[2];
-   struct ureg_dst addr_reg[2];
+   bool addr_declared[3];
+   struct ureg_dst addr_reg[3];
 
    /* if condition set up at the end of a block, for ntt_emit_if(). */
    struct ureg_src if_cond;
@@ -234,7 +232,7 @@ ntt_output_decl(struct ntt_compile *c, nir_intrinsic_instr *instr, uint32_t *fra
       /* This bit is lost in the i/o semantics, but it's unused in in-tree
        * drivers.
        */
-      bool invariant = false;
+      bool invariant = semantics.invariant;
 
       out = ureg_DECL_output_layout(c->ureg,
                                     semantic_name, semantic_index,
@@ -631,49 +629,23 @@ ntt_get_load_const_src(struct ntt_compile *c, nir_load_const_instr *instr)
 }
 
 static struct ureg_src
-ntt_reladdr(struct ntt_compile *c, struct ureg_src addr)
+ntt_reladdr(struct ntt_compile *c, struct ureg_src addr, int addr_index)
 {
-   if (c->any_reg_as_address) {
-      /* Make sure we're getting the refcounting right even on any_reg
-       * drivers.
-       */
-      c->next_addr_reg++;
+   assert(addr_index < ARRAY_SIZE(c->addr_reg));
 
-      return ureg_scalar(addr, 0);
-   }
-
-   assert(c->next_addr_reg < ARRAY_SIZE(c->addr_reg));
-
-   if (!c->addr_declared[c->next_addr_reg]) {
-      c->addr_reg[c->next_addr_reg] = ureg_writemask(ureg_DECL_address(c->ureg),
-                                                     TGSI_WRITEMASK_X);
-      c->addr_declared[c->next_addr_reg] = true;
+   for (int i = 0; i <= addr_index; i++) {
+      if (!c->addr_declared[i]) {
+         c->addr_reg[i] = ureg_writemask(ureg_DECL_address(c->ureg),
+                                             TGSI_WRITEMASK_X);
+         c->addr_declared[i] = true;
+      }
    }
 
    if (c->native_integers)
-      ureg_UARL(c->ureg, c->addr_reg[c->next_addr_reg], addr);
+      ureg_UARL(c->ureg, c->addr_reg[addr_index], addr);
    else
-      ureg_ARL(c->ureg, c->addr_reg[c->next_addr_reg], addr);
-   return ureg_scalar(ureg_src(c->addr_reg[c->next_addr_reg++]), 0);
-}
-
-static void
-ntt_put_reladdr(struct ntt_compile *c)
-{
-   c->next_addr_reg--;
-   assert(c->next_addr_reg >= 0);
-}
-
-static void
-ntt_reladdr_dst_put(struct ntt_compile *c, struct ureg_dst dst)
-{
-   if (c->any_reg_as_address)
-      return;
-
-   if (dst.Indirect)
-      ntt_put_reladdr(c);
-   if (dst.DimIndirect)
-      ntt_put_reladdr(c);
+      ureg_ARL(c->ureg, c->addr_reg[addr_index], addr);
+   return ureg_scalar(ureg_src(c->addr_reg[addr_index]), 0);
 }
 
 static struct ureg_src
@@ -692,7 +664,7 @@ ntt_get_src(struct ntt_compile *c, nir_src src)
       if (src.reg.indirect) {
          struct ureg_src offset = ntt_get_src(c, *src.reg.indirect);
          return ureg_src_indirect(ureg_src(reg_temp),
-                                  ntt_reladdr(c, offset));
+                                  ntt_reladdr(c, offset, 0));
       } else {
          return ureg_src(reg_temp);
       }
@@ -784,7 +756,7 @@ ntt_get_dest(struct ntt_compile *c, nir_dest *dest)
 
       if (dest->reg.indirect) {
          struct ureg_src offset = ntt_get_src(c, *dest->reg.indirect);
-         dst = ureg_dst_indirect(dst, ntt_reladdr(c, offset));
+         dst = ureg_dst_indirect(dst, ntt_reladdr(c, offset, 0));
       }
    }
 
@@ -888,6 +860,9 @@ ntt_emit_alu(struct ntt_compile *c, nir_alu_instr *instr)
       [nir_op_fdot2] = { TGSI_OPCODE_DP2 },
       [nir_op_fdot3] = { TGSI_OPCODE_DP3 },
       [nir_op_fdot4] = { TGSI_OPCODE_DP4 },
+      [nir_op_fdot2_replicated] = { TGSI_OPCODE_DP2 },
+      [nir_op_fdot3_replicated] = { TGSI_OPCODE_DP3 },
+      [nir_op_fdot4_replicated] = { TGSI_OPCODE_DP4 },
       [nir_op_ffloor] = { TGSI_OPCODE_FLR, TGSI_OPCODE_DFLR },
       [nir_op_ffract] = { TGSI_OPCODE_FRC, TGSI_OPCODE_DFRAC },
       [nir_op_fceil] = { TGSI_OPCODE_CEIL, TGSI_OPCODE_DCEIL },
@@ -1276,7 +1251,7 @@ ntt_ureg_src_indirect(struct ntt_compile *c, struct ureg_src usrc,
       usrc.Index += ntt_src_as_uint(c, src);
       return usrc;
    } else {
-      return ureg_src_indirect(usrc, ntt_reladdr(c, ntt_get_src(c, src)));
+      return ureg_src_indirect(usrc, ntt_reladdr(c, ntt_get_src(c, src), 0));
    }
 }
 
@@ -1288,7 +1263,7 @@ ntt_ureg_dst_indirect(struct ntt_compile *c, struct ureg_dst dst,
       dst.Index += ntt_src_as_uint(c, src);
       return dst;
    } else {
-      return ureg_dst_indirect(dst, ntt_reladdr(c, ntt_get_src(c, src)));
+      return ureg_dst_indirect(dst, ntt_reladdr(c, ntt_get_src(c, src), 0));
    }
 }
 
@@ -1302,7 +1277,7 @@ ntt_ureg_src_dimension_indirect(struct ntt_compile *c, struct ureg_src usrc,
    else
    {
       return ureg_src_dimension_indirect(usrc,
-                                         ntt_reladdr(c, ntt_get_src(c, src)),
+                                         ntt_reladdr(c, ntt_get_src(c, src), 1),
                                          0);
    }
 }
@@ -1315,7 +1290,7 @@ ntt_ureg_dst_dimension_indirect(struct ntt_compile *c, struct ureg_dst udst,
       return ureg_dst_dimension(udst, ntt_src_as_uint(c, src));
    } else {
       return ureg_dst_dimension_indirect(udst,
-                                         ntt_reladdr(c, ntt_get_src(c, src)),
+                                         ntt_reladdr(c, ntt_get_src(c, src), 1),
                                          0);
    }
 }
@@ -1357,7 +1332,7 @@ ntt_emit_load_ubo(struct ntt_compile *c, nir_intrinsic_instr *instr)
       addr_temp = ureg_DECL_temporary(c->ureg);
       ureg_UADD(c->ureg, addr_temp, ntt_get_src(c, instr->src[0]), ureg_imm1i(c->ureg, -c->first_ubo));
       src = ureg_src_dimension_indirect(src,
-                                         ntt_reladdr(c, ureg_src(addr_temp)),
+                                         ntt_reladdr(c, ureg_src(addr_temp), 1),
                                          c->first_ubo);
    }
 
@@ -1365,11 +1340,12 @@ ntt_emit_load_ubo(struct ntt_compile *c, nir_intrinsic_instr *instr)
       /* !PIPE_CAP_LOAD_CONSTBUF: Just emit it as a vec4 reference to the const
        * file.
        */
+      src.Index = nir_intrinsic_base(instr);
 
       if (nir_src_is_const(instr->src[1])) {
          src.Index += ntt_src_as_uint(c, instr->src[1]);
       } else {
-         src = ureg_src_indirect(src, ntt_reladdr(c, ntt_get_src(c, instr->src[1])));
+         src = ureg_src_indirect(src, ntt_reladdr(c, ntt_get_src(c, instr->src[1]), 0));
       }
 
       int start_component = nir_intrinsic_component(instr);
@@ -1451,7 +1427,7 @@ ntt_emit_mem(struct ntt_compile *c, nir_intrinsic_instr *instr,
       } else {
          addr_temp = ureg_DECL_temporary(c->ureg);
          ureg_USHR(c->ureg, addr_temp, ntt_get_src(c, instr->src[0]), ureg_imm1i(c->ureg, 2));
-         memory = ureg_src_indirect(memory, ntt_reladdr(c, ureg_src(addr_temp)));
+         memory = ureg_src_indirect(memory, ntt_reladdr(c, ureg_src(addr_temp), 2));
       }
       memory = ureg_src_dimension(memory, nir_intrinsic_base(instr));
       nir_src = 0;
@@ -1820,7 +1796,6 @@ ntt_emit_store_output(struct ntt_compile *c, nir_intrinsic_instr *instr)
    src = ureg_swizzle(src, swizzle[0], swizzle[1], swizzle[2], swizzle[3]);
 
    ureg_MOV(c->ureg, out, src);
-   ntt_reladdr_dst_put(c, out);
 }
 
 static void
@@ -1843,7 +1818,6 @@ ntt_emit_load_output(struct ntt_compile *c, nir_intrinsic_instr *instr)
    }
 
    ureg_MOV(c->ureg, ntt_get_dest(c, &instr->dest), ureg_src(out));
-   ntt_reladdr_dst_put(c, out);
 }
 
 static void
@@ -2120,13 +2094,13 @@ ntt_emit_texture(struct ntt_compile *c, nir_tex_instr *instr)
    int sampler_src = nir_tex_instr_src_index(instr, nir_tex_src_sampler_offset);
    if (sampler_src >= 0) {
       struct ureg_src reladdr = ntt_get_src(c, instr->src[sampler_src].src);
-      sampler = ureg_src_indirect(sampler, ntt_reladdr(c, reladdr));
+      sampler = ureg_src_indirect(sampler, ntt_reladdr(c, reladdr, 2));
    }
 
    switch (instr->op) {
    case nir_texop_tex:
       if (nir_tex_instr_src_size(instr, nir_tex_instr_src_index(instr, nir_tex_src_backend1)) >
-         instr->coord_components + instr->is_shadow)
+         MAX2(instr->coord_components, 2) + instr->is_shadow)
          tex_opcode = TGSI_OPCODE_TXP;
       else
          tex_opcode = TGSI_OPCODE_TEX;
@@ -2294,9 +2268,6 @@ ntt_emit_ssa_undef(struct ntt_compile *c, nir_ssa_undef_instr *instr)
 static void
 ntt_emit_instr(struct ntt_compile *c, nir_instr *instr)
 {
-   /* There is no addr reg in use before we start emitting an instr. */
-   c->next_addr_reg = 0;
-
    switch (instr->type) {
    case nir_instr_type_deref:
       /* ignored, will be walked by nir_intrinsic_image_*_deref. */
@@ -2435,11 +2406,6 @@ ntt_emit_block(struct ntt_compile *c, nir_block *block)
 static void
 ntt_emit_cf_list(struct ntt_compile *c, struct exec_list *list)
 {
-   /* There is no addr reg in use before we start emitting any part of a CF
-    * node (such as an if condition)
-    */
-   c->next_addr_reg = 0;
-
    foreach_list_typed(nir_cf_node, node, node, list) {
       switch (node->type) {
       case nir_cf_node_block:
@@ -2608,6 +2574,21 @@ ntt_optimize_nir(struct nir_shader *s, struct pipe_screen *screen)
       NIR_PASS(progress, s, nir_opt_vectorize, ntt_should_vectorize_instr, NULL);
       NIR_PASS(progress, s, nir_opt_undef);
       NIR_PASS(progress, s, nir_opt_loop_unroll);
+
+      /* Try to fold addressing math into ubo_vec4's base to avoid load_consts
+       * and ALU ops for it.
+       */
+      static const nir_opt_offsets_options offset_options = {
+         .ubo_vec4_max = ~0,
+
+         /* No const offset in TGSI for shared accesses. */
+         .shared_max = 0,
+
+         /* unused intrinsics */
+         .uniform_max = 0,
+         .buffer_max = 0,
+      };
+      NIR_PASS(progress, s, nir_opt_offsets, &offset_options);
 
    } while (progress);
 }
@@ -3179,8 +3160,6 @@ nir_to_tgsi(struct nir_shader *s,
 
    c->needs_texcoord_semantic =
       screen->get_param(screen, PIPE_CAP_TGSI_TEXCOORD);
-   c->any_reg_as_address =
-      screen->get_param(screen, PIPE_CAP_TGSI_ANY_REG_AS_ADDRESS);
    c->has_txf_lz =
       screen->get_param(screen, PIPE_CAP_TGSI_TEX_TXF_LZ);
 
@@ -3233,6 +3212,7 @@ nir_to_tgsi(struct nir_shader *s,
 }
 
 static const nir_shader_compiler_options nir_to_tgsi_compiler_options = {
+   .fdot_replicates = true,
    .fuse_ffma32 = true,
    .fuse_ffma64 = true,
    .lower_extract_byte = true,

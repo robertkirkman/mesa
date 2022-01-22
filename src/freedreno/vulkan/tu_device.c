@@ -117,6 +117,7 @@ get_device_extensions(const struct tu_physical_device *device,
    *ext = (struct vk_device_extension_table) {
       .KHR_16bit_storage = device->info->a6xx.storage_16bit,
       .KHR_bind_memory2 = true,
+      .KHR_copy_commands2 = true,
       .KHR_create_renderpass2 = true,
       .KHR_dedicated_allocation = true,
       .KHR_depth_stencil_resolve = true,
@@ -157,6 +158,7 @@ get_device_extensions(const struct tu_physical_device *device,
       .KHR_driver_properties = true,
       .KHR_separate_depth_stencil_layouts = true,
       .KHR_buffer_device_address = true,
+      .KHR_shader_integer_dot_product = true,
 #ifndef TU_USE_KGSL
       .KHR_timeline_semaphore = false,
 #endif
@@ -185,6 +187,7 @@ get_device_extensions(const struct tu_physical_device *device,
       .EXT_host_query_reset = true,
       .EXT_index_type_uint8 = true,
       .EXT_memory_budget = true,
+      .EXT_primitive_topology_list_restart = true,
       .EXT_private_data = true,
       .EXT_robustness2 = true,
       .EXT_scalar_block_layout = true,
@@ -195,6 +198,7 @@ get_device_extensions(const struct tu_physical_device *device,
       .EXT_vertex_attribute_divisor = true,
       .EXT_provoking_vertex = true,
       .EXT_line_rasterization = true,
+      .EXT_subgroup_size_control = true,
 #ifdef ANDROID
       .ANDROID_native_buffer = true,
 #endif
@@ -782,6 +786,26 @@ tu_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          features->stippledSmoothLines = false;
          break;
       }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES_EXT: {
+         VkPhysicalDeviceSubgroupSizeControlFeaturesEXT *features =
+            (VkPhysicalDeviceSubgroupSizeControlFeaturesEXT *)ext;
+         features->subgroupSizeControl = true;
+         features->computeFullSubgroups = true;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_FEATURES_KHR: {
+         VkPhysicalDeviceShaderIntegerDotProductFeaturesKHR *features =
+            (VkPhysicalDeviceShaderIntegerDotProductFeaturesKHR *)ext;
+         features->shaderIntegerDotProduct = true;
+         break;
+      };
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIMITIVE_TOPOLOGY_LIST_RESTART_FEATURES_EXT: {
+         VkPhysicalDevicePrimitiveTopologyListRestartFeaturesEXT *features =
+            (VkPhysicalDevicePrimitiveTopologyListRestartFeaturesEXT *)ext;
+         features->primitiveTopologyListRestart = true;
+         features->primitiveTopologyPatchListRestart = false;
+         break;
+      }
 
       default:
          break;
@@ -976,7 +1000,7 @@ tu_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
       .maxFragmentInputComponents = 124,
       .maxFragmentOutputAttachments = 8,
       .maxFragmentDualSrcAttachments = 1,
-      .maxFragmentCombinedOutputResources = 8,
+      .maxFragmentCombinedOutputResources = MAX_RTS + max_descriptor_set_size * 2,
       .maxComputeSharedMemorySize = 32768,
       .maxComputeWorkGroupCount = { 65535, 65535, 65535 },
       .maxComputeWorkGroupInvocations = 2048,
@@ -1141,6 +1165,58 @@ tu_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
          props->lineSubPixelPrecisionBits = 8;
          break;
       }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES_EXT: {
+         VkPhysicalDeviceSubgroupSizeControlPropertiesEXT *props =
+            (VkPhysicalDeviceSubgroupSizeControlPropertiesEXT *)ext;
+         /* TODO move threadsize_base and max_waves to fd_dev_info and use them here */
+         props->minSubgroupSize = 64; /* threadsize_base */
+         props->maxSubgroupSize = 128; /* threadsize_base * 2 */
+         props->maxComputeWorkgroupSubgroups = 16; /* max_waves */
+         props->requiredSubgroupSizeStages = VK_SHADER_STAGE_ALL;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_PROPERTIES_KHR: {
+         VkPhysicalDeviceShaderIntegerDotProductPropertiesKHR *props =
+            (VkPhysicalDeviceShaderIntegerDotProductPropertiesKHR *)ext;
+
+         props->integerDotProduct8BitUnsignedAccelerated = false;
+         props->integerDotProduct8BitSignedAccelerated = false;
+         props->integerDotProduct8BitMixedSignednessAccelerated = false;
+         props->integerDotProduct4x8BitPackedUnsignedAccelerated =
+            pdevice->info->a6xx.has_dp2acc;
+         /* TODO: we should be able to emulate 4x8BitPackedSigned fast enough */
+         props->integerDotProduct4x8BitPackedSignedAccelerated = false;
+         props->integerDotProduct4x8BitPackedMixedSignednessAccelerated =
+            pdevice->info->a6xx.has_dp2acc;
+         props->integerDotProduct16BitUnsignedAccelerated = false;
+         props->integerDotProduct16BitSignedAccelerated = false;
+         props->integerDotProduct16BitMixedSignednessAccelerated = false;
+         props->integerDotProduct32BitUnsignedAccelerated = false;
+         props->integerDotProduct32BitSignedAccelerated = false;
+         props->integerDotProduct32BitMixedSignednessAccelerated = false;
+         props->integerDotProduct64BitUnsignedAccelerated = false;
+         props->integerDotProduct64BitSignedAccelerated = false;
+         props->integerDotProduct64BitMixedSignednessAccelerated = false;
+         props->integerDotProductAccumulatingSaturating8BitUnsignedAccelerated = false;
+         props->integerDotProductAccumulatingSaturating8BitSignedAccelerated = false;
+         props->integerDotProductAccumulatingSaturating8BitMixedSignednessAccelerated = false;
+         props->integerDotProductAccumulatingSaturating4x8BitPackedUnsignedAccelerated =
+            pdevice->info->a6xx.has_dp2acc;
+         /* TODO: we should be able to emulate Saturating4x8BitPackedSigned fast enough */
+         props->integerDotProductAccumulatingSaturating4x8BitPackedSignedAccelerated = false;
+         props->integerDotProductAccumulatingSaturating4x8BitPackedMixedSignednessAccelerated =
+            pdevice->info->a6xx.has_dp2acc;
+         props->integerDotProductAccumulatingSaturating16BitUnsignedAccelerated = false;
+         props->integerDotProductAccumulatingSaturating16BitSignedAccelerated = false;
+         props->integerDotProductAccumulatingSaturating16BitMixedSignednessAccelerated = false;
+         props->integerDotProductAccumulatingSaturating32BitUnsignedAccelerated = false;
+         props->integerDotProductAccumulatingSaturating32BitSignedAccelerated = false;
+         props->integerDotProductAccumulatingSaturating32BitMixedSignednessAccelerated = false;
+         props->integerDotProductAccumulatingSaturating64BitUnsignedAccelerated = false;
+         props->integerDotProductAccumulatingSaturating64BitSignedAccelerated = false;
+         props->integerDotProductAccumulatingSaturating64BitMixedSignednessAccelerated = false;
+         break;
+      }
 
       default:
          break;
@@ -1261,8 +1337,9 @@ tu_queue_init(struct tu_device *device,
       return result;
 
    queue->device = device;
-
-   list_inithead(&queue->queued_submits);
+#ifndef TU_USE_KGSL
+   queue->vk.driver_submit = tu_queue_submit;
+#endif
 
    int ret = tu_drm_submitqueue_new(device, 0, &queue->msm_queue_id);
    if (ret)
@@ -1502,10 +1579,13 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
    device->instance = physical_device->instance;
    device->physical_device = physical_device;
    device->fd = physical_device->local_fd;
-   device->_lost = false;
 
    mtx_init(&device->bo_mutex, mtx_plain);
    pthread_mutex_init(&device->submit_mutex, NULL);
+
+#ifndef TU_USE_KGSL
+   vk_device_set_drm_fd(&device->vk, device->fd);
+#endif
 
    for (unsigned i = 0; i < pCreateInfo->queueCreateInfoCount; i++) {
       const VkDeviceQueueCreateInfo *queue_create =
@@ -1752,27 +1832,6 @@ tu_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
 }
 
 VkResult
-_tu_device_set_lost(struct tu_device *device,
-                    const char *msg, ...)
-{
-   /* Set the flag indicating that waits should return in finite time even
-    * after device loss.
-    */
-   p_atomic_inc(&device->_lost);
-
-   /* TODO: Report the log message through VkDebugReportCallbackEXT instead */
-   va_list ap;
-   va_start(ap, msg);
-   mesa_loge_v(msg, ap);
-   va_end(ap);
-
-   if (env_var_as_boolean("TU_ABORT_ON_DEVICE_LOSS", false))
-      abort();
-
-   return VK_ERROR_DEVICE_LOST;
-}
-
-VkResult
 tu_get_scratch_bo(struct tu_device *dev, uint64_t size, struct tu_bo **bo)
 {
    unsigned size_log2 = MAX2(util_logbase2_ceil64(size), MIN_SCRATCH_BO_SIZE_LOG2);
@@ -1826,30 +1885,18 @@ tu_EnumerateInstanceLayerProperties(uint32_t *pPropertyCount,
    return VK_SUCCESS;
 }
 
+/* Only used for kgsl since drm started using common implementation */
+#ifdef TU_USE_KGSL
 VKAPI_ATTR VkResult VKAPI_CALL
 tu_QueueWaitIdle(VkQueue _queue)
 {
    TU_FROM_HANDLE(tu_queue, queue, _queue);
 
-   if (tu_device_is_lost(queue->device))
+   if (vk_device_is_lost(&queue->device->vk))
       return VK_ERROR_DEVICE_LOST;
 
    if (queue->fence < 0)
       return VK_SUCCESS;
-
-   pthread_mutex_lock(&queue->device->submit_mutex);
-
-   do {
-      tu_device_submit_deferred_locked(queue->device);
-
-      if (list_is_empty(&queue->queued_submits))
-         break;
-
-      pthread_cond_wait(&queue->device->timeline_cond,
-            &queue->device->submit_mutex);
-   } while (!list_is_empty(&queue->queued_submits));
-
-   pthread_mutex_unlock(&queue->device->submit_mutex);
 
    struct pollfd fds = { .fd = queue->fence, .events = POLLIN };
    int ret;
@@ -1864,6 +1911,7 @@ tu_QueueWaitIdle(VkQueue _queue)
    queue->fence = -1;
    return VK_SUCCESS;
 }
+#endif
 
 VKAPI_ATTR VkResult VKAPI_CALL
 tu_EnumerateInstanceExtensionProperties(const char *pLayerName,
@@ -1898,6 +1946,23 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 vk_icdGetInstanceProcAddr(VkInstance instance, const char *pName)
 {
    return tu_GetInstanceProcAddr(instance, pName);
+}
+
+/* With version 4+ of the loader interface the ICD should expose
+ * vk_icdGetPhysicalDeviceProcAddr()
+ */
+PUBLIC
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+vk_icdGetPhysicalDeviceProcAddr(VkInstance  _instance,
+                                const char* pName);
+
+PFN_vkVoidFunction
+vk_icdGetPhysicalDeviceProcAddr(VkInstance  _instance,
+                                const char* pName)
+{
+   TU_FROM_HANDLE(tu_instance, instance, _instance);
+
+   return vk_instance_get_physical_device_proc_addr(&instance->vk, pName);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -2495,8 +2560,17 @@ vk_icdNegotiateLoaderICDInterfaceVersion(uint32_t *pSupportedVersion)
     *        - The ICD must implement vkCreate{PLATFORM}SurfaceKHR(),
     *          vkDestroySurfaceKHR(), and other API which uses VKSurfaceKHR,
     *          because the loader no longer does so.
+    *
+    *    - Loader interface v4 differs from v3 in:
+    *        - The ICD must implement vk_icdGetPhysicalDeviceProcAddr().
+    * 
+    *    - Loader interface v5 differs from v4 in:
+    *        - The ICD must support Vulkan API version 1.1 and must not return 
+    *          VK_ERROR_INCOMPATIBLE_DRIVER from vkCreateInstance() unless a
+    *          Vulkan Loader with interface v4 or smaller is being used and the
+    *          application provides an API version that is greater than 1.0.
     */
-   *pSupportedVersion = MIN2(*pSupportedVersion, 3u);
+   *pSupportedVersion = MIN2(*pSupportedVersion, 5u);
    return VK_SUCCESS;
 }
 

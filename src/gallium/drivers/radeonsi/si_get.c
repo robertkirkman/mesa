@@ -48,6 +48,10 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 {
    struct si_screen *sscreen = (struct si_screen *)pscreen;
 
+   /* Gfx8 (Polaris11) hangs, so don't enable this on Gfx8 and older chips. */
+   bool enable_sparse = sscreen->info.chip_class >= GFX9 &&
+      sscreen->info.has_sparse_vm_mappings;
+
    switch (param) {
    /* Supported features (boolean caps). */
    case PIPE_CAP_ACCELERATED:
@@ -242,9 +246,7 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 0;
 
    case PIPE_CAP_SPARSE_BUFFER_PAGE_SIZE:
-      /* Gfx8 (Polaris11) hangs, so don't enable this on Gfx8 and older chips. */
-      return sscreen->info.chip_class >= GFX9 &&
-             sscreen->info.has_sparse_vm_mappings ? RADEON_SPARSE_PAGE_SIZE : 0;
+      return enable_sparse ? RADEON_SPARSE_PAGE_SIZE : 0;
 
    case PIPE_CAP_UMA:
    case PIPE_CAP_PREFER_IMM_ARRAYS_AS_CONSTBUF:
@@ -312,6 +314,20 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
          return 8192;
       /* textures support 8192, but layered rendering supports 2048 */
       return 2048;
+
+   /* Sparse texture */
+   case PIPE_CAP_MAX_SPARSE_TEXTURE_SIZE:
+      return enable_sparse ?
+         si_get_param(pscreen, PIPE_CAP_MAX_TEXTURE_2D_SIZE) : 0;
+   case PIPE_CAP_MAX_SPARSE_3D_TEXTURE_SIZE:
+      return enable_sparse ?
+         (1 << (si_get_param(pscreen, PIPE_CAP_MAX_TEXTURE_3D_LEVELS) - 1)) : 0;
+   case PIPE_CAP_MAX_SPARSE_ARRAY_TEXTURE_LAYERS:
+      return enable_sparse ?
+         si_get_param(pscreen, PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS) : 0;
+   case PIPE_CAP_SPARSE_TEXTURE_FULL_ARRAY_CUBE_MIPMAPS:
+   case PIPE_CAP_QUERY_SPARSE_TEXTURE_RESIDENCY:
+      return enable_sparse;
 
    /* Viewports and render targets. */
    case PIPE_CAP_MAX_VIEWPORTS:
@@ -1051,7 +1067,8 @@ void si_init_screen_get_functions(struct si_screen *sscreen)
       .lower_insert_word = true,
       .lower_rotate = true,
       .lower_to_scalar = true,
-      .has_dot_4x8 = sscreen->info.has_accelerated_dot_product,
+      .has_sdot_4x8 = sscreen->info.has_accelerated_dot_product,
+      .has_udot_4x8 = sscreen->info.has_accelerated_dot_product,
       .has_dot_2x16 = sscreen->info.has_accelerated_dot_product,
       .optimize_sample_mask_in = true,
       .max_unroll_iterations = 128,

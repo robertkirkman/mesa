@@ -143,6 +143,18 @@ _legal_parameters(struct gl_context *ctx, GLenum target, GLenum internalformat,
       }
       break;
 
+   case GL_NUM_VIRTUAL_PAGE_SIZES_ARB:
+   case GL_VIRTUAL_PAGE_SIZE_X_ARB:
+   case GL_VIRTUAL_PAGE_SIZE_Y_ARB:
+   case GL_VIRTUAL_PAGE_SIZE_Z_ARB:
+      if (!_mesa_has_ARB_sparse_texture(ctx)) {
+         _mesa_error(ctx, GL_INVALID_ENUM,
+                     "glGetInternalformativ(pname=%s)",
+                     _mesa_enum_to_string(pname));
+         return false;
+      }
+      break;
+
    case GL_SRGB_DECODE_ARB:
       /* The ARB_internalformat_query2 spec says:
        *
@@ -325,6 +337,10 @@ _set_default_response(GLenum pname, GLint buffer[16])
    case GL_TEXTURE_COMPRESSED_BLOCK_HEIGHT:
    case GL_TEXTURE_COMPRESSED_BLOCK_SIZE:
    case GL_NUM_TILING_TYPES_EXT:
+   case GL_NUM_VIRTUAL_PAGE_SIZES_ARB:
+   case GL_VIRTUAL_PAGE_SIZE_X_ARB:
+   case GL_VIRTUAL_PAGE_SIZE_Y_ARB:
+   case GL_VIRTUAL_PAGE_SIZE_Z_ARB:
       buffer[0] = 0;
       break;
 
@@ -847,8 +863,8 @@ _get_min_dimensions(GLenum pname)
  * Similar to teximage.c:check_multisample_target, but independent of the
  * dimensions.
  */
-static bool
-_is_multisample_target(GLenum target)
+bool
+_mesa_is_multisample_target(GLenum target)
 {
    switch(target) {
    case GL_TEXTURE_2D_MULTISAMPLE:
@@ -1001,8 +1017,7 @@ _mesa_GetInternalformativ(GLenum target, GLenum internalformat, GLenum pname,
 
       switch (pname) {
       case GL_INTERNALFORMAT_DEPTH_SIZE:
-         if (ctx->API != API_OPENGL_CORE &&
-             !_mesa_has_ARB_depth_texture(ctx) &&
+         if (!_mesa_is_desktop_gl(ctx) &&
              target != GL_RENDERBUFFER &&
              target != GL_TEXTURE_BUFFER)
             goto end;
@@ -1088,7 +1103,7 @@ _mesa_GetInternalformativ(GLenum target, GLenum internalformat, GLenum pname,
        * returned as MAX_HEIGHT or MAX_DEPTH */
       for (i = 0; i < 4; i++) {
          if (max_dimensions_pnames[i] == GL_SAMPLES &&
-             !_is_multisample_target(target))
+             !_mesa_is_multisample_target(target))
             continue;
 
          _mesa_GetInternalformativ(target, internalformat,
@@ -1572,6 +1587,13 @@ _mesa_GetInternalformativ(GLenum target, GLenum internalformat, GLenum pname,
                                 buffer);
       else
          buffer[0] = (GLint)0;
+      break;
+
+   case GL_NUM_VIRTUAL_PAGE_SIZES_ARB:
+   case GL_VIRTUAL_PAGE_SIZE_X_ARB:
+   case GL_VIRTUAL_PAGE_SIZE_Y_ARB:
+   case GL_VIRTUAL_PAGE_SIZE_Z_ARB:
+      st_QueryInternalFormat(ctx, target, internalformat, pname, buffer);
       break;
 
    default:

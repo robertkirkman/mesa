@@ -34,13 +34,29 @@
 #include "common/intel_l3_config.h"
 #include "blorp/blorp_genX_exec.h"
 
+#include "ds/intel_tracepoints.h"
+
 static void blorp_measure_start(struct blorp_batch *_batch,
                                 const struct blorp_params *params)
 {
    struct anv_cmd_buffer *cmd_buffer = _batch->driver_batch;
+   trace_intel_begin_blorp(&cmd_buffer->trace, cmd_buffer);
    anv_measure_snapshot(cmd_buffer,
                         params->snapshot_type,
                         NULL, 0);
+}
+
+static void blorp_measure_end(struct blorp_batch *_batch,
+                              const struct blorp_params *params)
+{
+   struct anv_cmd_buffer *cmd_buffer = _batch->driver_batch;
+   trace_intel_end_blorp(&cmd_buffer->trace, cmd_buffer,
+                         params->x1 - params->x0,
+                         params->y1 - params->y0,
+                         params->hiz_op,
+                         params->fast_clear_op,
+                         params->shader_type,
+                         params->shader_pipeline);
 }
 
 static void *
@@ -281,8 +297,10 @@ blorp_exec_on_render(struct blorp_batch *batch,
        !(batch->flags & BLORP_BATCH_NO_EMIT_DEPTH_STENCIL))
       genX(cmd_buffer_emit_gfx12_depth_wa)(cmd_buffer, &params->depth.surf);
 
-   genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
    genX(flush_pipeline_select_3d)(cmd_buffer);
+
+   /* Apply any outstanding flushes in case pipeline select haven't. */
+   genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
 
    genX(cmd_buffer_emit_gfx7_depth_flush)(cmd_buffer);
 
@@ -340,8 +358,11 @@ blorp_exec_on_compute(struct blorp_batch *batch,
    struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
    assert(cmd_buffer->pool->queue_family->queueFlags & VK_QUEUE_COMPUTE_BIT);
 
-   genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
    genX(flush_pipeline_select_gpgpu)(cmd_buffer);
+
+   /* Apply any outstanding flushes in case pipeline select haven't. */
+   genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
+
    blorp_exec(batch, params);
 
    cmd_buffer->state.push_constants_dirty |= VK_SHADER_STAGE_COMPUTE_BIT;

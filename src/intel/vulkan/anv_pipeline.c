@@ -983,10 +983,10 @@ merge_tess_info(struct shader_info *tes_info,
           tcs_info->tess.spacing == tes_info->tess.spacing);
    tes_info->tess.spacing |= tcs_info->tess.spacing;
 
-   assert(tcs_info->tess.primitive_mode == 0 ||
-          tes_info->tess.primitive_mode == 0 ||
-          tcs_info->tess.primitive_mode == tes_info->tess.primitive_mode);
-   tes_info->tess.primitive_mode |= tcs_info->tess.primitive_mode;
+   assert(tcs_info->tess._primitive_mode == 0 ||
+          tes_info->tess._primitive_mode == 0 ||
+          tcs_info->tess._primitive_mode == tes_info->tess._primitive_mode);
+   tes_info->tess._primitive_mode |= tcs_info->tess._primitive_mode;
    tes_info->tess.ccw |= tcs_info->tess.ccw;
    tes_info->tess.point_mode |= tcs_info->tess.point_mode;
 }
@@ -1011,11 +1011,11 @@ anv_pipeline_link_tcs(const struct brw_compiler *compiler,
     * this comes from the SPIR-V, which is part of the hash used for the
     * pipeline cache.  So it should be safe.
     */
-   tcs_stage->key.tcs.tes_primitive_mode =
-      tes_stage->nir->info.tess.primitive_mode;
+   tcs_stage->key.tcs._tes_primitive_mode =
+      tes_stage->nir->info.tess._primitive_mode;
    tcs_stage->key.tcs.quads_workaround =
       compiler->devinfo->ver < 9 &&
-      tes_stage->nir->info.tess.primitive_mode == 7 /* GL_QUADS */ &&
+      tes_stage->nir->info.tess._primitive_mode == TESS_PRIMITIVE_QUADS &&
       tes_stage->nir->info.tess.spacing == TESS_SPACING_EQUAL;
 }
 
@@ -1189,6 +1189,24 @@ anv_pipeline_link_fs(const struct brw_compiler *compiler,
 
    if (deleted_output)
       nir_fixup_deref_modes(stage->nir);
+
+   /* Initially the valid outputs value is based off the renderpass color
+    * attachments (see populate_wm_prog_key()), now that we've potentially
+    * deleted variables that map to unused attachments, we need to update the
+    * valid outputs for the backend compiler based on what output variables
+    * are actually used. */
+   stage->key.wm.color_outputs_valid = 0;
+   nir_foreach_shader_out_variable_safe(var, stage->nir) {
+      if (var->data.location < FRAG_RESULT_DATA0)
+         continue;
+
+      const unsigned rt = var->data.location - FRAG_RESULT_DATA0;
+      const unsigned array_len =
+         glsl_type_is_array(var->type) ? glsl_get_length(var->type) : 1;
+      assert(rt + array_len <= MAX_RTS);
+
+      stage->key.wm.color_outputs_valid |= BITFIELD_RANGE(rt, array_len);
+   }
 
    /* We stored the number of subpass color attachments in nr_color_regions
     * when calculating the key for caching.  Now that we've computed the bind

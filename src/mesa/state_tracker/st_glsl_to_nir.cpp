@@ -375,7 +375,13 @@ st_nir_preprocess(struct st_context *st, struct gl_program *prog,
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
    if (!st->ctx->SoftFP64 && ((nir->info.bit_sizes_int | nir->info.bit_sizes_float) & 64) &&
        (options->lower_doubles_options & nir_lower_fp64_full_software) != 0) {
-      st->ctx->SoftFP64 = glsl_float64_funcs_to_nir(st->ctx, options);
+
+      /* It's not possible to use float64 on GLSL ES, so don't bother trying to
+       * build the support code.  The support code depends on higher versions of
+       * desktop GLSL, so it will fail to compile (below) anyway.
+       */
+      if (_mesa_is_desktop_gl(st->ctx) && st->ctx->Const.GLSLVersion >= 400)
+         st->ctx->SoftFP64 = glsl_float64_funcs_to_nir(st->ctx, options);
    }
 
    /* ES has strict SSO validation rules for shader IO matching so we can't
@@ -762,7 +768,7 @@ st_link_nir(struct gl_context *ctx,
             _mesa_log("\n\n");
          }
 
-         prog->nir = glsl_to_nir(st->ctx, shader_program, shader->Stage, options);
+         prog->nir = glsl_to_nir(&st->ctx->Const, shader_program, shader->Stage, options);
       }
 
       memcpy(prog->nir->info.source_sha1, shader->linked_source_sha1,
@@ -796,10 +802,11 @@ st_link_nir(struct gl_context *ctx,
       static const gl_nir_linker_options opts = {
          true /*fill_parameters */
       };
-      if (!gl_nir_link_spirv(ctx, shader_program, &opts))
+      if (!gl_nir_link_spirv(&ctx->Const, shader_program, &opts))
          return GL_FALSE;
    } else {
-      if (!gl_nir_link_glsl(ctx, shader_program))
+      if (!gl_nir_link_glsl(&ctx->Const, &ctx->Extensions,
+                            shader_program))
          return GL_FALSE;
    }
 
@@ -809,7 +816,7 @@ st_link_nir(struct gl_context *ctx,
       _mesa_update_shader_textures_used(shader_program, prog);
    }
 
-   nir_build_program_resource_list(ctx, shader_program,
+   nir_build_program_resource_list(&ctx->Const, shader_program,
                                    shader_program->data->spirv);
 
    for (unsigned i = 0; i < num_shaders; i++) {

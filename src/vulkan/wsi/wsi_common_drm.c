@@ -22,6 +22,7 @@
  */
 
 #include "wsi_common_private.h"
+#include "wsi_common_drm.h"
 #include "util/macros.h"
 #include "util/os_file.h"
 #include "util/xmlconfig.h"
@@ -33,6 +34,30 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <xf86drm.h>
+
+bool
+wsi_common_drm_devices_equal(int fd_a, int fd_b)
+{
+   drmDevicePtr device_a, device_b;
+   int ret;
+
+   ret = drmGetDevice2(fd_a, 0, &device_a);
+   if (ret)
+      return false;
+
+   ret = drmGetDevice2(fd_b, 0, &device_b);
+   if (ret) {
+      drmFreeDevice(&device_a);
+      return false;
+   }
+
+   bool result = drmDevicesEqual(device_a, device_b);
+
+   drmFreeDevice(&device_a);
+   drmFreeDevice(&device_b);
+
+   return result;
+}
 
 bool
 wsi_device_matches_drm_fd(const struct wsi_device *wsi, int drm_fd)
@@ -590,7 +615,8 @@ wsi_create_prime_image(const struct wsi_swapchain *chain,
       goto fail;
    }
 
-   for (uint32_t i = 0; i < wsi->queue_family_count; i++) {
+   int cmd_buffer_count = chain->prime_blit_queue != VK_NULL_HANDLE ? 1 : wsi->queue_family_count;
+   for (uint32_t i = 0; i < cmd_buffer_count; i++) {
       const VkCommandBufferAllocateInfo cmd_buffer_info = {
          .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
          .pNext = NULL,

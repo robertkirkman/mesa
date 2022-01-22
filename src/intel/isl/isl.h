@@ -385,6 +385,7 @@ enum isl_format {
 
    /* Formats for auxiliary surfaces */
    ISL_FORMAT_HIZ,
+   ISL_FORMAT_GFX125_HIZ,
    ISL_FORMAT_MCS_2X,
    ISL_FORMAT_MCS_4X,
    ISL_FORMAT_MCS_8X,
@@ -1901,6 +1902,14 @@ isl_format_is_mcs(enum isl_format fmt)
 }
 
 static inline bool
+isl_format_is_hiz(enum isl_format fmt)
+{
+   const struct isl_format_layout *fmtl = isl_format_get_layout(fmt);
+
+   return fmtl->txc == ISL_TXC_HIZ;
+}
+
+static inline bool
 isl_format_is_planar(enum isl_format fmt)
 {
    return fmt == ISL_FORMAT_PLANAR_420_8 ||
@@ -2866,6 +2875,10 @@ isl_get_tile_masks(enum isl_tiling tiling, uint32_t cpp,
    *mask_x = tile_w_bytes / cpp - 1;
    *mask_y = tile_h - 1;
 }
+
+const char *
+isl_aux_op_to_name(enum isl_aux_op op);
+
 #ifdef __cplusplus
 }
 #endif

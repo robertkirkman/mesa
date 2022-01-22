@@ -137,7 +137,7 @@ make_bitmap_texture(struct gl_context *ctx, GLsizei width, GLsizei height,
     */
    pt = st_texture_create(st, st->internal_target, st->bitmap.tex_format,
                           0, width, height, 1, 1, 0,
-                          PIPE_BIND_SAMPLER_VIEW);
+                          PIPE_BIND_SAMPLER_VIEW, false);
    if (!pt) {
       _mesa_unmap_pbo_source(ctx, unpack);
       return NULL;
@@ -363,7 +363,8 @@ reset_cache(struct st_context *st)
                                       st->bitmap.tex_format, 0,
                                       BITMAP_CACHE_WIDTH, BITMAP_CACHE_HEIGHT,
                                       1, 1, 0,
-				      PIPE_BIND_SAMPLER_VIEW);
+                                      PIPE_BIND_SAMPLER_VIEW,
+                                      false);
 }
 
 
@@ -647,7 +648,7 @@ st_DrawAtlasBitmaps(struct gl_context *ctx,
 {
    struct st_context *st = st_context(ctx);
    struct pipe_context *pipe = st->pipe;
-   struct st_texture_object *stObj = st_texture_object(atlas->texObj);
+   struct gl_texture_object *stObj = atlas->texObj;
    struct pipe_sampler_view *sv;
    /* convert Z from [0,1] to [-1,-1] to match viewport Z scale/bias */
    const float z = ctx->Current.RasterPos[2] * 2.0f - 1.0f;

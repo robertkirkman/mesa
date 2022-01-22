@@ -144,6 +144,7 @@ get_device_extensions(const struct v3dv_physical_device *device,
       .KHR_incremental_present             = true,
 #endif
       .KHR_variable_pointers               = true,
+      .EXT_4444_formats                    = true,
       .EXT_color_write_enable              = true,
       .EXT_custom_border_color             = true,
       .EXT_external_memory_dma_buf         = true,
@@ -266,6 +267,8 @@ physical_device_finish(struct v3dv_physical_device *device)
    v3dv_wsi_finish(device);
    v3dv_physical_device_free_disk_cache(device);
    v3d_compiler_free(device->compiler);
+
+   util_sparse_array_finish(&device->bo_map);
 
    close(device->render_fd);
    if (device->display_fd >= 0)
@@ -794,6 +797,9 @@ physical_device_init(struct v3dv_physical_device *device,
       goto fail;
    }
 
+   device->caps.multisync =
+      v3d_has_feature(device, DRM_V3D_PARAM_SUPPORTS_MULTISYNC_EXT);
+
    result = init_uuids(device);
    if (result != VK_SUCCESS)
       goto fail;
@@ -821,6 +827,9 @@ physical_device_init(struct v3dv_physical_device *device,
       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
    mem->memoryTypes[0].heapIndex = 0;
+
+   /* Initialize sparse array for refcounting imported BOs */
+   util_sparse_array_init(&device->bo_map, sizeof(struct v3dv_bo), 512);
 
    device->options.merge_jobs = getenv("V3DV_NO_MERGE_JOBS") == NULL;
 
@@ -1088,6 +1097,14 @@ v3dv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
 
    vk_foreach_struct(ext, pFeatures->pNext) {
       switch (ext->sType) {
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_4444_FORMATS_FEATURES_EXT: {
+         VkPhysicalDevice4444FormatsFeaturesEXT *features =
+            (VkPhysicalDevice4444FormatsFeaturesEXT *)ext;
+         features->formatA4R4G4B4 = true;
+         features->formatA4B4G4R4 = true;
+         break;
+      }
+
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT: {
          VkPhysicalDeviceCustomBorderColorFeaturesEXT *features =
             (VkPhysicalDeviceCustomBorderColorFeaturesEXT *)ext;
@@ -1729,6 +1746,16 @@ init_device_meta(struct v3dv_device *device)
 }
 
 static void
+destroy_device_syncs(struct v3dv_device *device,
+                       int render_fd)
+{
+   for (int i = 0; i < V3DV_QUEUE_COUNT; i++) {
+      if (device->last_job_syncs.syncs[i])
+         drmSyncobjDestroy(render_fd, device->last_job_syncs.syncs[i]);
+   }
+}
+
+static void
 destroy_device_meta(struct v3dv_device *device)
 {
    mtx_destroy(&device->meta.mtx);
@@ -1812,12 +1839,15 @@ v3dv_CreateDevice(VkPhysicalDevice physicalDevice,
    if (device->features.robustBufferAccess)
       perf_debug("Device created with Robust Buffer Access enabled.\n");
 
-   int ret = drmSyncobjCreate(physical_device->render_fd,
-                              DRM_SYNCOBJ_CREATE_SIGNALED,
-                              &device->last_job_sync);
-   if (ret) {
-      result = VK_ERROR_INITIALIZATION_FAILED;
-      goto fail;
+   for (int i = 0; i < V3DV_QUEUE_COUNT; i++) {
+      device->last_job_syncs.first[i] = true;
+      int ret = drmSyncobjCreate(physical_device->render_fd,
+                                 DRM_SYNCOBJ_CREATE_SIGNALED,
+                                 &device->last_job_syncs.syncs[i]);
+      if (ret) {
+         result = VK_ERROR_INITIALIZATION_FAILED;
+         goto fail;
+      }
    }
 
 #ifdef DEBUG
@@ -1835,6 +1865,7 @@ v3dv_CreateDevice(VkPhysicalDevice physicalDevice,
    return VK_SUCCESS;
 
 fail:
+   destroy_device_syncs(device, physical_device->render_fd);
    vk_device_finish(&device->vk);
    vk_free(&device->vk.alloc, device);
 
@@ -1850,7 +1881,7 @@ v3dv_DestroyDevice(VkDevice _device,
    v3dv_DeviceWaitIdle(_device);
    queue_finish(&device->queue);
    pthread_mutex_destroy(&device->mutex);
-   drmSyncobjDestroy(device->pdevice->render_fd, device->last_job_sync);
+   destroy_device_syncs(device, device->pdevice->render_fd);
    destroy_device_meta(device);
    v3dv_pipeline_cache_finish(&device->default_pipeline_cache);
 
@@ -1912,15 +1943,11 @@ device_free(struct v3dv_device *device, struct v3dv_device_memory *mem)
     * display device to free the allocated dumb BO.
     */
    if (mem->is_for_wsi) {
-      assert(mem->has_bo_ownership);
       device_free_wsi_dumb(device->instance->physicalDevice.display_fd,
                            mem->bo->dumb_handle);
    }
 
-   if (mem->has_bo_ownership)
-      v3dv_bo_free(device, mem->bo);
-   else if (mem->bo)
-      vk_free(&device->vk.alloc, mem->bo);
+   v3dv_bo_free(device, mem->bo);
 }
 
 static void
@@ -1965,21 +1992,12 @@ device_import_bo(struct v3dv_device *device,
                  int fd, uint64_t size,
                  struct v3dv_bo **bo)
 {
-   VkResult result;
-
-   *bo = vk_alloc2(&device->vk.alloc, pAllocator, sizeof(struct v3dv_bo), 8,
-                   VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-   if (*bo == NULL) {
-      result = VK_ERROR_OUT_OF_HOST_MEMORY;
-      goto fail;
-   }
+   *bo = NULL;
 
    off_t real_size = lseek(fd, 0, SEEK_END);
    lseek(fd, 0, SEEK_SET);
-   if (real_size < 0 || (uint64_t) real_size < size) {
-      result = VK_ERROR_INVALID_EXTERNAL_HANDLE;
-      goto fail;
-   }
+   if (real_size < 0 || (uint64_t) real_size < size)
+      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
 
    int render_fd = device->pdevice->render_fd;
    assert(render_fd >= 0);
@@ -1987,31 +2005,26 @@ device_import_bo(struct v3dv_device *device,
    int ret;
    uint32_t handle;
    ret = drmPrimeFDToHandle(render_fd, fd, &handle);
-   if (ret) {
-      result = VK_ERROR_INVALID_EXTERNAL_HANDLE;
-      goto fail;
-   }
+   if (ret)
+      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
 
    struct drm_v3d_get_bo_offset get_offset = {
       .handle = handle,
    };
    ret = v3dv_ioctl(render_fd, DRM_IOCTL_V3D_GET_BO_OFFSET, &get_offset);
-   if (ret) {
-      result = VK_ERROR_INVALID_EXTERNAL_HANDLE;
-      goto fail;
-   }
+   if (ret)
+      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
    assert(get_offset.offset != 0);
 
-   v3dv_bo_init(*bo, handle, size, get_offset.offset, "import", false);
+   *bo = v3dv_device_lookup_bo(device->pdevice, handle);
+   assert(*bo);
+
+   if ((*bo)->refcnt == 0)
+      v3dv_bo_init(*bo, handle, size, get_offset.offset, "import", false);
+   else
+      p_atomic_inc(&(*bo)->refcnt);
 
    return VK_SUCCESS;
-
-fail:
-   if (*bo) {
-      vk_free2(&device->vk.alloc, pAllocator, *bo);
-      *bo = NULL;
-   }
-   return result;
 }
 
 static VkResult
@@ -2102,7 +2115,6 @@ v3dv_AllocateMemory(VkDevice _device,
 
    assert(pAllocateInfo->memoryTypeIndex < pdevice->memory.memoryTypeCount);
    mem->type = &pdevice->memory.memoryTypes[pAllocateInfo->memoryTypeIndex];
-   mem->has_bo_ownership = true;
    mem->is_for_wsi = false;
 
    const struct wsi_memory_allocate_info *wsi_info = NULL;
@@ -2154,7 +2166,6 @@ v3dv_AllocateMemory(VkDevice _device,
                 fd_info->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
          result = device_import_bo(device, pAllocator,
                                    fd_info->fd, alloc_size, &mem->bo);
-         mem->has_bo_ownership = false;
          if (result == VK_SUCCESS)
             close(fd_info->fd);
       } else {
@@ -2699,7 +2710,13 @@ vk_icdNegotiateLoaderICDInterfaceVersion(uint32_t* pSupportedVersion)
     *
     *    - Loader interface v4 differs from v3 in:
     *        - The ICD must implement vk_icdGetPhysicalDeviceProcAddr().
+    * 
+    *    - Loader interface v5 differs from v4 in:
+    *        - The ICD must support Vulkan API version 1.1 and must not return 
+    *          VK_ERROR_INCOMPATIBLE_DRIVER from vkCreateInstance() unless a
+    *          Vulkan Loader with interface v4 or smaller is being used and the
+    *          application provides an API version that is greater than 1.0.
     */
-   *pSupportedVersion = MIN2(*pSupportedVersion, 3u);
+   *pSupportedVersion = MIN2(*pSupportedVersion, 5u);
    return VK_SUCCESS;
 }

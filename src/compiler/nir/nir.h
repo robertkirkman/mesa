@@ -30,7 +30,6 @@
 
 #include "util/hash_table.h"
 #include "compiler/glsl/list.h"
-#include "GL/gl.h" /* GLenum */
 #include "util/list.h"
 #include "util/log.h"
 #include "util/ralloc.h"
@@ -1765,7 +1764,8 @@ typedef struct nir_io_semantics {
    unsigned medium_precision:1; /* GLSL mediump qualifier */
    unsigned per_view:1;
    unsigned high_16bits:1; /* whether accessing low or high half of the slot */
-   unsigned _pad:6;
+   unsigned invariant:1; /* The variable has the invariant flag set */
+   unsigned _pad:5;
 } nir_io_semantics;
 
 #define NIR_INTRINSIC_MAX_INPUTS 11
@@ -3429,8 +3429,11 @@ typedef struct nir_shader_compiler_options {
     * for rect texture lowering. */
    bool has_txs;
 
-   /** Backend supports sdot_4x8 and udot_4x8 opcodes. */
-   bool has_dot_4x8;
+   /** Backend supports sdot_4x8 opcodes. */
+   bool has_sdot_4x8;
+
+   /** Backend supports udot_4x8 opcodes. */
+   bool has_udot_4x8;
 
    /** Backend supports sudot_4x8 opcodes. */
    bool has_sudot_4x8;
@@ -3442,6 +3445,9 @@ typedef struct nir_shader_compiler_options {
     * memory and control barrier intrinsics based on GLSL.
     */
    bool use_scoped_barrier;
+
+   /** Backend supports fmulz (and ffmaz if lower_ffma32=false) */
+   bool has_fmulz;
 
    /**
     * Is this the Intel vec4 backend?
@@ -5250,7 +5256,21 @@ bool nir_opt_sink(nir_shader *shader, nir_move_options options);
 
 bool nir_opt_move(nir_shader *shader, nir_move_options options);
 
-bool nir_opt_offsets(nir_shader *shader);
+typedef struct {
+   /** nir_load_uniform max base offset */
+   uint32_t uniform_max;
+
+   /** nir_load_ubo_vec4 max base offset */
+   uint32_t ubo_vec4_max;
+
+   /** nir_var_mem_shared max base offset */
+   uint32_t shared_max;
+
+   /** nir_load/store_buffer_amd max base offset */
+   uint32_t buffer_max;
+} nir_opt_offsets_options;
+
+bool nir_opt_offsets(nir_shader *shader, const nir_opt_offsets_options *options);
 
 bool nir_opt_peephole_select(nir_shader *shader, unsigned limit,
                              bool indirect_load_ok, bool expensive_alu_ok);

@@ -474,6 +474,7 @@ static int r300_get_video_param(struct pipe_screen *screen,
 }
 
 static const nir_shader_compiler_options r500_vs_compiler_options = {
+   .fdot_replicates = true,
    .fuse_ffma32 = true,
    .fuse_ffma64 = true,
    .lower_bitops = true,
@@ -499,6 +500,7 @@ static const nir_shader_compiler_options r500_vs_compiler_options = {
 };
 
 static const nir_shader_compiler_options r500_fs_compiler_options = {
+   .fdot_replicates = true,
    .fuse_ffma32 = true,
    .fuse_ffma64 = true,
    .lower_bitops = true,
@@ -525,6 +527,7 @@ static const nir_shader_compiler_options r500_fs_compiler_options = {
 };
 
 static const nir_shader_compiler_options r300_vs_compiler_options = {
+   .fdot_replicates = true,
    .fuse_ffma32 = true,
    .fuse_ffma64 = true,
    .lower_bitops = true,
@@ -549,6 +552,7 @@ static const nir_shader_compiler_options r300_vs_compiler_options = {
 };
 
 static const nir_shader_compiler_options r300_fs_compiler_options = {
+   .fdot_replicates = true,
    .fuse_ffma32 = true,
    .fuse_ffma64 = true,
    .lower_bitops = true,
@@ -851,6 +855,8 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
         r300screen->caps.zmask_ram = 0;
     if (SCREEN_DBG_ON(r300screen, DBG_NO_HIZ))
         r300screen->caps.hiz_ram = 0;
+    if (SCREEN_DBG_ON(r300screen, DBG_NO_TCL))
+        r300screen->caps.has_tcl = FALSE;
 
     r300screen->rws = rws;
     r300screen->screen.destroy = r300_destroy_screen;
