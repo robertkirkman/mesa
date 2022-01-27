@@ -419,7 +419,7 @@ Vulkan 1.0 -- all DONE: anv, lvp, radv, tu, v3dv, vn
 
 Vulkan 1.1 -- all DONE: anv, lvp, radv, tu, vn
 
-  VK_KHR_16bit_storage                                  DONE (anv/gen8+, lvp, radv, tu/a650, vn)
+  VK_KHR_16bit_storage                                  DONE (anv/gen8+, lvp, radv, tu/a650, v3dv, vn)
   VK_KHR_bind_memory2                                   DONE (anv, lvp, radv, tu, v3dv, vn)
   VK_KHR_dedicated_allocation                           DONE (anv, lvp, radv, tu, v3dv, vn)
   VK_KHR_descriptor_update_template                     DONE (anv, lvp, radv, tu, v3dv, vn)
@@ -445,14 +445,14 @@ Vulkan 1.1 -- all DONE: anv, lvp, radv, tu, vn
 
 Vulkan 1.2 -- all DONE: anv, vn
 
-  VK_KHR_8bit_storage                                   DONE (anv/gen8+, lvp, radv, vn)
+  VK_KHR_8bit_storage                                   DONE (anv/gen8+, lvp, radv, v3dv, vn)
   VK_KHR_buffer_device_address                          DONE (anv/gen8+, lvp, radv, tu, vn)
-  VK_KHR_create_renderpass2                             DONE (anv, lvp, radv, tu, vn)
+  VK_KHR_create_renderpass2                             DONE (anv, lvp, radv, tu, v3dv, vn)
   VK_KHR_depth_stencil_resolve                          DONE (anv, lvp, radv, tu, vn)
   VK_KHR_draw_indirect_count                            DONE (anv, lvp, radv, tu, vn)
-  VK_KHR_driver_properties                              DONE (anv, lvp, radv, vn)
+  VK_KHR_driver_properties                              DONE (anv, lvp, radv, v3dv, vn)
   VK_KHR_image_format_list                              DONE (anv, lvp, radv, tu, v3dv, vn)
-  VK_KHR_imageless_framebuffer                          DONE (anv, lvp, radv, tu, vn)
+  VK_KHR_imageless_framebuffer                          DONE (anv, lvp, radv, tu, v3dv, vn)
   VK_KHR_sampler_mirror_clamp_to_edge                   DONE (anv, lvp, radv, tu, v3dv, vn)
   VK_KHR_separate_depth_stencil_layouts                 DONE (anv, lvp, radv, vn, tu)
   VK_KHR_shader_atomic_int64                            DONE (anv/gen9+, lvp, radv, vn)
@@ -477,7 +477,7 @@ Khronos extensions that are not part of any Vulkan version:
   VK_KHR_deferred_host_operations                       DONE (anv, radv)
   VK_KHR_display                                        DONE (anv, lvp, radv, tu, v3dv)
   VK_KHR_display_swapchain                              not started
-  VK_KHR_dynamic_rendering                              DONE (lvp, radv)
+  VK_KHR_dynamic_rendering                              DONE (anv, lvp, radv)
   VK_KHR_external_fence_fd                              DONE (anv, radv, tu, v3dv, vn)
   VK_KHR_external_fence_win32                           not started
   VK_KHR_external_memory_fd                             DONE (anv, lvp, radv, tu, v3dv, vn)
@@ -571,7 +571,7 @@ Khronos extensions that are not part of any Vulkan version:
   VK_IMG_filter_cubic                                   DONE (tu/a650)
   VK_NV_compute_shader_derivatives                      DONE (anv, radv)
   VK_EXT_acquire_drm_display                            DONE (radv, anv)
-  VK_VALVE_mutable_descriptor_type                      DONE (radv, tu)
+  VK_VALVE_mutable_descriptor_type                      DONE (anv, radv, tu)
   VK_AMD_buffer_marker                                  DONE (radv)
   VK_AMD_device_coherent_memory                         DONE (radv)
   VK_AMD_draw_indirect_count                            DONE (radv)

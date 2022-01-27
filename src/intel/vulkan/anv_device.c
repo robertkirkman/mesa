@@ -190,6 +190,7 @@ get_device_extensions(const struct anv_physical_device *device,
       .KHR_device_group                      = true,
       .KHR_draw_indirect_count               = true,
       .KHR_driver_properties                 = true,
+      .KHR_dynamic_rendering                 = true,
       .KHR_external_fence                    = has_syncobj_wait,
       .KHR_external_fence_fd                 = has_syncobj_wait,
       .KHR_external_memory                   = true,
@@ -310,6 +311,7 @@ get_device_extensions(const struct anv_physical_device *device,
       .INTEL_shader_integer_functions2       = device->info.ver >= 8,
       .EXT_multi_draw                        = true,
       .NV_compute_shader_derivatives         = true,
+      .VALVE_mutable_descriptor_type         = true,
    };
 }
 
@@ -1494,6 +1496,13 @@ void anv_GetPhysicalDeviceFeatures2(
          break;
       }
 
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR: {
+         VkPhysicalDeviceDynamicRenderingFeaturesKHR *features =
+            (VkPhysicalDeviceDynamicRenderingFeaturesKHR *)ext;
+         features->dynamicRendering = true;
+         break;
+      }
+
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT: {
          VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT *features =
             (VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT *)ext;
@@ -1565,6 +1574,13 @@ void anv_GetPhysicalDeviceFeatures2(
          VkPhysicalDeviceMaintenance4FeaturesKHR *features =
             (VkPhysicalDeviceMaintenance4FeaturesKHR *)ext;
          features->maintenance4 = true;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_VALVE: {
+         VkPhysicalDeviceMutableDescriptorTypeFeaturesVALVE *features =
+            (VkPhysicalDeviceMutableDescriptorTypeFeaturesVALVE *)ext;
+         features->mutableDescriptorType = true;
          break;
       }
 
@@ -3637,7 +3653,11 @@ VkResult anv_AllocateMemory(
       }
 
       default:
-         anv_debug_ignored_stype(ext->sType);
+         if (ext->sType != VK_STRUCTURE_TYPE_WSI_MEMORY_ALLOCATE_INFO_MESA)
+            /* this isn't a real enum value,
+             * so use conditional to avoid compiler warn
+             */
+            anv_debug_ignored_stype(ext->sType);
          break;
       }
    }
