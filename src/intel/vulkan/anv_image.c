@@ -684,19 +684,6 @@ add_aux_surface_if_supported(struct anv_device *device,
          return VK_SUCCESS;
       }
 
-      if (!isl_format_supports_rendering(&device->info,
-                                         plane_format.isl_format)) {
-         /* Disable CCS because it is not useful (we can't render to the image
-          * with CCS enabled).  While it may be technically possible to enable
-          * CCS for this case, we currently don't have things hooked up to get
-          * it working.
-          */
-         anv_perf_warn(VK_LOG_OBJS(&image->vk.base),
-                       "This image format doesn't support rendering. "
-                       "Not allocating an CCS buffer.");
-         return VK_SUCCESS;
-      }
-
       if (INTEL_DEBUG(DEBUG_NO_RBC))
          return VK_SUCCESS;
 
@@ -1624,10 +1611,25 @@ anv_image_get_memory_requirements(struct anv_device *device,
     *    supported memory type for the resource. The bit `1<<i` is set if and
     *    only if the memory type `i` in the VkPhysicalDeviceMemoryProperties
     *    structure for the physical device is supported.
-    *
-    * All types are currently supported for images.
     */
-   uint32_t memory_types = (1ull << device->physical->memory.type_count) - 1;
+   uint32_t memory_types = 0;
+   for (int i = 0; i < device->physical->memory.type_count; i++) {
+      const uint32_t heap_index = device->physical->memory.types[i].heapIndex;
+
+      bool memory_type_supported = true;
+      u_foreach_bit(b, aspects) {
+         VkImageAspectFlagBits aspect = 1 << b;
+         const uint32_t plane = anv_image_aspect_to_plane(image, aspect);
+
+         if (device->info.verx10 >= 125 &&
+             isl_aux_usage_has_ccs(image->planes[plane].aux_usage) &&
+             !device->physical->memory.heaps[heap_index].is_local_mem)
+            memory_type_supported = false;
+      }
+
+      if (memory_type_supported)
+         memory_types |= 1 << i;
+   }
 
    vk_foreach_struct(ext, pMemoryRequirements->pNext) {
       switch (ext->sType) {
