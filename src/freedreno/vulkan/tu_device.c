@@ -317,6 +317,7 @@ static const struct debug_control tu_debug_options[] = {
    { "nir", TU_DEBUG_NIR },
    { "nobin", TU_DEBUG_NOBIN },
    { "sysmem", TU_DEBUG_SYSMEM },
+   { "gmem", TU_DEBUG_GMEM },
    { "forcebin", TU_DEBUG_FORCEBIN },
    { "noubwc", TU_DEBUG_NOUBWC },
    { "nomultipos", TU_DEBUG_NOMULTIPOS },
@@ -1810,6 +1811,11 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
 
    device->mem_cache = tu_pipeline_cache_from_handle(pc);
 
+   result = tu_autotune_init(&device->autotune, device);
+   if (result != VK_SUCCESS) {
+      goto fail_timeline_cond;
+   }
+
    for (unsigned i = 0; i < ARRAY_SIZE(device->scratch_bos); i++)
       mtx_init(&device->scratch_bos[i].construct_mtx, mtx_plain);
 
@@ -1890,6 +1896,8 @@ tu_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
       tu_cs_finish(device->perfcntrs_pass_cs);
       free(device->perfcntrs_pass_cs);
    }
+
+   tu_autotune_fini(&device->autotune, device);
 
    pthread_cond_destroy(&device->timeline_cond);
    vk_free(&device->vk.alloc, device->bo_list);

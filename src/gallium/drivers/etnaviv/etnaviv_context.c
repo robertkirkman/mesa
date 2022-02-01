@@ -89,6 +89,15 @@ etna_emit_string_marker(struct pipe_context *pctx, const char *string, int len)
 }
 
 static void
+etna_set_frontend_noop(struct pipe_context *pctx, bool enable)
+{
+   struct etna_context *ctx = etna_context(pctx);
+
+   pctx->flush(pctx, NULL, 0);
+   ctx->is_noop = enable;
+}
+
+static void
 etna_context_destroy(struct pipe_context *pctx)
 {
    struct etna_context *ctx = etna_context(pctx);
@@ -272,6 +281,10 @@ etna_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
    if (ctx->vertex_elements == NULL || ctx->vertex_elements->num_elements == 0)
       return; /* Nothing to do */
 
+   if (unlikely(ctx->rasterizer->cull_face == PIPE_FACE_FRONT_AND_BACK &&
+                u_decomposed_prim(info->mode) == PIPE_PRIM_TRIANGLES))
+      return;
+
    int prims = u_decomposed_prims_for_vertices(info->mode, draws[0].count);
    if (unlikely(prims <= 0)) {
       DBG("Invalid draw primitive mode=%i or no primitives to be drawn", info->mode);
@@ -338,42 +351,53 @@ etna_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
    /*
     * Figure out the buffers/features we need:
     */
-   if (etna_depth_enabled(ctx))
-      resource_written(ctx, pfb->zsbuf->texture);
+   if (ctx->dirty & ETNA_DIRTY_ZSA) {
+      if (etna_depth_enabled(ctx))
+         resource_written(ctx, pfb->zsbuf->texture);
 
-   if (etna_stencil_enabled(ctx))
-      resource_written(ctx, pfb->zsbuf->texture);
-
-   for (i = 0; i < pfb->nr_cbufs; i++) {
-      struct pipe_resource *surf;
-
-      if (!pfb->cbufs[i])
-         continue;
-
-      surf = pfb->cbufs[i]->texture;
-      resource_written(ctx, surf);
+      if (etna_stencil_enabled(ctx))
+         resource_written(ctx, pfb->zsbuf->texture);
    }
 
-   /* Mark constant buffers as being read */
-   u_foreach_bit(i, ctx->constant_buffer[PIPE_SHADER_VERTEX].enabled_mask)
-      resource_read(ctx, ctx->constant_buffer[PIPE_SHADER_VERTEX].cb[i].buffer);
+   if (ctx->dirty & ETNA_DIRTY_FRAMEBUFFER) {
+      for (i = 0; i < pfb->nr_cbufs; i++) {
+         struct pipe_resource *surf;
 
-   u_foreach_bit(i, ctx->constant_buffer[PIPE_SHADER_FRAGMENT].enabled_mask)
-      resource_read(ctx, ctx->constant_buffer[PIPE_SHADER_FRAGMENT].cb[i].buffer);
+         if (!pfb->cbufs[i])
+            continue;
 
-   /* Mark VBOs as being read */
-   u_foreach_bit(i, ctx->vertex_buffer.enabled_mask) {
-      assert(!ctx->vertex_buffer.vb[i].is_user_buffer);
-      resource_read(ctx, ctx->vertex_buffer.vb[i].buffer.resource);
+         surf = pfb->cbufs[i]->texture;
+         resource_written(ctx, surf);
+      }
    }
 
-   /* Mark index buffer as being read */
-   resource_read(ctx, indexbuf);
+   if (ctx->dirty & ETNA_DIRTY_SHADER) {
+      /* Mark constant buffers as being read */
+      u_foreach_bit(i, ctx->constant_buffer[PIPE_SHADER_VERTEX].enabled_mask)
+         resource_read(ctx, ctx->constant_buffer[PIPE_SHADER_VERTEX].cb[i].buffer);
+
+      u_foreach_bit(i, ctx->constant_buffer[PIPE_SHADER_FRAGMENT].enabled_mask)
+         resource_read(ctx, ctx->constant_buffer[PIPE_SHADER_FRAGMENT].cb[i].buffer);
+   }
+
+   if (ctx->dirty & ETNA_DIRTY_VERTEX_BUFFERS) {
+      /* Mark VBOs as being read */
+      u_foreach_bit(i, ctx->vertex_buffer.enabled_mask) {
+         assert(!ctx->vertex_buffer.vb[i].is_user_buffer);
+         resource_read(ctx, ctx->vertex_buffer.vb[i].buffer.resource);
+      }
+   }
+
+   if (ctx->dirty & ETNA_DIRTY_INDEX_BUFFER) {
+      /* Mark index buffer as being read */
+      resource_read(ctx, indexbuf);
+   }
 
    /* Mark textures as being read */
    for (i = 0; i < PIPE_MAX_SAMPLERS; i++) {
       if (ctx->sampler_view[i]) {
-          resource_read(ctx, ctx->sampler_view[i]->texture);
+         if (ctx->dirty & ETNA_DIRTY_SAMPLER_VIEWS)
+             resource_read(ctx, ctx->sampler_view[i]->texture);
 
          /* if texture was modified since the last update,
           * we need to clear the texture cache and possibly
@@ -527,7 +551,8 @@ etna_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence,
    _mesa_set_clear(ctx->flush_resources, NULL);
 
    etna_cmd_stream_flush(ctx->stream, ctx->in_fence_fd,
-                          (flags & PIPE_FLUSH_FENCE_FD) ? &out_fence_fd : NULL);
+                          (flags & PIPE_FLUSH_FENCE_FD) ? &out_fence_fd : NULL,
+                          ctx->is_noop);
 
    list_for_each_entry(struct etna_acc_query, aq, &ctx->active_acc_queries, node)
       etna_acc_query_resume(aq, ctx);
@@ -656,6 +681,7 @@ etna_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    pctx->create_fence_fd = etna_create_fence_fd;
    pctx->fence_server_sync = etna_fence_server_sync;
    pctx->emit_string_marker = etna_emit_string_marker;
+   pctx->set_frontend_noop = etna_set_frontend_noop;
 
    /* creation of compile states */
    pctx->create_blend_state = etna_blend_state_create;

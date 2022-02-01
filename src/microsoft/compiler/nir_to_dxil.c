@@ -934,7 +934,10 @@ emit_srv(struct ntd_context *ctx, nir_variable *var, unsigned count)
       res_type = DXIL_RES_SRV_TYPED;
    }
    const struct dxil_type *res_type_as_type = dxil_module_get_res_type(&ctx->mod, res_kind, comp_type, false /* readwrite */);
-   res_type_as_type = dxil_module_get_array_type(&ctx->mod, res_type_as_type, count);
+
+   if (count > 1)
+      res_type_as_type = dxil_module_get_array_type(&ctx->mod, res_type_as_type, count);
+
    const struct dxil_mdnode *srv_meta = emit_srv_metadata(&ctx->mod, res_type_as_type, var->name,
                                                           &layout, comp_type, res_kind);
 
@@ -1201,7 +1204,10 @@ emit_sampler(struct ntd_context *ctx, nir_variable *var, unsigned count)
    resource_array_layout layout = {id, binding, count, var->data.descriptor_set};
    const struct dxil_type *int32_type = dxil_module_get_int_type(&ctx->mod, 32);
    const struct dxil_type *sampler_type = dxil_module_get_struct_type(&ctx->mod, "struct.SamplerState", &int32_type, 1);
-   sampler_type = dxil_module_get_array_type(&ctx->mod, sampler_type, count);
+
+   if (count > 1)
+      sampler_type = dxil_module_get_array_type(&ctx->mod, sampler_type, count);
+
    const struct dxil_mdnode *sampler_meta = emit_sampler_metadata(&ctx->mod, sampler_type, var, &layout);
 
    if (!sampler_meta)
@@ -1223,13 +1229,6 @@ emit_static_indexing_handles(struct ntd_context *ctx)
    unsigned last_res_class = -1;
    unsigned id = 0;
    util_dynarray_foreach(&ctx->resources, struct dxil_resource, res) {
-      if (res->space > 1)
-         continue;
-
-      assert(res->space == 0 ||
-             (res->space == 1 &&
-                res->resource_type != DXIL_RES_UAV_RAW &&
-                ctx->opts->environment == DXIL_ENVIRONMENT_GL));
       enum dxil_resource_class res_class;
       const struct dxil_value **handle_array;
       switch (res->resource_type) {
@@ -1266,6 +1265,13 @@ emit_static_indexing_handles(struct ntd_context *ctx)
       else
          id++;
       last_res_class = res_class;
+
+      if (res->space > 1)
+         continue;
+      assert(res->space == 0 ||
+         (res->space == 1 &&
+            res->resource_type != DXIL_RES_UAV_RAW &&
+            ctx->opts->environment == DXIL_ENVIRONMENT_GL));
 
       /* CL uses dynamic handles for the "globals" UAV array, but uses static
        * handles for UBOs, textures, and samplers.
@@ -3049,6 +3055,20 @@ emit_load_ubo_dxil(struct ntd_context *ctx, nir_intrinsic_instr *intr)
    return true;
 }
 
+/* Need to add patch-ness as a matching parameter, since driver_location is *not* unique
+ * between control points and patch variables in HS/DS
+ */
+static nir_variable *
+find_patch_matching_variable_by_driver_location(nir_shader *s, nir_variable_mode mode, unsigned driver_location, bool patch)
+{
+   nir_foreach_variable_with_modes(var, s, mode) {
+      if (var->data.driver_location == driver_location &&
+          var->data.patch == patch)
+         return var;
+   }
+   return NULL;
+}
+
 static bool
 emit_store_output_via_intrinsic(struct ntd_context *ctx, nir_intrinsic_instr *intr)
 {
@@ -3086,12 +3106,17 @@ emit_store_output_via_intrinsic(struct ntd_context *ctx, nir_intrinsic_instr *in
 
    bool success = true;
    uint32_t writemask = nir_intrinsic_write_mask(intr);
+
+   nir_variable *var = find_patch_matching_variable_by_driver_location(ctx->shader, nir_var_shader_out, nir_intrinsic_base(intr), is_patch_constant);
+   unsigned var_base_component = var->data.location_frac;
+   unsigned base_component = nir_intrinsic_component(intr) - var_base_component;
+
    for (unsigned i = 0; i < intr->num_components && success; ++i) {
       if (writemask & (1 << i)) {
          if (is_tess_level)
-            row = dxil_module_get_int32_const(&ctx->mod, i + nir_intrinsic_component(intr));
+            row = dxil_module_get_int32_const(&ctx->mod, i + base_component);
          else
-            col = dxil_module_get_int8_const(&ctx->mod, i + nir_intrinsic_component(intr));
+            col = dxil_module_get_int8_const(&ctx->mod, i + base_component);
          const struct dxil_value *value = get_src(ctx, &intr->src[0], i, out_type);
          if (!col || !row || !value)
             return false;
@@ -3176,8 +3201,8 @@ emit_load_input_via_intrinsic(struct ntd_context *ctx, nir_intrinsic_instr *intr
    bool is_tess_level = semantics.location == VARYING_SLOT_TESS_LEVEL_INNER ||
                         semantics.location == VARYING_SLOT_TESS_LEVEL_OUTER;
 
-   const struct dxil_value *row;
-   const struct dxil_value *comp;
+   const struct dxil_value *row = NULL;
+   const struct dxil_value *comp = NULL;
    if (is_tess_level)
       comp = dxil_module_get_int8_const(&ctx->mod, 0);
    else
@@ -3191,11 +3216,15 @@ emit_load_input_via_intrinsic(struct ntd_context *ctx, nir_intrinsic_instr *intr
    if (!func)
       return false;
 
+   nir_variable *var = find_patch_matching_variable_by_driver_location(ctx->shader, nir_var_shader_in, nir_intrinsic_base(intr), is_patch_constant);
+   unsigned var_base_component = var ? var->data.location_frac : 0;
+   unsigned base_component = nir_intrinsic_component(intr) - var_base_component;
+
    for (unsigned i = 0; i < intr->num_components; ++i) {
       if (is_tess_level)
-         row = dxil_module_get_int32_const(&ctx->mod, i + nir_intrinsic_component(intr));
+         row = dxil_module_get_int32_const(&ctx->mod, i + base_component);
       else
-         comp = dxil_module_get_int8_const(&ctx->mod, i + nir_intrinsic_component(intr));
+         comp = dxil_module_get_int8_const(&ctx->mod, i + base_component);
 
       if (!row || !comp)
          return false;
@@ -3993,6 +4022,15 @@ emit_load_sample_pos_from_id(struct ntd_context *ctx, nir_intrinsic_instr *intr)
 }
 
 static bool
+emit_load_layer_id(struct ntd_context *ctx, nir_intrinsic_instr *intr)
+{
+   const struct dxil_value *layer_id = dxil_module_get_int32_const(&ctx->mod, 0);
+   /* TODO: Properly implement this once multi-view is supported */
+   store_dest_value(ctx, &intr->dest, 0, layer_id);
+   return true;
+}
+
+static bool
 emit_intrinsic(struct ntd_context *ctx, nir_intrinsic_instr *intr)
 {
    switch (intr->intrinsic) {
@@ -4173,6 +4211,8 @@ emit_intrinsic(struct ntd_context *ctx, nir_intrinsic_instr *intr)
       return emit_vulkan_resource_index(ctx, intr);
    case nir_intrinsic_load_vulkan_descriptor:
       return emit_load_vulkan_descriptor(ctx, intr);
+   case nir_intrinsic_load_layer_id:
+      return emit_load_layer_id(ctx, intr);
 
    case nir_intrinsic_load_sample_pos_from_id:
       return emit_load_sample_pos_from_id(ctx, intr);
@@ -4278,12 +4318,17 @@ emit_deref(struct ntd_context* ctx, nir_deref_instr* instr)
 
    assert(glsl_type_is_sampler(type) || glsl_type_is_image(type) || glsl_type_is_texture(type));
    enum dxil_resource_class res_class;
-   if (glsl_type_is_image(type))
-      res_class = DXIL_RESOURCE_CLASS_UAV;
-   else if (glsl_type_is_sampler(type))
+   if (glsl_type_is_image(type)) {
+      if (ctx->opts->environment == DXIL_ENVIRONMENT_VULKAN &&
+          (var->data.access & ACCESS_NON_WRITEABLE))
+         res_class = DXIL_RESOURCE_CLASS_SRV;
+      else
+         res_class = DXIL_RESOURCE_CLASS_UAV;
+   } else if (glsl_type_is_sampler(type)) {
       res_class = DXIL_RESOURCE_CLASS_SAMPLER;
-   else
+   } else {
       res_class = DXIL_RESOURCE_CLASS_SRV;
+   }
    
    unsigned descriptor_set = ctx->opts->environment == DXIL_ENVIRONMENT_VULKAN ?
       var->data.descriptor_set : (glsl_type_is_image(type) ? 1 : 0);
@@ -4618,6 +4663,11 @@ emit_tex(struct ntd_context *ctx, nir_tex_instr *instr)
 
       case nir_tex_src_lod:
          assert(nir_src_num_components(instr->src[i].src) == 1);
+         if (instr->op == nir_texop_txf_ms) {
+            assert(nir_src_as_int(instr->src[i].src) == 0);
+            break;
+         }
+
          /* Buffers don't have a LOD */
          if (instr->sampler_dim != GLSL_SAMPLER_DIM_BUF)
             params.lod_or_sample = get_src(ctx, &instr->src[i].src, 0, type);
@@ -5160,10 +5210,17 @@ emit_module(struct ntd_context *ctx, const struct nir_to_dxil_options *opts)
 
    /* SRVs */
    nir_foreach_variable_with_modes(var, ctx->shader, nir_var_uniform) {
-      unsigned count = glsl_type_get_texture_count(var->type);
-      assert(count == 0 || glsl_type_is_texture(glsl_without_array(var->type)));
-      if (count > 0 && !emit_srv(ctx, var, count))
+      if (glsl_type_is_texture(glsl_without_array(var->type)) &&
+          !emit_srv(ctx, var, glsl_type_get_texture_count(var->type)))
          return false;
+   }
+
+   if (ctx->opts->environment == DXIL_ENVIRONMENT_VULKAN) {
+      nir_foreach_image_variable(var, ctx->shader) {
+         if ((var->data.access & ACCESS_NON_WRITEABLE) &&
+             !emit_srv(ctx, var, glsl_type_get_image_count(var->type)))
+            return false;
+      }
    }
 
    /* Handle read-only SSBOs as SRVs */
@@ -5247,6 +5304,10 @@ emit_module(struct ntd_context *ctx, const struct nir_to_dxil_options *opts)
    }
 
    nir_foreach_image_variable(var, ctx->shader) {
+      if (ctx->opts->environment == DXIL_ENVIRONMENT_VULKAN &&
+          var && (var->data.access & ACCESS_NON_WRITEABLE))
+         continue; // already handled in SRV
+
       if (!emit_uav_var(ctx, var, glsl_type_get_image_count(var->type)))
          return false;
    }

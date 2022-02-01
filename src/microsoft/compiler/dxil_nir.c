@@ -1607,7 +1607,8 @@ redirect_texture_derefs(struct nir_builder *b, nir_instr *instr, void *data)
    nir_deref_instr *old_tail = path.path[0];
    assert(old_tail->deref_type == nir_deref_type_var);
    nir_variable *old_var = old_tail->var;
-   if (glsl_type_is_texture(glsl_without_array(old_var->type))) {
+   if (glsl_type_is_texture(glsl_without_array(old_var->type)) ||
+       glsl_type_is_image(glsl_without_array(old_var->type))) {
       nir_deref_path_finish(&path);
       return false;
    }
@@ -1748,20 +1749,24 @@ dxil_nir_lower_sysval_to_load_input(nir_shader *s, nir_variable **sysval_vars)
 static int
 variable_location_cmp(const nir_variable* a, const nir_variable* b)
 {
-   // Sort by driver_location, location, location_frac, then index
+   // Sort by stream, driver_location, location, location_frac, then index
    unsigned a_location = a->data.location;
    if (a_location >= VARYING_SLOT_PATCH0)
       a_location -= VARYING_SLOT_PATCH0;
    unsigned b_location = b->data.location;
    if (b_location >= VARYING_SLOT_PATCH0)
       b_location -= VARYING_SLOT_PATCH0;
-   return a->data.driver_location != b->data.driver_location ?
-            a->data.driver_location - b->data.driver_location : 
-            a_location !=  b_location ?
-               a_location - b_location :
-               a->data.location_frac != b->data.location_frac ?
-                  a->data.location_frac - b->data.location_frac :
-                  a->data.index - b->data.index;
+   unsigned a_stream = a->data.stream & ~NIR_STREAM_PACKED;
+   unsigned b_stream = b->data.stream & ~NIR_STREAM_PACKED;
+   return a_stream != b_stream ?
+            a_stream - b_stream :
+            a->data.driver_location != b->data.driver_location ?
+               a->data.driver_location - b->data.driver_location :
+               a_location !=  b_location ?
+                  a_location - b_location :
+                  a->data.location_frac != b->data.location_frac ?
+                     a->data.location_frac - b->data.location_frac :
+                     a->data.index - b->data.index;
 }
 
 /* Order varyings according to driver location */
