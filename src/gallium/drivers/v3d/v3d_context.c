@@ -88,7 +88,7 @@ v3d_memory_barrier(struct pipe_context *pctx, unsigned int flags)
 
 static void
 v3d_set_debug_callback(struct pipe_context *pctx,
-                       const struct pipe_debug_callback *cb)
+                       const struct util_debug_callback *cb)
 {
         struct v3d_context *v3d = v3d_context(pctx);
 
@@ -293,7 +293,9 @@ v3d_context_destroy(struct pipe_context *pctx)
 
         slab_destroy_child(&v3d->transfer_pool);
 
-        pipe_surface_reference(&v3d->framebuffer.cbufs[0], NULL);
+        for (int i = 0; i < v3d->framebuffer.nr_cbufs; i++)
+                pipe_surface_reference(&v3d->framebuffer.cbufs[i], NULL);
+
         pipe_surface_reference(&v3d->framebuffer.zsbuf, NULL);
 
         if (v3d->sand8_blit_vs)

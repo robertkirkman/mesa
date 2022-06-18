@@ -1,8 +1,7 @@
-/**
-***********************************************************************************************************************
+/*
+************************************************************************************************************************
 *
-* Copyright © 2007-2021 Advanced Micro Devices, Inc.
-* All Rights Reserved.
+*  Copyright (C) 2017-2022 Advanced Micro Devices, Inc.  All rights reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
 * copy of this software and associated documentation files (the "Software"),
@@ -22,8 +21,7 @@
 * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 * OTHER DEALINGS IN THE SOFTWARE
 *
-***********************************************************************************************************************
-*/
+***********************************************************************************************************************/
 
 #ifndef _AMDGPU_ASIC_ADDR_H
 #define _AMDGPU_ASIC_ADDR_H
@@ -46,7 +44,11 @@
 #define FAMILY_RV      0x8E
 #define FAMILY_NV      0x8F
 #define FAMILY_VGH     0x90
-#define FAMILY_YC      0x92
+#define FAMILY_GFX1100 0x91
+#define FAMILY_GFX1103 0x94
+#define FAMILY_RMB     0x92
+#define FAMILY_GC_10_3_6  0x95
+#define FAMILY_GC_10_3_7  0x97
 
 // AMDGPU_FAMILY_IS(familyId, familyName)
 #define FAMILY_IS(f, fn)     (f == FAMILY_##fn)
@@ -60,7 +62,9 @@
 #define FAMILY_IS_AI(f)      FAMILY_IS(f, AI)
 #define FAMILY_IS_RV(f)      FAMILY_IS(f, RV)
 #define FAMILY_IS_NV(f)      FAMILY_IS(f, NV)
-#define FAMILY_IS_YC(f)      FAMILY_IS(f, YC)
+#define FAMILY_IS_RMB(f)     FAMILY_IS(f, RMB)
+#define FAMILY_IS_GFX1100(f) FAMILY_IS(f, GFX1100)
+#define FAMILY_IS_GFX1103(f) FAMILY_IS(f, GFX1103)
 
 #define AMDGPU_UNKNOWN          0xFF
 
@@ -81,6 +85,7 @@
 #define AMDGPU_ICELAND_RANGE    0x01, 0x14
 #define AMDGPU_TONGA_RANGE      0x14, 0x28
 #define AMDGPU_FIJI_RANGE       0x3C, 0x50
+
 #define AMDGPU_POLARIS10_RANGE  0x50, 0x5A
 #define AMDGPU_POLARIS11_RANGE  0x5A, 0x64
 #define AMDGPU_POLARIS12_RANGE  0x64, 0x6E
@@ -102,14 +107,24 @@
 #define AMDGPU_NAVI10_RANGE     0x01, 0x0A
 #define AMDGPU_NAVI12_RANGE     0x0A, 0x14
 #define AMDGPU_NAVI14_RANGE     0x14, 0x28
-#define AMDGPU_SIENNA_CICHLID_RANGE     0x28, 0x32
-#define AMDGPU_NAVY_FLOUNDER_RANGE      0x32, 0x3C
-#define AMDGPU_DIMGREY_CAVEFISH_RANGE   0x3C, 0x46
-#define AMDGPU_BEIGE_GOBY_RANGE         0x46, 0x50
+#define AMDGPU_NAVI21_RANGE     0x28, 0x32
+#define AMDGPU_NAVI22_RANGE     0x32, 0x3C
+#define AMDGPU_NAVI23_RANGE     0x3C, 0x46
+#define AMDGPU_NAVI24_RANGE     0x46, 0x50
 
 #define AMDGPU_VANGOGH_RANGE    0x01, 0xFF
 
-#define AMDGPU_YELLOW_CARP_RANGE 0x01, 0xFF
+#define AMDGPU_GFX1100_RANGE    0x01, 0x10
+#define AMDGPU_GFX1101_RANGE    0x20, 0xFF
+#define AMDGPU_GFX1102_RANGE    0x10, 0x20
+
+#define AMDGPU_GFX1103_RANGE    0x01, 0xFF
+
+#define AMDGPU_REMBRANDT_RANGE  0x01, 0xFF
+
+#define AMDGPU_GFX1036_RANGE    0x01, 0xFF
+
+#define AMDGPU_GFX1037_RANGE    0x01, 0xFF
 
 #define AMDGPU_EXPAND_FIX(x) x
 #define AMDGPU_RANGE_HELPER(val, min, max) ((val >= min) && (val < max))
@@ -157,15 +172,30 @@
 #define ASICREV_IS_RENOIR(r)           ASICREV_IS(r, RENOIR)
 
 #define ASICREV_IS_NAVI10_P(r)         ASICREV_IS(r, NAVI10)
+
 #define ASICREV_IS_NAVI12_P(r)         ASICREV_IS(r, NAVI12)
+
 #define ASICREV_IS_NAVI14_M(r)         ASICREV_IS(r, NAVI14)
-#define ASICREV_IS_SIENNA_CICHLID(r)   ASICREV_IS(r, SIENNA_CICHLID)
-#define ASICREV_IS_NAVY_FLOUNDER(r)    ASICREV_IS(r, NAVY_FLOUNDER)
-#define ASICREV_IS_DIMGREY_CAVEFISH(r) ASICREV_IS(r, DIMGREY_CAVEFISH)
-#define ASICREV_IS_BEIGE_GOBY(r)       ASICREV_IS(r, BEIGE_GOBY)
+
+#define ASICREV_IS_NAVI21_M(r)         ASICREV_IS(r, NAVI21)
+
+#define ASICREV_IS_NAVI22_P(r)         ASICREV_IS(r, NAVI22)
+
+#define ASICREV_IS_NAVI23_P(r)         ASICREV_IS(r, NAVI23)
+
+#define ASICREV_IS_NAVI24_P(r)         ASICREV_IS(r, NAVI24)
 
 #define ASICREV_IS_VANGOGH(r)          ASICREV_IS(r, VANGOGH)
 
-#define ASICREV_IS_YELLOW_CARP(r)      ASICREV_IS(r, YELLOW_CARP)
+#define ASICREV_IS_GFX1100(r)          ASICREV_IS(r, GFX1100)
+#define ASICREV_IS_GFX1101(r)          ASICREV_IS(r, GFX1101)
+#define ASICREV_IS_GFX1102(r)          ASICREV_IS(r, GFX1102)
+#define ASICREV_IS_GFX1103(r)          ASICREV_IS(r, GFX1103)
+
+#define ASICREV_IS_REMBRANDT(r)        ASICREV_IS(r, REMBRANDT)
+
+#define ASICREV_IS_GFX1036(r)          ASICREV_IS(r, GFX1036)
+
+#define ASICREV_IS_GFX1037(r)          ASICREV_IS(r, GFX1037)
 
 #endif // _AMDGPU_ASIC_ADDR_H

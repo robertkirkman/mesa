@@ -54,12 +54,15 @@ enum ir3_driver_param {
    IR3_DP_LOCAL_GROUP_SIZE_Y = 9,
    IR3_DP_LOCAL_GROUP_SIZE_Z = 10,
    IR3_DP_SUBGROUP_ID_SHIFT = 11,
+   IR3_DP_WORKGROUP_ID_X = 12,
+   IR3_DP_WORKGROUP_ID_Y = 13,
+   IR3_DP_WORKGROUP_ID_Z = 14,
    /* NOTE: gl_NumWorkGroups should be vec4 aligned because
     * glDispatchComputeIndirect() needs to load these from
     * the info->indirect buffer.  Keep that in mind when/if
     * adding any addition CS driver params.
     */
-   IR3_DP_CS_COUNT = 12, /* must be aligned to vec4 */
+   IR3_DP_CS_COUNT = 16, /* must be aligned to vec4 */
 
    /* vertex shader driver params: */
    IR3_DP_DRAWID = 0,
@@ -154,6 +157,7 @@ struct ir3_ubo_analysis_state {
  * that pointer size (ubo, etc) changes depending on generation.
  *
  *    user consts
+ *    preamble consts
  *    UBO addresses
  *    SSBO sizes
  *    image dimensions
@@ -205,6 +209,8 @@ struct ir3_const_state {
    unsigned immediates_count;
    unsigned immediates_size;
    uint32_t *immediates;
+
+   unsigned preamble_size;
 
    /* State of ubo access lowered to push consts: */
    struct ir3_ubo_analysis_state ubo_state;
@@ -342,6 +348,10 @@ struct ir3_shader_key {
 
    /* bitmask of samplers which need astc srgb workaround (a4xx): */
    uint16_t vastc_srgb, fastc_srgb;
+
+   /* per-component (3-bit) swizzles of each sampler (a4xx tg4): */
+   uint16_t vsampler_swizzles[16];
+   uint16_t fsampler_swizzles[16];
 };
 
 static inline unsigned
@@ -392,7 +402,9 @@ ir3_shader_key_changes_fs(struct ir3_shader_key *key,
 {
    if (last_key->has_per_samp || key->has_per_samp) {
       if ((last_key->fsamples != key->fsamples) ||
-          (last_key->fastc_srgb != key->fastc_srgb))
+          (last_key->fastc_srgb != key->fastc_srgb) ||
+          memcmp(last_key->fsampler_swizzles, key->fsampler_swizzles,
+                sizeof(key->fsampler_swizzles)))
          return true;
    }
 
@@ -418,7 +430,9 @@ ir3_shader_key_changes_vs(struct ir3_shader_key *key,
 {
    if (last_key->has_per_samp || key->has_per_samp) {
       if ((last_key->vsamples != key->vsamples) ||
-          (last_key->vastc_srgb != key->vastc_srgb))
+          (last_key->vastc_srgb != key->vastc_srgb) ||
+          memcmp(last_key->vsampler_swizzles, key->vsampler_swizzles,
+                sizeof(key->vsampler_swizzles)))
          return true;
    }
 
@@ -494,6 +508,9 @@ struct ir3_shader_variant {
    /* variant id (for debug) */
    uint32_t id;
 
+   /* id of the shader the variant came from (for debug) */
+   uint32_t shader_id;
+
    struct ir3_shader_key key;
 
    /* vertex shaders can have an extra version for hwbinning pass,
@@ -512,7 +529,9 @@ struct ir3_shader_variant {
 
    /* replicated here to avoid passing extra ptrs everywhere: */
    gl_shader_stage type;
-   struct ir3_shader *shader;
+   struct ir3_compiler *compiler;
+
+   char *name;
 
    /* variant's copy of nir->constant_data (since we don't track the NIR in
     * the variant, and shader->nir is before the opt pass).  Moves to v->bin
@@ -606,8 +625,9 @@ struct ir3_shader_variant {
    /* Map from location to offset in per-primitive storage. In dwords for
     * HS, where varyings are read in the next stage via ldg with a dword
     * offset, and in bytes for all other stages.
+    * +POSITION, +PSIZE, ... - see shader_io_get_unique_index
     */
-   unsigned output_loc[32 + 4]; /* +POSITION +PSIZE +CLIP_DIST0 +CLIP_DIST1 */
+   unsigned output_loc[32 + 6];
 
    /* attributes (VS) / varyings (FS):
     * Note that sysval's should come *after* normal inputs.
@@ -699,6 +719,14 @@ struct ir3_shader_variant {
       unsigned orig_idx[16];
    } astc_srgb;
 
+   /* for tg4 workaround, the number/base of additional
+    * unswizzled tex states we need, and index of original tex states
+    */
+   struct {
+      unsigned base, count;
+      unsigned orig_idx[16];
+   } tg4;
+
    /* texture sampler pre-dispatches */
    uint32_t num_sampler_prefetch;
    struct ir3_sampler_prefetch sampler_prefetch[IR3_MAX_SAMPLER_PREFETCH];
@@ -708,6 +736,54 @@ struct ir3_shader_variant {
 
    /* Important for compute shader to determine max reg footprint */
    bool has_barrier;
+
+   /* The offset where images start in the IBO array. */
+   unsigned num_ssbos;
+
+   /* The total number of SSBOs and images, i.e. the number of hardware IBOs. */
+   unsigned num_ibos;
+
+   unsigned num_reserved_user_consts;
+
+   union {
+      struct {
+         enum tess_primitive_mode primitive_mode;
+
+         /** The number of vertices in the TCS output patch. */
+         uint8_t tcs_vertices_out;
+         unsigned spacing:2; /*gl_tess_spacing*/
+
+         /** Is the vertex order counterclockwise? */
+         bool ccw:1;
+         bool point_mode:1;
+      } tess;
+      struct {
+         /** The output primitive type */
+         uint16_t output_primitive;
+
+         /** The maximum number of vertices the geometry shader might write. */
+         uint16_t vertices_out;
+
+         /** 1 .. MAX_GEOMETRY_SHADER_INVOCATIONS */
+         uint8_t invocations;
+
+         /** The number of vertices received per input primitive (max. 6) */
+         uint8_t vertices_in:3;
+      } gs;
+      struct {
+         bool early_fragment_tests : 1;
+         bool color_is_dual_source : 1;
+      } fs;
+      struct {
+         unsigned req_input_mem;
+         unsigned req_local_mem;
+      } cs;
+   };
+
+   enum ir3_wavesize_option api_wavesize, real_wavesize;
+
+   /* For when we don't have a shader, variant's copy of streamout state */
+   struct ir3_stream_output_info stream_output;
 
    struct ir3_disasm_info disasm_info;
 };
@@ -821,14 +897,14 @@ ir3_const_state(const struct ir3_shader_variant *v)
 static inline unsigned
 ir3_max_const(const struct ir3_shader_variant *v)
 {
-   const struct ir3_compiler *compiler = v->shader->compiler;
+   const struct ir3_compiler *compiler = v->compiler;
 
-   if ((v->shader->type == MESA_SHADER_COMPUTE) ||
-       (v->shader->type == MESA_SHADER_KERNEL)) {
+   if ((v->type == MESA_SHADER_COMPUTE) ||
+       (v->type == MESA_SHADER_KERNEL)) {
       return compiler->max_const_compute;
    } else if (v->key.safe_constlen) {
       return compiler->max_const_safe;
-   } else if (v->shader->type == MESA_SHADER_FRAGMENT) {
+   } else if (v->type == MESA_SHADER_FRAGMENT) {
       return compiler->max_const_frag;
    } else {
       return compiler->max_const_geom;
@@ -837,9 +913,14 @@ ir3_max_const(const struct ir3_shader_variant *v)
 
 void *ir3_shader_assemble(struct ir3_shader_variant *v);
 struct ir3_shader_variant *
+ir3_shader_create_variant(struct ir3_shader *shader,
+                          const struct ir3_shader_key *key,
+                          bool keep_ir);
+struct ir3_shader_variant *
 ir3_shader_get_variant(struct ir3_shader *shader,
                        const struct ir3_shader_key *key, bool binning_pass,
                        bool keep_ir, bool *created);
+
 
 struct ir3_shader_options {
    unsigned reserved_user_consts;
@@ -905,8 +986,6 @@ ir3_find_output(const struct ir3_shader_variant *so, gl_varying_slot slot)
    for (j = 0; j < so->outputs_count; j++)
       if (so->outputs[j].slot == slot)
          return j;
-
-   debug_assert(0);
 
    return -1;
 }
@@ -1071,26 +1150,22 @@ ir3_shader_halfregs(const struct ir3_shader_variant *v)
 static inline uint32_t
 ir3_shader_nibo(const struct ir3_shader_variant *v)
 {
-   /* The dummy variant used in binning mode won't have an actual shader. */
-   if (!v->shader)
-      return 0;
-
-   return v->shader->nir->info.num_ssbos + v->shader->nir->info.num_images;
+   return v->num_ibos;
 }
 
 static inline uint32_t
 ir3_shader_branchstack_hw(const struct ir3_shader_variant *v)
 {
    /* Dummy shader */
-   if (!v->shader)
+   if (!v->compiler)
       return 0;
 
-   if (v->shader->compiler->gen < 5)
+   if (v->compiler->gen < 5)
       return v->branchstack;
 
    if (v->branchstack > 0) {
       uint32_t branchstack = v->branchstack / 2 + 1;
-      return MIN2(branchstack, v->shader->compiler->branchstack_size / 2);
+      return MIN2(branchstack, v->compiler->branchstack_size / 2);
    } else {
       return 0;
    }

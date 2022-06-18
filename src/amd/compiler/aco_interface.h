@@ -27,11 +27,16 @@
 
 #include "nir.h"
 
+#include "amd_family.h"
+
+#include "aco_shader_info.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 struct ac_shader_config;
+struct aco_shader_info;
+struct aco_vs_prolog_key;
 
 struct aco_compiler_statistic_info {
    char name[32];
@@ -41,17 +46,19 @@ struct aco_compiler_statistic_info {
 extern const unsigned aco_num_statistics;
 extern const struct aco_compiler_statistic_info* aco_statistic_infos;
 
-void aco_compile_shader(const struct radv_nir_compiler_options* options,
-                        const struct radv_shader_info* info,
+void aco_compile_shader(const struct aco_compiler_options* options,
+                        const struct aco_shader_info* info,
                         unsigned shader_count, struct nir_shader* const* shaders,
                         const struct radv_shader_args *args,
                         struct radv_shader_binary** binary);
 
-void aco_compile_vs_prolog(const struct radv_nir_compiler_options* options,
-                           const struct radv_shader_info* info,
-                           const struct radv_vs_prolog_key* key,
+void aco_compile_vs_prolog(const struct aco_compiler_options* options,
+                           const struct aco_shader_info* info,
+                           const struct aco_vs_prolog_key* key,
                            const struct radv_shader_args* args,
                            struct radv_prolog_binary** binary);
+
+uint64_t aco_get_codegen_flags();
 
 #ifdef __cplusplus
 }

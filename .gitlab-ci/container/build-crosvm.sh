@@ -2,13 +2,20 @@
 
 set -ex
 
-CROSVM_VERSION=d2b6a64dd31c92a284a905c0f2483d0b222b1220
-git clone --single-branch -b for-mesa-ci --no-checkout https://gitlab.freedesktop.org/tomeu/crosvm.git /platform/crosvm
+SCRIPT_DIR="$(pwd)"
+
+CROSVM_VERSION=c7cd0e0114c8363b884ba56d8e12adee718dcc93
+git clone --single-branch -b main --no-checkout https://chromium.googlesource.com/chromiumos/platform/crosvm /platform/crosvm
 pushd /platform/crosvm
 git checkout "$CROSVM_VERSION"
 git submodule update --init
+# Apply all crosvm patches for Mesa CI
+cat "$SCRIPT_DIR"/.gitlab-ci/container/build-crosvm_*.patch |
+    patch -p1
 
-VIRGLRENDERER_VERSION=2a5fb800c6b0ce15ad37c2c698635e3e2d27b37c
+VIRGLRENDERER_VERSION=1c311dc0eb4a6477ebf695ff430021adabddd518
+rm -rf third_party/virglrenderer
+git clone --single-branch -b master --no-checkout https://gitlab.freedesktop.org/virgl/virglrenderer.git third_party/virglrenderer
 pushd third_party/virglrenderer
 git checkout "$VIRGLRENDERER_VERSION"
 meson build/ $EXTRA_MESON_ARGS
@@ -31,4 +38,4 @@ RUSTFLAGS='-L native=/usr/local/lib' cargo install \
 
 popd
 
-rm -rf $PLATFORM2_ROOT $AOSP_EXTERNAL_ROOT/minijail $THIRD_PARTY_ROOT/adhd $THIRD_PARTY_ROOT/rust-vmm /platform/crosvm
+rm -rf /platform/crosvm

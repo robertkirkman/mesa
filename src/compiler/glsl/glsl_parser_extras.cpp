@@ -38,7 +38,6 @@
 #include "glsl_parser_extras.h"
 #include "glsl_parser.h"
 #include "ir_optimization.h"
-#include "loop_analysis.h"
 #include "builtin_functions.h"
 
 /**
@@ -1831,6 +1830,7 @@ set_shader_inout_layout(struct gl_shader *shader,
       }
       break;
    case MESA_SHADER_TESS_EVAL:
+      shader->OES_tessellation_point_size_enable = state->OES_tessellation_point_size_enable || state->EXT_tessellation_point_size_enable;
       shader->info.TessEval._PrimitiveMode = TESS_PRIMITIVE_UNSPECIFIED;
       if (state->in_qualifier->flags.q.prim_type) {
          switch (state->in_qualifier->prim_type) {
@@ -1859,6 +1859,7 @@ set_shader_inout_layout(struct gl_shader *shader,
          shader->info.TessEval.PointMode = state->in_qualifier->point_mode;
       break;
    case MESA_SHADER_GEOMETRY:
+      shader->OES_geometry_point_size_enable = state->OES_geometry_point_size_enable || state->EXT_geometry_point_size_enable;
       shader->info.Geom.VerticesOut = -1;
       if (state->out_qualifier->flags.q.max_vertices) {
          unsigned qual_max_vertices;
@@ -2107,18 +2108,11 @@ opt_shader_and_create_symbol_table(const struct gl_constants *consts,
       &consts->ShaderCompilerOptions[shader->Stage];
 
    /* Do some optimization at compile time to reduce shader IR size
-    * and reduce later work if the same shader is linked multiple times
+    * and reduce later work if the same shader is linked multiple times.
+    *
+    * Run it just once, since NIR will do the real optimization.
     */
-   if (consts->GLSLOptimizeConservatively) {
-      /* Run it just once. */
-      do_common_optimization(shader->ir, false, false, options,
-                             consts->NativeIntegers);
-   } else {
-      /* Repeat it until it stops making changes. */
-      while (do_common_optimization(shader->ir, false, false, options,
-                                    consts->NativeIntegers))
-         ;
-   }
+   do_common_optimization(shader->ir, false, options, consts->NativeIntegers);
 
    validate_ir_tree(shader->ir);
 
@@ -2365,7 +2359,6 @@ _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
  */
 bool
 do_common_optimization(exec_list *ir, bool linked,
-		       bool uniform_locations_assigned,
                        const struct gl_shader_compiler_options *options,
                        bool native_integers)
 {
@@ -2403,7 +2396,7 @@ do_common_optimization(exec_list *ir, bool linked,
       OPT(opt_flip_matrices, ir);
 
    if (linked)
-      OPT(do_dead_code, ir, uniform_locations_assigned);
+      OPT(do_dead_code, ir);
    else
       OPT(do_dead_code_unlinked, ir);
    OPT(do_dead_code_local, ir);
@@ -2418,7 +2411,7 @@ do_common_optimization(exec_list *ir, bool linked,
    OPT(do_rebalance_tree, ir);
    OPT(do_algebraic, ir, native_integers, options);
    OPT(do_lower_jumps, ir, true, true, options->EmitNoMainReturn,
-       options->EmitNoCont, options->EmitNoLoops);
+       options->EmitNoCont);
    OPT(do_vec_index_to_swizzle, ir);
    OPT(lower_vector_insert, ir, false);
    OPT(optimize_swizzles, ir);
@@ -2437,44 +2430,8 @@ do_common_optimization(exec_list *ir, bool linked,
       do_constant_propagation(ir);
    progress |= array_split;
 
-   if (options->MaxUnrollIterations) {
-      loop_state *ls = analyze_loop_variables(ir);
-      if (ls->loop_found) {
-         bool loop_progress = unroll_loops(ir, ls, options);
-         while (loop_progress) {
-            loop_progress = false;
-            loop_progress |= do_constant_propagation(ir);
-            loop_progress |= do_if_simplification(ir);
-
-            /* Some drivers only call do_common_optimization() once rather
-             * than in a loop. So we must call do_lower_jumps() after
-             * unrolling a loop because for drivers that use LLVM validation
-             * will fail if a jump is not the last instruction in the block.
-             * For example the following will fail LLVM validation:
-             *
-             *   (loop (
-             *      ...
-             *   break
-             *   (assign  (x) (var_ref v124)  (expression int + (var_ref v124)
-             *      (constant int (1)) ) )
-             *   ))
-             */
-            loop_progress |= do_lower_jumps(ir, true, true,
-                                            options->EmitNoMainReturn,
-                                            options->EmitNoCont,
-                                            options->EmitNoLoops);
-         }
-         progress |= loop_progress;
-      }
-      delete ls;
-   }
-
-   /* If the PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY cap is set, this pass will
-    * only be called once rather than repeatedly until no further progress is
-    * made.
-    *
-    * If an optimization pass fails to preserve the invariant flag, calling
-    * the pass only once may result in incorrect code generation. Always call
+   /* If an optimization pass fails to preserve the invariant flag, calling
+    * the pass only once earlier may result in incorrect code generation. Always call
     * propagate_invariance() last to avoid this possibility.
     */
    OPT(propagate_invariance, ir);

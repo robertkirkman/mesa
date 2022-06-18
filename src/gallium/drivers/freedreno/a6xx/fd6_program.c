@@ -98,7 +98,7 @@ fd6_emit_shader(struct fd_context *ctx, struct fd_ringbuffer *ring,
 
 #ifdef DEBUG
    /* Name should generally match what you get with MESA_SHADER_CAPTURE_PATH: */
-   const char *name = so->shader->nir->info.name;
+   const char *name = so->name;
    if (name)
       fd_emit_string5(ring, name, strlen(name));
 #endif
@@ -114,7 +114,7 @@ fd6_emit_shader(struct fd_context *ctx, struct fd_ringbuffer *ring,
       uint32_t total_size =
          ALIGN(per_fiber_size * fibers_per_sp, 1 << 12) * num_sp_cores;
       ctx->pvtmem[so->pvtmem_per_wave].bo = fd_bo_new(
-         ctx->screen->dev, total_size, 0,
+         ctx->screen->dev, total_size, FD_BO_NOMAP,
          "pvtmem_%s_%d", so->pvtmem_per_wave ? "per_wave" : "per_fiber",
          per_fiber_size);
    } else {
@@ -189,7 +189,7 @@ setup_stream_out(struct fd_context *ctx, struct fd6_program_state *state,
                  const struct ir3_shader_variant *v,
                  struct ir3_shader_linkage *l)
 {
-   const struct ir3_stream_output_info *strmout = &v->shader->stream_output;
+   const struct ir3_stream_output_info *strmout = &v->stream_output;
 
    /* Note: 64 here comes from the HW layout of the program RAM. The program
     * for stream N is at DWORD 64 * N.
@@ -552,7 +552,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
    OUT_RING(ring, A6XX_SP_MODE_CONTROL_CONSTANT_DEMOTION_ENABLE | 4);
 
    bool fs_has_dual_src_color =
-      !binning_pass && fs->shader->nir->info.fs.color_is_dual_source;
+      !binning_pass && fs->fs.color_is_dual_source;
 
    OUT_PKT4(ring, REG_A6XX_SP_FS_OUTPUT_CNTL0, 1);
    OUT_RING(ring,
@@ -580,7 +580,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
    struct ir3_shader_linkage l = {0};
    const struct ir3_shader_variant *last_shader = fd6_last_shader(state);
 
-   bool do_streamout = (last_shader->shader->stream_output.num_outputs > 0);
+   bool do_streamout = (last_shader->stream_output.num_outputs > 0);
    uint8_t clip_mask = last_shader->clip_mask,
            cull_mask = last_shader->cull_mask;
    uint8_t clip_cull_mask = clip_mask | cull_mask;
@@ -713,22 +713,20 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
          ring,
          A6XX_SP_DS_CTRL_REG0_FULLREGFOOTPRINT(ds->info.max_reg + 1) |
             A6XX_SP_DS_CTRL_REG0_HALFREGFOOTPRINT(ds->info.max_half_reg + 1) |
-            COND(ds->mergedregs, A6XX_SP_DS_CTRL_REG0_MERGEDREGS) |
             A6XX_SP_DS_CTRL_REG0_BRANCHSTACK(ir3_shader_branchstack_hw(ds)));
 
       fd6_emit_shader(ctx, ring, ds);
       fd6_emit_immediates(ctx->screen, ds, ring);
       fd6_emit_link_map(ctx->screen, hs, ds, ring);
 
-      shader_info *hs_info = &hs->shader->nir->info;
       OUT_PKT4(ring, REG_A6XX_PC_TESS_NUM_VERTEX, 1);
-      OUT_RING(ring, hs_info->tess.tcs_vertices_out);
+      OUT_RING(ring, hs->tess.tcs_vertices_out);
 
       if (ctx->screen->info->a6xx.tess_use_shared) {
          unsigned hs_input_size = 6 + (3 * (vs->output_size - 1));
          unsigned wave_input_size =
                MIN2(64, DIV_ROUND_UP(hs_input_size * 4,
-                                     hs_info->tess.tcs_vertices_out));
+                                     hs->tess.tcs_vertices_out));
 
          OUT_PKT4(ring, REG_A6XX_PC_HS_INPUT_SIZE, 1);
          OUT_RING(ring, hs_input_size);
@@ -737,7 +735,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
          OUT_RING(ring, wave_input_size);
       } else {
          uint32_t hs_input_size =
-               hs_info->tess.tcs_vertices_out * vs->output_size / 4;
+               hs->tess.tcs_vertices_out * vs->output_size / 4;
 
          /* Total attribute slots in HS incoming patch. */
          OUT_PKT4(ring, REG_A6XX_PC_HS_INPUT_SIZE, 1);
@@ -745,13 +743,13 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
 
          const uint32_t wavesize = 64;
          const uint32_t max_wave_input_size = 64;
-         const uint32_t patch_control_points = hs_info->tess.tcs_vertices_out;
+         const uint32_t patch_control_points = hs->tess.tcs_vertices_out;
 
          /* note: if HS is really just the VS extended, then this
           * should be by MAX2(patch_control_points, hs_info->tess.tcs_vertices_out)
           * however that doesn't match the blob, and fails some dEQP tests.
           */
-         uint32_t prims_per_wave = wavesize / hs_info->tess.tcs_vertices_out;
+         uint32_t prims_per_wave = wavesize / hs->tess.tcs_vertices_out;
          uint32_t max_prims_per_wave = max_wave_input_size * wavesize /
                (vs->output_size * patch_control_points);
          prims_per_wave = MIN2(prims_per_wave, max_prims_per_wave);
@@ -764,20 +762,19 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
          OUT_RING(ring, wave_input_size);
       }
 
-      shader_info *ds_info = &ds->shader->nir->info;
       OUT_PKT4(ring, REG_A6XX_PC_TESS_CNTL, 1);
       uint32_t output;
-      if (ds_info->tess.point_mode)
+      if (ds->tess.point_mode)
          output = TESS_POINTS;
-      else if (ds_info->tess._primitive_mode == TESS_PRIMITIVE_ISOLINES)
+      else if (ds->tess.primitive_mode == TESS_PRIMITIVE_ISOLINES)
          output = TESS_LINES;
-      else if (ds_info->tess.ccw)
+      else if (ds->tess.ccw)
          output = TESS_CCW_TRIS;
       else
          output = TESS_CW_TRIS;
 
       OUT_RING(ring, A6XX_PC_TESS_CNTL_SPACING(
-                        fd6_gl2spacing(ds_info->tess.spacing)) |
+                        fd6_gl2spacing(ds->tess.spacing)) |
                         A6XX_PC_TESS_CNTL_OUTPUT(output));
 
       OUT_PKT4(ring, REG_A6XX_VPC_DS_CLIP_CNTL, 1);
@@ -1007,7 +1004,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
                   A6XX_PC_GS_OUT_CNTL_CLIP_MASK(clip_cull_mask));
 
       uint32_t output;
-      switch (gs->shader->nir->info.gs.output_primitive) {
+      switch (gs->gs.output_primitive) {
       case SHADER_PRIM_POINTS:
          output = TESS_POINTS;
          break;
@@ -1022,10 +1019,10 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
       }
       OUT_PKT4(ring, REG_A6XX_PC_PRIMITIVE_CNTL_5, 1);
       OUT_RING(ring, A6XX_PC_PRIMITIVE_CNTL_5_GS_VERTICES_OUT(
-                        gs->shader->nir->info.gs.vertices_out - 1) |
+                        gs->gs.vertices_out - 1) |
                         A6XX_PC_PRIMITIVE_CNTL_5_GS_OUTPUT(output) |
                         A6XX_PC_PRIMITIVE_CNTL_5_GS_INVOCATIONS(
-                           gs->shader->nir->info.gs.invocations - 1));
+                           gs->gs.invocations - 1));
 
       OUT_PKT4(ring, REG_A6XX_GRAS_GS_CL_CNTL, 1);
       OUT_RING(ring, A6XX_GRAS_GS_CL_CNTL_CLIP_MASK(clip_mask) |
@@ -1042,7 +1039,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
       const struct ir3_shader_variant *prev = state->ds ? state->ds : state->vs;
 
       /* Size of per-primitive alloction in ldlw memory in vec4s. */
-      uint32_t vec4_size = gs->shader->nir->info.gs.vertices_in *
+      uint32_t vec4_size = gs->gs.vertices_in *
                            DIV_ROUND_UP(prev->output_size, 4);
       OUT_PKT4(ring, REG_A6XX_PC_PRIMITIVE_CNTL_6, 1);
       OUT_RING(ring, A6XX_PC_PRIMITIVE_CNTL_6_STRIDE_IN_VPC(vec4_size));
@@ -1249,7 +1246,7 @@ fd6_program_create(void *data, struct ir3_shader_variant *bs,
     * binning pass VS will have outputs on other than position/psize
     * stripped out:
     */
-   state->bs = vs->shader->stream_output.num_outputs ? vs : bs;
+   state->bs = vs->stream_output.num_outputs ? vs : bs;
    state->vs = vs;
    state->hs = hs;
    state->ds = ds;
@@ -1277,7 +1274,7 @@ fd6_program_create(void *data, struct ir3_shader_variant *bs,
       fd_screen_lock(screen);
       if (!screen->tess_bo)
          screen->tess_bo =
-            fd_bo_new(screen->dev, FD6_TESS_BO_SIZE, 0, "tessfactor");
+            fd_bo_new(screen->dev, FD6_TESS_BO_SIZE, FD_BO_NOMAP, "tessfactor");
       fd_screen_unlock(screen);
    }
 
@@ -1286,8 +1283,8 @@ fd6_program_create(void *data, struct ir3_shader_variant *bs,
    setup_stateobj(state->stateobj, ctx, state, key, false);
    state->interp_stateobj = create_interp_stateobj(ctx, state);
 
-   struct ir3_stream_output_info *stream_output =
-      &fd6_last_shader(state)->shader->stream_output;
+   const struct ir3_stream_output_info *stream_output =
+      &fd6_last_shader(state)->stream_output;
    if (stream_output->num_outputs > 0)
       state->stream_output = stream_output;
 

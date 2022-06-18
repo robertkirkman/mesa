@@ -45,7 +45,6 @@
 #include "util/u_atomic.h"
 
 #include "state_tracker/st_program.h"
-#include "state_tracker/st_glsl_to_tgsi.h"
 #include "state_tracker/st_context.h"
 
 /**
@@ -197,7 +196,7 @@ _mesa_init_gl_program(struct gl_program *prog, gl_shader_stage stage,
    prog->RefCount = 1;
    prog->Format = GL_PROGRAM_FORMAT_ASCII_ARB;
    prog->info.stage = stage;
-   prog->info.is_arb_asm = is_arb_asm;
+   prog->info.use_legacy_math_rules = is_arb_asm;
 
    /* Uniforms that lack an initializer in the shader code have an initial
     * value of zero.  This includes sampler uniforms.
@@ -249,9 +248,6 @@ _mesa_delete_program(struct gl_context *ctx, struct gl_program *prog)
    assert(prog->RefCount==0);
 
    st_release_variants(st, prog);
-
-   if (prog->glsl_to_tgsi)
-      free_glsl_to_tgsi_visitor(prog->glsl_to_tgsi);
 
    free(prog->serialized_nir);
 

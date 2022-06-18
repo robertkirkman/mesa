@@ -181,8 +181,6 @@ files_libgallium = files(
   'tgsi/tgsi_dynamic_indexing.c',
   'tgsi/tgsi_exec.c',
   'tgsi/tgsi_exec.h',
-  'tgsi/tgsi_emulate.c',
-  'tgsi/tgsi_emulate.h',
   'tgsi/tgsi_from_mesa.c',
   'tgsi/tgsi_from_mesa.h',
   'tgsi/tgsi_info.c',
@@ -327,6 +325,8 @@ files_libgallium = files(
   'nir/nir_to_tgsi.h',
   'nir/nir_draw_helpers.c',
   'nir/nir_draw_helpers.h',
+  'nir/nir_helpers.c',
+  'nir/nir_helpers.h',
 )
 
 if dep_libdrm.found()
@@ -381,6 +381,7 @@ if draw_with_llvm
     'gallivm/lp_bld_misc.h',
     'gallivm/lp_bld_nir.h',
     'gallivm/lp_bld_nir.c',
+    'gallivm/lp_bld_nir_aos.c',
     'gallivm/lp_bld_nir_soa.c',
     'gallivm/lp_bld_pack.c',
     'gallivm/lp_bld_pack.h',
@@ -423,6 +424,8 @@ endif
 files_libgalliumvl = files(
   'vl/vl_bicubic_filter.c',
   'vl/vl_bicubic_filter.h',
+  'vl/vl_codec.c',
+  'vl/vl_codec.h',
   'vl/vl_compositor.c',
   'vl/vl_compositor.h',
   'vl/vl_compositor_gfx.c',
@@ -472,6 +475,12 @@ if with_dri2 and with_platform_x11
   endif
 endif
 
+if with_glx == 'xlib' or with_glx == 'gallium-xlib'
+  files_libgalliumvlwinsys += files('vl/vl_winsys_xlib_swrast.c')
+else
+  files_libgalliumvlwinsys += files('vl/vl_winsys_dri_vgem.c')
+endif
+
 prog_enums2names = files('driver_trace/enums2names.py')
 files_libgallium += custom_target(
   'tr_util.[ch]',
@@ -512,9 +521,6 @@ idep_u_tracepoints = declare_dependency(
 )
 
 libgallium_extra_c_args = []
-if with_swrast_vk and with_gallium_zink
-  libgallium_extra_c_args += '-DZINK_WITH_SWRAST_VK'
-endif
 libgallium = static_library(
   'gallium',
   [files_libgallium],

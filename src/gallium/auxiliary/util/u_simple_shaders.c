@@ -1189,7 +1189,7 @@ util_make_fs_stencil_blit(struct pipe_context *pipe, bool msaa_src)
       "FRAG\n"
       "DCL IN[0], GENERIC[0], LINEAR\n"
       "DCL SAMP[0]\n"
-      "DCL SVIEW[0], 2D, UINT\n"
+      "DCL SVIEW[0], %s, UINT\n"
       "DCL CONST[0][0]\n"
       "DCL TEMP[0]\n"
 
@@ -1208,7 +1208,32 @@ util_make_fs_stencil_blit(struct pipe_context *pipe, bool msaa_src)
    enum tgsi_texture_type tgsi_tex = msaa_src ? TGSI_TEXTURE_2D_MSAA :
                                                 TGSI_TEXTURE_2D;
 
-   sprintf(text, shader_templ, tgsi_texture_names[tgsi_tex]);
+   sprintf(text, shader_templ, tgsi_texture_names[tgsi_tex], tgsi_texture_names[tgsi_tex]);
+
+   if (!tgsi_text_translate(text, tokens, ARRAY_SIZE(tokens))) {
+      assert(0);
+      return NULL;
+   }
+
+   pipe_shader_state_from_tgsi(&state, tokens);
+
+   return pipe->create_fs_state(pipe, &state);
+}
+
+void *
+util_make_fs_clear_all_cbufs(struct pipe_context *pipe)
+{
+   static const char text[] =
+      "FRAG\n"
+      "PROPERTY FS_COLOR0_WRITES_ALL_CBUFS 1\n"
+      "DCL OUT[0], COLOR[0]\n"
+      "DCL CONST[0][0]\n"
+
+      "MOV OUT[0], CONST[0][0]\n"
+      "END\n";
+
+   struct tgsi_token tokens[1000];
+   struct pipe_shader_state state = { 0 };
 
    if (!tgsi_text_translate(text, tokens, ARRAY_SIZE(tokens))) {
       assert(0);

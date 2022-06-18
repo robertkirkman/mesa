@@ -198,6 +198,9 @@ isl_mocs(const struct isl_device *dev, isl_surf_usage_flags_t usage,
       if (usage & ISL_SURF_USAGE_STAGING_BIT)
          return dev->mocs.internal;
 
+      if (usage & ISL_SURF_USAGE_CPB_BIT)
+         return dev->mocs.internal;
+
       /* Using L1:HDC for storage buffers breaks Vulkan memory model
        * tests that use shader atomics.  This isn't likely to work out,
        * and we can't know a priori whether they'll be used.  So just
@@ -306,6 +309,10 @@ isl_device_init(struct isl_device *dev,
    } else {
       dev->max_buffer_size = 1ull << 27;
    }
+
+   dev->cpb.size = _3DSTATE_CPSIZE_CONTROL_BUFFER_length(info) * 4;
+   dev->cpb.offset =
+      _3DSTATE_CPSIZE_CONTROL_BUFFER_SurfaceBaseAddress_start(info) / 8;
 
    isl_device_setup_mocs(dev);
 }
@@ -1599,6 +1606,9 @@ isl_calc_row_pitch_alignment(const struct isl_device *dev,
       return tile_info->phys_extent_B.width;
    }
 
+   /* We only support tiled fragment shading rate buffers. */
+   assert((surf_info->usage & ISL_SURF_USAGE_CPB_BIT) == 0);
+
    /* From the Broadwel PRM >> Volume 2d: Command Reference: Structures >>
     * RENDER_SURFACE_STATE Surface Pitch (p349):
     *
@@ -1782,6 +1792,10 @@ isl_calc_row_pitch(const struct isl_device *dev,
        !pitch_in_range(row_pitch_B, stencil_pitch_bits))
       return false;
 
+   if ((surf_info->usage & ISL_SURF_USAGE_CPB_BIT) &&
+       !pitch_in_range(row_pitch_B, _3DSTATE_CPSIZE_CONTROL_BUFFER_SurfacePitch_bits(dev->info)))
+      return false;
+
  done:
    *out_row_pitch_B = row_pitch_B;
    return true;
@@ -1792,6 +1806,10 @@ isl_surf_init_s(const struct isl_device *dev,
                 struct isl_surf *surf,
                 const struct isl_surf_init_info *restrict info)
 {
+   /* Some sanity checks */
+   assert(!(info->usage & ISL_SURF_USAGE_CPB_BIT) ||
+          dev->info->has_coarse_pixel_primitive_and_cb);
+
    const struct isl_format_layout *fmtl = isl_format_get_layout(info->format);
 
    const struct isl_extent4d logical_level0_px = {
@@ -2079,6 +2097,10 @@ isl_surf_get_mcs_surf(const struct isl_device *dev,
    if (surf->msaa_layout != ISL_MSAA_LAYOUT_ARRAY)
       return false;
 
+   /* We are seeing failures with mcs on dg2, so disable it for now. */
+   if (intel_device_info_is_dg2(dev->info))
+      return false;
+
    /* The following are true of all multisampled surfaces */
    assert(surf->samples > 1);
    assert(surf->dim == ISL_SURF_DIM_2D);
@@ -2141,6 +2163,12 @@ isl_surf_supports_ccs(const struct isl_device *dev,
     * this means linear is out on Gfx12+ as well.
     */
    if (surf->tiling == ISL_TILING_LINEAR)
+      return false;
+
+   /* TODO: Disable for now, as we're not sure about the meaning of
+    * 3DSTATE_CPSIZE_CONTROL_BUFFER::CPCBCompressionEnable
+    */
+   if (isl_surf_usage_is_cpb(surf->usage))
       return false;
 
    if (ISL_GFX_VER(dev) >= 12) {
@@ -2457,6 +2485,21 @@ isl_emit_depth_stencil_hiz_s(const struct isl_device *dev, void *batch,
    }
 
    isl_genX_call(dev, emit_depth_stencil_hiz_s, dev, batch, info);
+}
+
+void
+isl_emit_cpb_control_s(const struct isl_device *dev, void *batch,
+                       const struct isl_cpb_emit_info *restrict info)
+{
+   if (info->surf) {
+      assert((info->surf->usage & ISL_SURF_USAGE_CPB_BIT));
+      assert(info->surf->dim != ISL_SURF_DIM_3D);
+      assert(info->surf->tiling == ISL_TILING_4 ||
+             info->surf->tiling == ISL_TILING_64);
+      assert(info->surf->format == ISL_FORMAT_R8_UINT);
+   }
+
+   isl_genX_call(dev, emit_cpb_control_s, dev, batch, info);
 }
 
 /**
@@ -3287,6 +3330,38 @@ isl_swizzle_invert(struct isl_swizzle swizzle)
       chans[swizzle.r - ISL_CHANNEL_SELECT_RED] = ISL_CHANNEL_SELECT_RED;
 
    return (struct isl_swizzle) { chans[0], chans[1], chans[2], chans[3] };
+}
+
+static uint32_t
+isl_color_value_channel(union isl_color_value src,
+                        enum isl_channel_select chan,
+                        uint32_t one)
+{
+   if (chan == ISL_CHANNEL_SELECT_ZERO)
+      return 0;
+   if (chan == ISL_CHANNEL_SELECT_ONE)
+      return one;
+
+   assert(chan >= ISL_CHANNEL_SELECT_RED);
+   assert(chan < ISL_CHANNEL_SELECT_RED + 4);
+
+   return src.u32[chan - ISL_CHANNEL_SELECT_RED];
+}
+
+/** Applies an inverse swizzle to a color value */
+union isl_color_value
+isl_color_value_swizzle(union isl_color_value src,
+                        struct isl_swizzle swizzle,
+                        bool is_float)
+{
+   uint32_t one = is_float ? 0x3f800000 : 1;
+
+   return (union isl_color_value) { .u32 = {
+      isl_color_value_channel(src, swizzle.r, one),
+      isl_color_value_channel(src, swizzle.g, one),
+      isl_color_value_channel(src, swizzle.b, one),
+      isl_color_value_channel(src, swizzle.a, one),
+   } };
 }
 
 /** Applies an inverse swizzle to a color value */

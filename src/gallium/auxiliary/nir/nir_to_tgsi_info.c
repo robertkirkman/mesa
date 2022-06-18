@@ -191,13 +191,8 @@ static void scan_instruction(const struct nir_shader *nir,
       nir_tex_instr *tex = nir_instr_as_tex(instr);
       nir_variable *texture = tex_get_texture_var(tex);
 
-      if (!texture) {
-         info->samplers_declared |=
-            u_bit_consecutive(tex->sampler_index, 1);
-      } else {
-         if (texture->data.bindless)
-            info->uses_bindless_samplers = true;
-      }
+      if (texture && texture->data.bindless)
+         info->uses_bindless_samplers = true;
 
       switch (tex->op) {
       case nir_texop_tex:
@@ -783,31 +778,20 @@ void nir_tgsi_scan_shader(const struct nir_shader *nir,
          info->indirect_files |= 1 << TGSI_FILE_OUTPUT;
    }
 
-   uint32_t sampler_mask = 0;
-   nir_foreach_uniform_variable(var, nir) {
-      uint32_t sampler_count = glsl_type_get_sampler_count(var->type) +
-                               glsl_type_get_texture_count(var->type);
-      sampler_mask |= ((1ull << sampler_count) - 1) << var->data.binding;
-   }
-   uint32_t image_mask = 0;
-   nir_foreach_image_variable(var, nir) {
-      uint32_t image_count = glsl_type_get_image_count(var->type);
-      image_mask |= ((1ull << image_count) - 1) << var->data.binding;
-   }
    info->num_outputs = num_outputs;
 
    info->const_file_max[0] = nir->num_uniforms - 1;
    info->const_buffers_declared = u_bit_consecutive(1, nir->info.num_ubos);
    if (nir->num_uniforms > 0)
       info->const_buffers_declared |= 1;
-   info->images_declared = image_mask;
-   info->samplers_declared = sampler_mask;
+   info->images_declared = nir->info.images_used[0];
+   info->samplers_declared = nir->info.textures_used[0];
 
-   info->file_max[TGSI_FILE_SAMPLER] = util_last_bit(info->samplers_declared) - 1;
+   info->file_max[TGSI_FILE_SAMPLER] = BITSET_LAST_BIT(nir->info.samplers_used) - 1;
    info->file_max[TGSI_FILE_SAMPLER_VIEW] = BITSET_LAST_BIT(nir->info.textures_used) - 1;
-   info->file_mask[TGSI_FILE_SAMPLER] = info->samplers_declared;
+   info->file_mask[TGSI_FILE_SAMPLER] = nir->info.samplers_used[0];
    info->file_mask[TGSI_FILE_SAMPLER_VIEW] = nir->info.textures_used[0];
-   info->file_max[TGSI_FILE_IMAGE] = util_last_bit(info->images_declared) - 1;
+   info->file_max[TGSI_FILE_IMAGE] = BITSET_LAST_BIT(nir->info.images_used) - 1;
    info->file_mask[TGSI_FILE_IMAGE] = info->images_declared;
 
    info->num_written_clipdistance = nir->info.clip_distance_array_size;

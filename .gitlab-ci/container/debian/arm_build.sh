@@ -9,6 +9,7 @@ echo 'deb https://deb.debian.org/debian buster main' >/etc/apt/sources.list.d/bu
 apt-get update
 
 apt-get -y install \
+	${EXTRA_LOCAL_PACKAGES} \
 	abootimg \
 	autoconf \
 	automake \
@@ -21,6 +22,7 @@ apt-get -y install \
 	flex \
 	g++ \
 	git \
+	glslang-tools \
 	kmod \
 	libasan6 \
 	libdrm-dev \

@@ -41,7 +41,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <assert.h>
-#include "c99_compat.h"
 
 #ifdef DEBUG
 #  define list_assert(cond, msg)  assert(cond && msg)
@@ -61,6 +60,12 @@ static inline void list_inithead(struct list_head *item)
     item->next = item;
 }
 
+/**
+ * Prepend an item to a list
+ *
+ * @param item The element to add to the list
+ * @param list The list to prepend to
+ */
 static inline void list_add(struct list_head *item, struct list_head *list)
 {
     item->prev = list;
@@ -69,6 +74,12 @@ static inline void list_add(struct list_head *item, struct list_head *list)
     list->next = item;
 }
 
+/**
+ * Append an item to a list
+ *
+ * @param item The element to add to the list
+ * @param list The list to append to
+ */
 static inline void list_addtail(struct list_head *item, struct list_head *list)
 {
     item->next = list;
@@ -165,6 +176,19 @@ static inline void list_validate(const struct list_head *list)
    assert(list->next->prev == list && list->prev->next == list);
    for (node = list->next; node != list; node = node->next)
       assert(node->next->prev == node && node->prev->next == node);
+}
+
+/**
+ * Move an item from one place in a list to another
+ *
+ * The item can be in this list, or in another.
+ *
+ * @param item The item to move
+ * @param loc  The element to put the item in front of
+ */
+static inline void list_move_to(struct list_head *item, struct list_head *loc) {
+   list_del(item);
+   list_add(item, loc);
 }
 
 #define LIST_ENTRY(__type, __item, __field)   \

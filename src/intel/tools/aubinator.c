@@ -73,6 +73,12 @@ aubinator_error(void *user_data, const void *aub_data, const char *msg)
 }
 
 static void
+aubinator_comment(void *user_data, const char *str)
+{
+   fprintf(outfile, "%s\n", str);
+}
+
+static void
 aubinator_init(void *user_data, int aub_pci_id, const char *app_name)
 {
    pci_id = aub_pci_id;
@@ -310,9 +316,10 @@ int main(int argc, char *argv[])
       case 'g': {
          const int id = intel_device_name_to_pci_device_id(optarg);
          if (id < 0) {
-            fprintf(stderr, "can't parse gen: '%s', expected brw, g4x, ilk, "
+            fprintf(stderr, "can't parse gen: '%s', expected lpt, brw, g4x, ilk, "
                             "snb, ivb, hsw, byt, bdw, chv, skl, bxt, kbl, "
-                            "aml, glk, cfl, whl, cnl, icl", optarg);
+                            "aml, glk, cfl, whl, cml, icl, ehl, jsl, tgl, "
+                            "rkl, dg1, adl, sg1, rpl, dg2\n", optarg);
             exit(EXIT_FAILURE);
          } else {
             pci_id = id;
@@ -373,6 +380,7 @@ int main(int argc, char *argv[])
       .user_data = &mem,
       .error = aubinator_error,
       .info = aubinator_init,
+      .comment = aubinator_comment,
 
       .local_write = aub_mem_local_write,
       .phys_write = aub_mem_phys_write,

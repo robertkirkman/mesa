@@ -27,11 +27,17 @@ files_libdxil_compiler = files(
   'dxil_function.c',
   'dxil_module.c',
   'dxil_nir.c',
+  'dxil_nir_lower_int_cubemaps.c',
   'dxil_nir_lower_int_samplers.c',
+  'dxil_nir_lower_vs_vertex_conversion.c',
   'dxil_signature.c',
   'dxil_nir_tess.c',
   'nir_to_dxil.c',
 )
+
+if host_machine.system() == 'windows'
+  files_libdxil_compiler += files('dxil_validator.cpp')
+endif
 
 dxil_nir_algebraic_c = custom_target(
   'dxil_nir_algebraic.c',
@@ -42,7 +48,7 @@ dxil_nir_algebraic_c = custom_target(
     '-p', join_paths(meson.source_root(), 'src/compiler/nir/'),
   ],
   capture : true,
-  depend_files : nir_algebraic_py,
+  depend_files : nir_algebraic_depends,
 )
 
 libdxil_compiler = static_library(

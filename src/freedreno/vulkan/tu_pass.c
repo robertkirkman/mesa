@@ -34,7 +34,9 @@
  */
 
 static bool
-dep_invalid_for_gmem(const VkSubpassDependency2 *dep)
+dep_invalid_for_gmem(const VkSubpassDependency2 *dep,
+                     VkPipelineStageFlags2 src_stage_mask,
+                     VkPipelineStageFlags2 dst_stage_mask)
 {
    /* External dependencies don't matter here. */
    if (dep->srcSubpass == VK_SUBPASS_EXTERNAL ||
@@ -67,15 +69,15 @@ dep_invalid_for_gmem(const VkSubpassDependency2 *dep)
    /* This is straight from the Vulkan 1.2 spec, section 6.1.4 "Framebuffer
     * Region Dependencies":
     */
-   const VkPipelineStageFlags framebuffer_space_stages =
-      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-      VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
-      VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
-      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+   const VkPipelineStageFlags2 framebuffer_space_stages =
+      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+      VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+      VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT |
+      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
 
    return
-      (dep->srcStageMask & ~framebuffer_space_stages) ||
-      (dep->dstStageMask & ~framebuffer_space_stages) ||
+      (src_stage_mask & ~(framebuffer_space_stages | VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT)) ||
+      (dst_stage_mask & ~(framebuffer_space_stages | VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT)) ||
       !(dep->dependencyFlags & VK_DEPENDENCY_BY_REGION_BIT);
 }
 
@@ -96,8 +98,23 @@ tu_render_pass_add_subpass_dep(struct tu_render_pass *pass,
    if (src == dst)
       return;
 
-   if (dep_invalid_for_gmem(dep))
+   /* From the Vulkan 1.2.195 spec:
+    *
+    * "If an instance of VkMemoryBarrier2 is included in the pNext chain, srcStageMask,
+    *  dstStageMask, srcAccessMask, and dstAccessMask parameters are ignored. The synchronization
+    *  and access scopes instead are defined by the parameters of VkMemoryBarrier2."
+    */
+   const VkMemoryBarrier2 *barrier =
+      vk_find_struct_const(dep->pNext, MEMORY_BARRIER_2);
+   VkPipelineStageFlags2 src_stage_mask = barrier ? barrier->srcStageMask : dep->srcStageMask;
+   VkAccessFlags2 src_access_mask = barrier ? barrier->srcAccessMask : dep->srcAccessMask;
+   VkPipelineStageFlags2 dst_stage_mask = barrier ? barrier->dstStageMask : dep->dstStageMask;
+   VkAccessFlags2 dst_access_mask = barrier ? barrier->dstAccessMask : dep->dstAccessMask;
+
+   if (dep_invalid_for_gmem(dep, src_stage_mask, dst_stage_mask)) {
+      perf_debug((struct tu_device *)pass->base.device, "Disabling gmem rendering due to invalid subpass dependency");
       pass->gmem_pixels = 0;
+   }
 
    struct tu_subpass_barrier *dst_barrier;
    if (dst == VK_SUBPASS_EXTERNAL) {
@@ -106,10 +123,10 @@ tu_render_pass_add_subpass_dep(struct tu_render_pass *pass,
       dst_barrier = &pass->subpasses[dst].start_barrier;
    }
 
-   dst_barrier->src_stage_mask |= dep->srcStageMask;
-   dst_barrier->dst_stage_mask |= dep->dstStageMask;
-   dst_barrier->src_access_mask |= dep->srcAccessMask;
-   dst_barrier->dst_access_mask |= dep->dstAccessMask;
+   dst_barrier->src_stage_mask |= src_stage_mask;
+   dst_barrier->dst_stage_mask |= dst_stage_mask;
+   dst_barrier->src_access_mask |= src_access_mask;
+   dst_barrier->dst_access_mask |= dst_access_mask;
 }
 
 /* We currently only care about undefined layouts, because we have to
@@ -481,7 +498,7 @@ tu_render_pass_check_feedback_loop(struct tu_render_pass *pass)
             continue;
          for (unsigned k = 0; k < subpass->input_count; k++) {
             if (subpass->input_attachments[k].attachment == a) {
-               subpass->feedback = true;
+               subpass->feedback_loop_color = true;
                break;
             }
          }
@@ -491,7 +508,7 @@ tu_render_pass_check_feedback_loop(struct tu_render_pass *pass)
          for (unsigned k = 0; k < subpass->input_count; k++) {
             if (subpass->input_attachments[k].attachment ==
                 subpass->depth_stencil_attachment.attachment) {
-               subpass->feedback = true;
+               subpass->feedback_loop_ds = true;
                break;
             }
          }
@@ -654,6 +671,16 @@ is_depth_stencil_resolve_enabled(const VkSubpassDescriptionDepthStencilResolve *
    return false;
 }
 
+static void
+tu_subpass_use_attachment(struct tu_render_pass *pass, int i, uint32_t a, const VkRenderPassCreateInfo2KHR *pCreateInfo)
+{
+   struct tu_subpass *subpass = &pass->subpasses[i];
+
+   pass->attachments[a].gmem_offset = 0;
+   update_samples(subpass, pCreateInfo->pAttachments[a].samples);
+   pass->attachments[a].clear_views |= subpass->multiview_mask;
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 tu_CreateRenderPass2(VkDevice _device,
                      const VkRenderPassCreateInfo2KHR *pCreateInfo,
@@ -750,6 +777,13 @@ tu_CreateRenderPass2(VkDevice _device,
       subpass->samples = 0;
       subpass->srgb_cntl = 0;
 
+      const VkSubpassDescriptionFlagBits raster_order_access_bits =
+         VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_COLOR_ACCESS_BIT_ARM |
+         VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_DEPTH_ACCESS_BIT_ARM |
+         VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_STENCIL_ACCESS_BIT_ARM;
+
+      subpass->raster_order_attachment_access = desc->flags & raster_order_access_bits;
+
       subpass->multiview_mask = desc->viewMask;
 
       if (desc->inputAttachmentCount > 0) {
@@ -775,13 +809,10 @@ tu_CreateRenderPass2(VkDevice _device,
             subpass->color_attachments[j].attachment = a;
 
             if (a != VK_ATTACHMENT_UNUSED) {
-               pass->attachments[a].gmem_offset = 0;
-               update_samples(subpass, pCreateInfo->pAttachments[a].samples);
+               tu_subpass_use_attachment(pass, i, a, pCreateInfo);
 
                if (vk_format_is_srgb(pass->attachments[a].format))
                   subpass->srgb_cntl |= 1 << j;
-
-               pass->attachments[a].clear_views |= subpass->multiview_mask;
             }
          }
       }
@@ -793,6 +824,12 @@ tu_CreateRenderPass2(VkDevice _device,
          for (uint32_t j = 0; j < desc->colorAttachmentCount; j++) {
             subpass->resolve_attachments[j].attachment =
                   desc->pResolveAttachments[j].attachment;
+
+            uint32_t src_a = desc->pColorAttachments[j].attachment;
+            if (src_a != VK_ATTACHMENT_UNUSED) {
+               pass->attachments[src_a].will_be_resolved =
+                  desc->pResolveAttachments[j].attachment != VK_ATTACHMENT_UNUSED;
+            }
          }
       }
 
@@ -801,17 +838,18 @@ tu_CreateRenderPass2(VkDevice _device,
          subpass->resolve_count++;
          uint32_t a = ds_resolve->pDepthStencilResolveAttachment->attachment;
          subpass->resolve_attachments[subpass->resolve_count - 1].attachment = a;
+
+         uint32_t src_a = desc->pDepthStencilAttachment->attachment;
+         if (src_a != VK_ATTACHMENT_UNUSED) {
+            pass->attachments[src_a].will_be_resolved = a != VK_ATTACHMENT_UNUSED;
+         }
       }
 
       uint32_t a = desc->pDepthStencilAttachment ?
          desc->pDepthStencilAttachment->attachment : VK_ATTACHMENT_UNUSED;
       subpass->depth_stencil_attachment.attachment = a;
-      if (a != VK_ATTACHMENT_UNUSED) {
-            pass->attachments[a].gmem_offset = 0;
-            update_samples(subpass, pCreateInfo->pAttachments[a].samples);
-
-            pass->attachments[a].clear_views |= subpass->multiview_mask;
-      }
+      if (a != VK_ATTACHMENT_UNUSED)
+         tu_subpass_use_attachment(pass, i, a, pCreateInfo);
    }
 
    tu_render_pass_patch_input_gmem(pass);
@@ -825,6 +863,11 @@ tu_CreateRenderPass2(VkDevice _device,
          att->clear_mask = 0;
          att->load = false;
       }
+
+      att->cond_load_allowed =
+         (att->load || att->load_stencil) && !att->clear_mask && !att->will_be_resolved;
+      att->cond_store_allowed =
+         (att->store || att->store_stencil) && !att->clear_mask;
    }
 
    /* From the VK_KHR_multiview spec:
@@ -840,6 +883,28 @@ tu_CreateRenderPass2(VkDevice _device,
       pass->gmem_pixels = 0;
    } else {
       tu_render_pass_gmem_config(pass, device->physical_device);
+   }
+
+   for (uint32_t i = 0; i < pass->attachment_count; i++) {
+      const struct tu_render_pass_attachment *att = &pass->attachments[i];
+
+      /* approximate tu_load_gmem_attachment */
+      if (att->load)
+         pass->gmem_bandwidth_per_pixel += att->cpp;
+
+      /* approximate tu_store_gmem_attachment */
+      if (att->store)
+         pass->gmem_bandwidth_per_pixel += att->cpp;
+
+      /* approximate tu_clear_sysmem_attachment */
+      if (att->clear_mask)
+         pass->sysmem_bandwidth_per_pixel += att->cpp;
+
+      /* approximate tu6_emit_sysmem_resolves */
+      if (att->will_be_resolved) {
+         pass->sysmem_bandwidth_per_pixel +=
+            att->cpp + att->cpp / att->samples;
+      }
    }
 
    for (unsigned i = 0; i < pCreateInfo->dependencyCount; ++i) {

@@ -940,7 +940,7 @@ bit_cast_color(struct nir_builder *b, nir_ssa_def *color,
       /* Restrict to only the channels we actually have */
       const unsigned src_channels =
          isl_format_get_num_channels(key->src_format);
-      color = nir_channels(b, color, (1 << src_channels) - 1);
+      color = nir_trim_vector(b, color, src_channels);
 
       color = nir_format_bitcast_uvec_unmasked(b, color, src_bpc, dst_bpc);
    }
@@ -2874,6 +2874,11 @@ blorp_copy(struct blorp_batch *batch,
    if (compute) {
       assert(blorp_copy_supports_compute(batch->blorp,
                                          src_surf->surf, dst_surf->surf,
+                                         dst_surf->aux_usage));
+   } else if (batch->flags & BLORP_BATCH_USE_BLITTER) {
+      assert(blorp_copy_supports_blitter(batch->blorp,
+                                         src_surf->surf, dst_surf->surf,
+                                         src_surf->aux_usage,
                                          dst_surf->aux_usage));
    }
 

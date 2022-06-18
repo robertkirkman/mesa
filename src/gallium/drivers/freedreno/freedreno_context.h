@@ -436,7 +436,7 @@ struct fd_context {
     */
    struct ir3_cache *shader_cache;
 
-   struct pipe_debug_callback debug;
+   struct util_debug_callback debug;
 
    struct u_trace_context trace_context dt;
 
@@ -608,7 +608,7 @@ static inline void
 fd_context_dirty(struct fd_context *ctx, enum fd_dirty_3d_state dirty) assert_dt
 {
    assert(util_is_power_of_two_nonzero(dirty));
-   STATIC_ASSERT(ffs(dirty) <= ARRAY_SIZE(ctx->gen_dirty_map));
+   assert(ffs(dirty) <= ARRAY_SIZE(ctx->gen_dirty_map));
 
    ctx->gen_dirty |= ctx->gen_dirty_map[ffs(dirty) - 1];
 

@@ -18,6 +18,35 @@ dEQP-GLES3.functional.clipping.point.wide_point_clip,Fail
 dEQP-GLES3.functional.clipping.point.wide_point_clip_viewport_center,Fail
 dEQP-GLES3.functional.clipping.point.wide_point_clip_viewport_corner,Fail
 dEQP-GLES3.functional.draw.random.124,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.0,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.1,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.10,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.11,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.12,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.14,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.16,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.17,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.19,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.2,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.3,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.4,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.5,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.6,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.7,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.8,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.9,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_required_draw_buffers.0,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_required_draw_buffers.1,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_required_draw_buffers.14,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_required_draw_buffers.15,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_required_draw_buffers.16,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_required_draw_buffers.17,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_required_draw_buffers.19,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_required_draw_buffers.2,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_required_draw_buffers.4,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_required_draw_buffers.5,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_required_draw_buffers.7,Fail
+dEQP-GLES3.functional.draw_buffers_indexed.random.max_required_draw_buffers.9,Fail
 dEQP-GLES3.functional.fbo.depth.depth_test_clamp.depth24_stencil8,Fail
 dEQP-GLES3.functional.fbo.depth.depth_test_clamp.depth32f_stencil8,Fail
 dEQP-GLES3.functional.fbo.depth.depth_test_clamp.depth_component16,Fail
@@ -440,35 +469,6 @@ dEQP-GLES31.functional.debug.negative_coverage.get_error.buffer.blit_framebuffer
 dEQP-GLES31.functional.debug.negative_coverage.get_error.buffer.read_pixels_fbo_format_mismatch,Fail
 dEQP-GLES31.functional.debug.negative_coverage.log.buffer.read_pixels_fbo_format_mismatch,Fail
 dEQP-GLES31.functional.draw_base_vertex.draw_elements_instanced_base_vertex.line_loop.instanced_attributes,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.0,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.1,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.10,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.11,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.12,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.14,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.16,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.17,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.19,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.2,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.3,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.4,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.5,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.6,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.7,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.8,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_implementation_draw_buffers.9,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_required_draw_buffers.0,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_required_draw_buffers.1,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_required_draw_buffers.14,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_required_draw_buffers.15,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_required_draw_buffers.16,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_required_draw_buffers.17,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_required_draw_buffers.19,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_required_draw_buffers.2,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_required_draw_buffers.4,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_required_draw_buffers.5,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_required_draw_buffers.7,Fail
-dEQP-GLES31.functional.draw_buffers_indexed.random.max_required_draw_buffers.9,Fail
 dEQP-GLES31.functional.draw_indirect.draw_arrays_indirect.line_strip.multiple_attributes,Fail
 dEQP-GLES31.functional.fbo.no_attachments.interaction.17x512ms4_default_16x16ms2,Fail
 dEQP-GLES31.functional.fbo.no_attachments.interaction.1x1ms0_default_2048x2048ms4,Fail
@@ -791,9 +791,7 @@ KHR-GL33.transform_feedback.capture_geometry_interleaved_test,Fail
 KHR-GL33.transform_feedback.capture_geometry_separate_test,Fail
 KHR-GL33.transform_feedback.capture_vertex_interleaved_test,Fail
 KHR-GL33.transform_feedback.capture_vertex_separate_test,Fail
-KHR-GL33.transform_feedback.discard_vertex_test,Fail
-KHR-GL33.transform_feedback.draw_xfb_instanced_test,Crash
-KHR-GL33.transform_feedback.draw_xfb_stream_instanced_test,Crash
+KHR-GL33.transform_feedback.draw_xfb_stream_instanced_test,Fail
 KHR-GL33.transform_feedback.draw_xfb_stream_test,Fail
 KHR-GL33.transform_feedback.query_geometry_interleaved_test,Fail
 KHR-GL33.transform_feedback.query_geometry_separate_test,Fail
@@ -908,7 +906,7 @@ KHR-GLES31.core.texture_storage_multisample.FunctionalTests.texture_size_in_vert
 KHR-GLES31.core.texture_storage_multisample.GLCoverage.get_tex_parameter_reports_correct_default_values_for_multisample_texture_targets,Fail
 KHR-GLES31.core.texture_storage_multisample.GLCoverage.gl_tex_parameter_handlers_accept_zero_base_level,Fail
 
-fast_color_clear@fcc-front-buffer-distraction,Crash
+fast_color_clear@fcc-front-buffer-distraction,Fail
 
 # X Error of failed request:  BadMatch (invalid parameter attributes)
 #   Major opcode of failed request:  150 (GLX)
@@ -934,7 +932,9 @@ glx@glx-visuals-stencil,Crash
 glx@glx-visuals-stencil -pixmap,Crash
 
 glx@glx_arb_create_context_es2_profile@invalid opengl es version,Fail
-glx@glx_arb_create_context_no_error@no error,Fail
+# X error 167 (GLXBadFBConfig (9)) was generated, but X error 8 was expected.
+glx@glx_arb_create_context_no_error@no error,Crash
+
 glx@glx_ext_import_context@free context,Fail
 glx@glx_ext_import_context@get context id,Fail
 glx@glx_ext_import_context@get current display,Fail
@@ -944,14 +944,14 @@ glx@glx_ext_import_context@imported context has same context id,Fail
 glx@glx_ext_import_context@make current- multi process,Fail
 glx@glx_ext_import_context@make current- single process,Fail
 glx@glx_ext_import_context@query context info,Fail
-hiz@hiz-depth-read-window-stencil0,Crash
-hiz@hiz-depth-read-window-stencil1,Crash
-hiz@hiz-depth-test-window-stencil0,Crash
-hiz@hiz-depth-test-window-stencil1,Crash
-hiz@hiz-stencil-read-window-depth0,Crash
-hiz@hiz-stencil-read-window-depth1,Crash
-hiz@hiz-stencil-test-window-depth0,Crash
-hiz@hiz-stencil-test-window-depth1,Crash
+hiz@hiz-depth-read-window-stencil0,Fail
+hiz@hiz-depth-read-window-stencil1,Fail
+hiz@hiz-depth-test-window-stencil0,Fail
+hiz@hiz-depth-test-window-stencil1,Fail
+hiz@hiz-stencil-read-window-depth0,Fail
+hiz@hiz-stencil-read-window-depth1,Fail
+hiz@hiz-stencil-test-window-depth0,Fail
+hiz@hiz-stencil-test-window-depth1,Fail
 shaders@glsl-bug-110796,Fail
 spec@!opengl 1.0@gl-1.0-drawbuffer-modes,Fail
 spec@!opengl 1.0@gl-1.0-swapbuffers-behavior,Fail
@@ -1039,11 +1039,6 @@ spec@!opengl 3.0@gl30basic,Fail
 spec@!opengl 3.0@minmax,Fail
 spec@!opengl 3.1@minmax,Fail
 spec@!opengl 3.1@vao-broken-attrib,Crash
-spec@!opengl 3.2@gl-3.2-adj-prims cull-back pv-first,Fail
-spec@!opengl 3.2@gl-3.2-adj-prims cull-front pv-first,Fail
-spec@!opengl 3.2@gl-3.2-adj-prims line cull-back pv-first,Fail
-spec@!opengl 3.2@gl-3.2-adj-prims line cull-front pv-first,Fail
-spec@!opengl 3.2@gl-3.2-adj-prims pv-first,Fail
 spec@!opengl 3.2@layered-rendering@clear-color-all-types 2d_multisample_array single_level,Fail
 spec@!opengl 3.2@minmax,Fail
 spec@!opengl 3.2@pointsprite-origin,Fail
@@ -1093,9 +1088,9 @@ spec@arb_occlusion_query@occlusion_query_meta_save,Fail
 spec@arb_program_interface_query@arb_program_interface_query-getprogramresourceindex,Fail
 spec@arb_program_interface_query@arb_program_interface_query-getprogramresourceindex@'vs_input2[1][0]' on GL_PROGRAM_INPUT,Fail
 
-spec@arb_provoking_vertex@arb-provoking-vertex-clipped-geometry-flatshading,Crash
-spec@arb_provoking_vertex@arb-provoking-vertex-render,Crash
-spec@arb_robustness@arb_robustness_client-mem-bounds,Crash
+spec@arb_provoking_vertex@arb-provoking-vertex-clipped-geometry-flatshading,Fail
+spec@arb_provoking_vertex@arb-provoking-vertex-render,Fail
+
 spec@arb_shader_image_load_store@execution@disable_early_z,Fail
 spec@arb_shader_storage_buffer_object@execution@ssbo-atomiccompswap-int,Fail
 spec@arb_shader_texture_lod@execution@tex-miplevel-selection *gradarb 1d,Fail
@@ -1113,7 +1108,7 @@ spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 2dshad
 spec@arb_shader_texture_lod@execution@tex-miplevel-selection *projgradarb 3d,Fail
 spec@arb_stencil_texturing@glblitframebuffer corrupts state@gl_texture_2d_multisample,Fail
 spec@arb_stencil_texturing@glblitframebuffer corrupts state@gl_texture_2d_multisample_array,Fail
-spec@arb_sync@sync_api,Crash
+
 spec@arb_texture_buffer_object@data-sync,Fail
 
 spec@arb_texture_buffer_object@formats (fs- 3.1 core),Fail
@@ -1181,7 +1176,6 @@ spec@arb_transform_feedback2@change objects while paused,Crash
 spec@arb_transform_feedback3@arb_transform_feedback3-ext_interleaved_two_bufs_gs,Crash
 spec@arb_transform_feedback3@arb_transform_feedback3-ext_interleaved_two_bufs_gs_max,Crash
 spec@arb_transform_feedback3@arb_transform_feedback3-ext_interleaved_two_bufs_vs,Crash
-spec@egl 1.4@egl-copy-buffers,Fail
 
 # error: main:90: eglChooseConfig() returned no configs
 spec@egl 1.4@eglterminate then unbind context,Fail
@@ -1254,6 +1248,7 @@ spec@ext_texture_srgb@texwrap formats@GL_SRGB8_ALPHA8- NPOT,Fail
 spec@ext_transform_feedback2@counting with pause,Fail
 spec@ext_transform_feedback@pipeline-basic-primgen,Fail
 spec@ext_transform_feedback@primgen-query transform-feedback-disabled,Fail
+
 spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 1d,Fail
 spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 1darray,Fail
 spec@glsl-1.30@execution@tex-miplevel-selection texturegrad 1darrayshadow,Fail
@@ -1357,3 +1352,6 @@ spec@oes_egl_image_external_essl3@oes_egl_image_external_essl3@oes_egl_image_ext
 
 spec@oes_texture_view@rendering-formats,Fail
 spec@oes_texture_view@rendering-formats@clear GL_RGBA8_SNORM as GL_R32F,Fail
+spec@!opengl 1.0@depth-clear-precision-check,Fail
+spec@!opengl 1.0@depth-clear-precision-check@depth32,Fail
+spec@arb_texture_buffer_object@texture-buffer-size-clamp,Fail

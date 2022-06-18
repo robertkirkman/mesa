@@ -374,7 +374,6 @@ struct svga_state
       struct pipe_resource *indirect;
    } grid_info;
 
-   unsigned shared_mem_size;
 };
 
 struct svga_prescale {
@@ -592,7 +591,7 @@ struct svga_context
       boolean force_hw_line_stipple;
 
       /** To report perf/conformance/etc issues to the gallium frontend */
-      struct pipe_debug_callback callback;
+      struct util_debug_callback callback;
    } debug;
 
    struct {

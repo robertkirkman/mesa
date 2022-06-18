@@ -42,7 +42,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "c99_compat.h"
 #include "util/compiler.h"
 #include "util/macros.h"
 #include "util/format/u_format.h"
@@ -1115,6 +1114,7 @@ typedef uint64_t isl_surf_usage_flags_t;
 #define ISL_SURF_USAGE_INDEX_BUFFER_BIT        (1u << 12)
 #define ISL_SURF_USAGE_CONSTANT_BUFFER_BIT     (1u << 13)
 #define ISL_SURF_USAGE_STAGING_BIT             (1u << 14)
+#define ISL_SURF_USAGE_CPB_BIT                 (1u << 15)
 /** @} */
 
 /**
@@ -1268,6 +1268,15 @@ struct isl_device {
       uint8_t stencil_offset;
       uint8_t hiz_offset;
    } ds;
+
+   /**
+    * Describes the layout of the coarse pixel control commands as emitted by
+    * isl_emit_cpb_control.
+    */
+   struct {
+      uint8_t size;
+      uint8_t offset;
+   } cpb;
 
    struct {
       uint32_t internal;
@@ -1599,6 +1608,14 @@ struct isl_view {
     */
    uint32_t array_len;
 
+   /**
+    * Minimum LOD
+    *
+    * Similar to sampler minimum LOD, the computed LOD is clamped to be at
+    * least min_lod_clamp.
+    */
+   float min_lod_clamp;
+
    struct isl_swizzle swizzle;
 };
 
@@ -1770,6 +1787,28 @@ struct isl_null_fill_state_info {
    uint32_t minimum_array_element;
 };
 
+struct isl_cpb_emit_info {
+   /**
+    * The coarse pixel shading control surface.
+    */
+   const struct isl_surf *surf;
+
+   /**
+    * The view into the control surface.
+    */
+   const struct isl_view *view;
+
+   /**
+    * The address of the control surface in GPU memory.
+    */
+   uint64_t address;
+
+   /**
+    * The Memory Object Control state for the surface.
+    */
+   uint32_t mocs;
+};
+
 extern const struct isl_format_layout isl_format_layouts[];
 extern const char isl_format_names[];
 extern const uint16_t isl_format_name_offsets[];
@@ -1824,6 +1863,8 @@ bool isl_format_supports_ccs_e(const struct intel_device_info *devinfo,
                                enum isl_format format);
 bool isl_format_supports_multisampling(const struct intel_device_info *devinfo,
                                        enum isl_format format);
+bool isl_format_supports_typed_atomics(const struct intel_device_info *devinfo,
+                                       enum isl_format fmt);
 
 bool isl_formats_are_ccs_e_compatible(const struct intel_device_info *devinfo,
                                       enum isl_format format1,
@@ -1980,6 +2021,11 @@ isl_format_is_rgbx(enum isl_format fmt)
 enum isl_format isl_format_rgb_to_rgba(enum isl_format rgb) ATTRIBUTE_CONST;
 enum isl_format isl_format_rgb_to_rgbx(enum isl_format rgb) ATTRIBUTE_CONST;
 enum isl_format isl_format_rgbx_to_rgba(enum isl_format rgb) ATTRIBUTE_CONST;
+
+union isl_color_value
+isl_color_value_swizzle(union isl_color_value src,
+                        struct isl_swizzle swizzle,
+                        bool is_float);
 
 union isl_color_value
 isl_color_value_swizzle_inv(union isl_color_value src,
@@ -2237,6 +2283,12 @@ isl_surf_usage_is_depth_or_stencil(isl_surf_usage_flags_t usage)
 }
 
 static inline bool
+isl_surf_usage_is_cpb(isl_surf_usage_flags_t usage)
+{
+   return usage & ISL_SURF_USAGE_CPB_BIT;
+}
+
+static inline bool
 isl_surf_info_is_z16(const struct isl_surf_init_info *info)
 {
    return (info->usage & ISL_SURF_USAGE_DEPTH_BIT) &&
@@ -2422,6 +2474,10 @@ isl_null_fill_state_s(const struct isl_device *dev, void *state,
 void
 isl_emit_depth_stencil_hiz_s(const struct isl_device *dev, void *batch,
                              const struct isl_depth_stencil_hiz_emit_info *restrict info);
+
+void
+isl_emit_cpb_control_s(const struct isl_device *dev, void *batch,
+                       const struct isl_cpb_emit_info *restrict info);
 
 void
 isl_surf_fill_image_param(const struct isl_device *dev,

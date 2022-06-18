@@ -67,18 +67,24 @@ debug_describe_zink_compute_program(char *buf, const struct zink_compute_program
 }
 
 static bool
-shader_key_matches(const struct zink_shader_module *zm, const struct zink_shader_key *key, unsigned num_uniforms)
+shader_key_matches(const struct zink_shader_module *zm, bool ignore_size,
+                   const struct zink_shader_key *key, unsigned num_uniforms)
 {
-   if (zm->key_size != key->size || zm->num_uniforms != num_uniforms)
+   bool key_size_differs = ignore_size ? false : zm->key_size != key->size;
+   if (key_size_differs || zm->num_uniforms != num_uniforms || zm->has_nonseamless != !!key->base.nonseamless_cube_mask)
       return false;
+   const uint32_t nonseamless_size = zm->has_nonseamless ? sizeof(uint32_t) : 0;
    return !memcmp(zm->key, key, zm->key_size) &&
-          (!num_uniforms || !memcmp(zm->key + zm->key_size, key->base.inlined_uniform_values, zm->num_uniforms * sizeof(uint32_t)));
+          (!nonseamless_size || !memcmp(zm->key + zm->key_size, &key->base.nonseamless_cube_mask, nonseamless_size)) &&
+          (!num_uniforms || !memcmp(zm->key + zm->key_size + nonseamless_size,
+                                    key->base.inlined_uniform_values, zm->num_uniforms * sizeof(uint32_t)));
 }
 
 static uint32_t
 shader_module_hash(const struct zink_shader_module *zm)
 {
-   unsigned key_size = zm->key_size + zm->num_uniforms * sizeof(uint32_t);
+   const uint32_t nonseamless_size = zm->has_nonseamless ? sizeof(uint32_t) : 0;
+   unsigned key_size = zm->key_size + nonseamless_size + zm->num_uniforms * sizeof(uint32_t);
    return _mesa_hash_data(zm->key, key_size);
 }
 
@@ -91,20 +97,26 @@ get_shader_module_for_stage(struct zink_context *ctx, struct zink_screen *screen
    enum pipe_shader_type pstage = pipe_shader_type_from_mesa(stage);
    VkShaderModule mod;
    struct zink_shader_module *zm = NULL;
-   unsigned base_size = 0;
+   unsigned inline_size = 0, nonseamless_size = 0;
    struct zink_shader_key *key = &state->shader_keys.key[pstage];
-
+   bool ignore_key_size = false;
+   if (pstage == PIPE_SHADER_TESS_CTRL && !zs->is_generated) {
+      /* non-generated tcs won't use the shader key */
+      ignore_key_size = true;
+   }
    if (ctx && zs->nir->info.num_inlinable_uniforms &&
        ctx->inlinable_uniforms_valid_mask & BITFIELD64_BIT(pstage)) {
-      if (screen->is_cpu || prog->inlined_variant_count[pstage] < ZINK_MAX_INLINED_VARIANTS)
-         base_size = zs->nir->info.num_inlinable_uniforms;
+      if (zs->can_inline && (screen->is_cpu || prog->inlined_variant_count[pstage] < ZINK_MAX_INLINED_VARIANTS))
+         inline_size = zs->nir->info.num_inlinable_uniforms;
       else
          key->inline_uniforms = false;
    }
+   if (key->base.nonseamless_cube_mask)
+      nonseamless_size = sizeof(uint32_t);
 
    struct zink_shader_module *iter, *next;
-   LIST_FOR_EACH_ENTRY_SAFE(iter, next, &prog->shader_cache[pstage][!!base_size], list) {
-      if (!shader_key_matches(iter, key, base_size))
+   LIST_FOR_EACH_ENTRY_SAFE(iter, next, &prog->shader_cache[pstage][!!nonseamless_size][!!inline_size], list) {
+      if (!shader_key_matches(iter, ignore_key_size, key, inline_size))
          continue;
       list_delinit(&iter->list);
       zm = iter;
@@ -112,28 +124,47 @@ get_shader_module_for_stage(struct zink_context *ctx, struct zink_screen *screen
    }
 
    if (!zm) {
-      zm = malloc(sizeof(struct zink_shader_module) + key->size + base_size * sizeof(uint32_t));
+      zm = malloc(sizeof(struct zink_shader_module) + key->size + nonseamless_size + inline_size * sizeof(uint32_t));
       if (!zm) {
          return NULL;
       }
-      mod = zink_shader_compile(screen, zs, prog->nir[stage], key);
+      unsigned patch_vertices = state->shader_keys.key[PIPE_SHADER_TESS_CTRL ].key.tcs.patch_vertices;
+      if (pstage == PIPE_SHADER_TESS_CTRL && zs->is_generated && zs->spirv) {
+         assert(ctx); //TODO async
+         mod = zink_shader_tcs_compile(screen, zs, patch_vertices);
+      } else {
+         mod = zink_shader_compile(screen, zs, prog->nir[stage], key);
+      }
       if (!mod) {
          FREE(zm);
          return NULL;
       }
       zm->shader = mod;
       list_inithead(&zm->list);
-      zm->num_uniforms = base_size;
-      zm->key_size = key->size;
-      memcpy(zm->key, key, key->size);
-      if (base_size)
-         memcpy(zm->key + key->size, &key->base, base_size * sizeof(uint32_t));
-      zm->hash = shader_module_hash(zm);
-      zm->default_variant = !base_size && list_is_empty(&prog->shader_cache[pstage][0]);
-      if (base_size)
+      zm->num_uniforms = inline_size;
+      if (!ignore_key_size) {
+         zm->key_size = key->size;
+         memcpy(zm->key, key, key->size);
+      } else {
+         zm->key_size = 0;
+         memset(zm->key, 0, key->size);
+      }
+      if (nonseamless_size) {
+         /* nonseamless mask gets added to base key if it exists */
+         memcpy(zm->key + key->size, &key->base.nonseamless_cube_mask, nonseamless_size);
+      }
+      zm->has_nonseamless = !!nonseamless_size;
+      if (inline_size)
+         memcpy(zm->key + key->size + nonseamless_size, key->base.inlined_uniform_values, inline_size * sizeof(uint32_t));
+      if (pstage == PIPE_SHADER_TESS_CTRL && zs->is_generated)
+         zm->hash = patch_vertices;
+      else
+         zm->hash = shader_module_hash(zm);
+      zm->default_variant = !inline_size && list_is_empty(&prog->shader_cache[pstage][0][0]);
+      if (inline_size)
          prog->inlined_variant_count[pstage]++;
    }
-   list_add(&zm->list, &prog->shader_cache[pstage][!!base_size]);
+   list_add(&zm->list, &prog->shader_cache[pstage][!!nonseamless_size][!!inline_size]);
    return zm;
 }
 
@@ -199,7 +230,7 @@ hash_gfx_pipeline_state(const void *key)
    const struct zink_gfx_pipeline_state *state = key;
    uint32_t hash = _mesa_hash_data(key, offsetof(struct zink_gfx_pipeline_state, hash));
    if (!state->have_EXT_extended_dynamic_state2)
-      hash = XXH32(&state->primitive_restart, 1, hash);
+      hash = XXH32(&state->dyn_state2, sizeof(state->dyn_state2), hash);
    if (state->have_EXT_extended_dynamic_state)
       return hash;
    return XXH32(&state->dyn_state1, sizeof(state->dyn_state1), hash);
@@ -210,7 +241,12 @@ equals_gfx_pipeline_state(const void *a, const void *b)
 {
    const struct zink_gfx_pipeline_state *sa = a;
    const struct zink_gfx_pipeline_state *sb = b;
-   if (!sa->have_EXT_extended_dynamic_state) {
+   if (sa->uses_dynamic_stride != sb->uses_dynamic_stride)
+      return false;
+   /* dynamic vs rp */
+   if (!!sa->render_pass != !!sb->render_pass)
+      return false;
+   if (!sa->have_EXT_extended_dynamic_state || !sa->uses_dynamic_stride) {
       if (sa->vertex_buffers_enabled_mask != sb->vertex_buffers_enabled_mask)
          return false;
       /* if we don't have dynamic states, we have to hash the enabled vertex buffer bindings */
@@ -222,7 +258,9 @@ equals_gfx_pipeline_state(const void *a, const void *b)
          if (sa->vertex_strides[idx_a] != sb->vertex_strides[idx_b])
             return false;
       }
-      if (sa->dyn_state1.front_face != sb->dyn_state1.front_face)
+   }
+   if (!sa->have_EXT_extended_dynamic_state) {
+      if (memcmp(&sa->dyn_state1, &sb->dyn_state1, offsetof(struct zink_pipeline_dynamic_state1, depth_stencil_alpha_state)))
          return false;
       if (!!sa->dyn_state1.depth_stencil_alpha_state != !!sb->dyn_state1.depth_stencil_alpha_state ||
           (sa->dyn_state1.depth_stencil_alpha_state &&
@@ -231,7 +269,10 @@ equals_gfx_pipeline_state(const void *a, const void *b)
          return false;
    }
    if (!sa->have_EXT_extended_dynamic_state2) {
-      if (sa->primitive_restart != sb->primitive_restart)
+      if (memcmp(&sa->dyn_state2, &sb->dyn_state2, sizeof(sa->dyn_state2)))
+         return false;
+   } else if (!sa->extendedDynamicState2PatchControlPoints) {
+      if (sa->dyn_state2.vertices_per_patch != sb->dyn_state2.vertices_per_patch)
          return false;
    }
    return !memcmp(sa->modules, sb->modules, sizeof(sa->modules)) &&
@@ -244,19 +285,6 @@ zink_update_gfx_program(struct zink_context *ctx, struct zink_gfx_program *prog)
    update_gfx_shader_modules(ctx, zink_screen(ctx->base.screen), prog, ctx->dirty_shader_stages & prog->stages_present, &ctx->gfx_pipeline_state);
 }
 
-static bool
-uniforms_match(const struct zink_shader_module *zm, uint32_t *uniforms, unsigned num_uniforms)
-{
-   assert(zm->num_uniforms == num_uniforms);
-   return !memcmp(zm->key, uniforms, zm->num_uniforms * sizeof(uint32_t));
-}
-
-static uint32_t
-cs_module_hash(const struct zink_shader_module *zm)
-{
-   return _mesa_hash_data(zm->key, zm->num_uniforms * sizeof(uint32_t));
-}
-
 static void
 update_cs_shader_module(struct zink_context *ctx, struct zink_compute_program *comp)
 {
@@ -264,21 +292,23 @@ update_cs_shader_module(struct zink_context *ctx, struct zink_compute_program *c
    struct zink_shader *zs = comp->shader;
    VkShaderModule mod;
    struct zink_shader_module *zm = NULL;
-   unsigned base_size = 0;
+   unsigned inline_size = 0, nonseamless_size = 0;
    struct zink_shader_key *key = &ctx->compute_pipeline_state.key;
 
    if (ctx && zs->nir->info.num_inlinable_uniforms &&
        ctx->inlinable_uniforms_valid_mask & BITFIELD64_BIT(PIPE_SHADER_COMPUTE)) {
       if (screen->is_cpu || comp->inlined_variant_count < ZINK_MAX_INLINED_VARIANTS)
-         base_size = zs->nir->info.num_inlinable_uniforms;
+         inline_size = zs->nir->info.num_inlinable_uniforms;
       else
          key->inline_uniforms = false;
    }
+   if (key->base.nonseamless_cube_mask)
+      nonseamless_size = sizeof(uint32_t);
 
-   if (base_size) {
+   if (inline_size || nonseamless_size) {
       struct zink_shader_module *iter, *next;
-      LIST_FOR_EACH_ENTRY_SAFE(iter, next, &comp->shader_cache, list) {
-         if (!uniforms_match(iter, key->base.inlined_uniform_values, base_size))
+      LIST_FOR_EACH_ENTRY_SAFE(iter, next, &comp->shader_cache[!!nonseamless_size], list) {
+         if (!shader_key_matches(iter, false, key, inline_size))
             continue;
          list_delinit(&iter->list);
          zm = iter;
@@ -289,7 +319,7 @@ update_cs_shader_module(struct zink_context *ctx, struct zink_compute_program *c
    }
 
    if (!zm) {
-      zm = malloc(sizeof(struct zink_shader_module) + base_size * sizeof(uint32_t));
+      zm = malloc(sizeof(struct zink_shader_module) + nonseamless_size + inline_size * sizeof(uint32_t));
       if (!zm) {
          return;
       }
@@ -300,16 +330,21 @@ update_cs_shader_module(struct zink_context *ctx, struct zink_compute_program *c
       }
       zm->shader = mod;
       list_inithead(&zm->list);
-      zm->num_uniforms = base_size;
+      zm->num_uniforms = inline_size;
       zm->key_size = 0;
-      assert(base_size);
-      memcpy(zm->key, key->base.inlined_uniform_values, base_size * sizeof(uint32_t));
-      zm->hash = cs_module_hash(zm);
+      zm->has_nonseamless = !!nonseamless_size;
+      assert(nonseamless_size || inline_size);
+      if (nonseamless_size)
+         memcpy(zm->key, &key->base.nonseamless_cube_mask, nonseamless_size);
+      if (inline_size)
+         memcpy(zm->key + nonseamless_size, key->base.inlined_uniform_values, inline_size * sizeof(uint32_t));
+      zm->hash = shader_module_hash(zm);
       zm->default_variant = false;
-      comp->inlined_variant_count++;
+      if (inline_size)
+         comp->inlined_variant_count++;
    }
-   if (zm->num_uniforms)
-      list_add(&zm->list, &comp->shader_cache);
+   if (zm->num_uniforms || nonseamless_size)
+      list_add(&zm->list, &comp->shader_cache[!!nonseamless_size]);
    if (comp->curr == zm)
       return;
    ctx->compute_pipeline_state.final_hash ^= ctx->compute_pipeline_state.module_hash;
@@ -355,7 +390,7 @@ zink_pipeline_layout_create(struct zink_screen *screen, struct zink_program *pg,
 
    VkPipelineLayout layout;
    if (VKSCR(CreatePipelineLayout)(screen->dev, &plci, NULL, &layout) != VK_SUCCESS) {
-      debug_printf("vkCreatePipelineLayout failed!\n");
+      mesa_loge("vkCreatePipelineLayout failed");
       return VK_NULL_HANDLE;
    }
 
@@ -403,8 +438,10 @@ zink_create_gfx_program(struct zink_context *ctx,
    pipe_reference_init(&prog->base.reference, 1);
 
    for (int i = 0; i < ZINK_SHADER_COUNT; ++i) {
-      list_inithead(&prog->shader_cache[i][0]);
-      list_inithead(&prog->shader_cache[i][1]);
+      list_inithead(&prog->shader_cache[i][0][0]);
+      list_inithead(&prog->shader_cache[i][0][1]);
+      list_inithead(&prog->shader_cache[i][1][0]);
+      list_inithead(&prog->shader_cache[i][1][1]);
       if (stages[i]) {
          prog->shaders[i] = stages[i];
          prog->stages_present |= BITFIELD_BIT(i);
@@ -516,7 +553,8 @@ zink_create_compute_program(struct zink_context *ctx, struct zink_shader *shader
    assert(comp->module);
    comp->module->shader = zink_shader_compile(screen, shader, shader->nir, NULL);
    assert(comp->module->shader);
-   list_inithead(&comp->shader_cache);
+   list_inithead(&comp->shader_cache[0]);
+   list_inithead(&comp->shader_cache[1]);
 
    comp->pipelines = _mesa_hash_table_create(NULL, NULL,
                                              equals_compute_pipeline_state);
@@ -566,7 +604,7 @@ zink_program_get_descriptor_usage(struct zink_context *ctx, enum pipe_shader_typ
    case ZINK_DESCRIPTOR_TYPE_SAMPLER_VIEW:
       return BITSET_TEST_RANGE(zs->nir->info.textures_used, 0, PIPE_MAX_SAMPLERS - 1);
    case ZINK_DESCRIPTOR_TYPE_IMAGE:
-      return zs->nir->info.images_used;
+      return BITSET_TEST_RANGE(zs->nir->info.images_used, 0, PIPE_MAX_SAMPLERS - 1);
    default:
       unreachable("unknown descriptor type!");
    }
@@ -643,6 +681,7 @@ zink_destroy_gfx_program(struct zink_context *ctx,
                          struct zink_gfx_program *prog)
 {
    struct zink_screen *screen = zink_screen(ctx->base.screen);
+   util_queue_fence_wait(&prog->base.cache_fence);
    if (prog->base.layout)
       VKSCR(DestroyPipelineLayout)(screen->dev, prog->base.layout, NULL);
 
@@ -651,8 +690,10 @@ zink_destroy_gfx_program(struct zink_context *ctx,
          _mesa_set_remove_key(prog->shaders[i]->programs, prog);
          prog->shaders[i] = NULL;
       }
-      destroy_shader_cache(screen, &prog->shader_cache[i][0]);
-      destroy_shader_cache(screen, &prog->shader_cache[i][1]);
+      destroy_shader_cache(screen, &prog->shader_cache[i][0][0]);
+      destroy_shader_cache(screen, &prog->shader_cache[i][0][1]);
+      destroy_shader_cache(screen, &prog->shader_cache[i][1][0]);
+      destroy_shader_cache(screen, &prog->shader_cache[i][1][1]);
       ralloc_free(prog->nir[i]);
    }
 
@@ -688,11 +729,14 @@ zink_destroy_compute_program(struct zink_context *ctx,
                              struct zink_compute_program *comp)
 {
    struct zink_screen *screen = zink_screen(ctx->base.screen);
+   util_queue_fence_wait(&comp->base.cache_fence);
    if (comp->base.layout)
       VKSCR(DestroyPipelineLayout)(screen->dev, comp->base.layout, NULL);
 
    if (comp->shader)
       _mesa_set_remove_key(comp->shader->programs, comp);
+   destroy_shader_cache(screen, &comp->shader_cache[0]);
+   destroy_shader_cache(screen, &comp->shader_cache[1]);
 
    hash_table_foreach(comp->pipelines, entry) {
       struct compute_pipeline_cache_entry *pc_entry = entry->data;
@@ -732,7 +776,29 @@ get_pipeline_idx(bool have_EXT_extended_dynamic_state, enum pipe_prim_type mode,
    }
    return vkmode;
 }
-                 
+
+/*
+   VUID-vkCmdBindVertexBuffers2-pStrides-06209
+   If pStrides is not NULL each element of pStrides must be either 0 or greater than or equal
+   to the maximum extent of all vertex input attributes fetched from the corresponding
+   binding, where the extent is calculated as the VkVertexInputAttributeDescription::offset
+   plus VkVertexInputAttributeDescription::format size
+
+   * thus, if the stride doesn't meet the minimum requirement for a binding,
+   * disable the dynamic state here and use a fully-baked pipeline
+ */
+static bool
+check_vertex_strides(struct zink_context *ctx)
+{
+   const struct zink_vertex_elements_state *ves = ctx->element_state;
+   for (unsigned i = 0; i < ves->hw_state.num_bindings; i++) {
+      const struct pipe_vertex_buffer *vb = ctx->vertex_buffers + ves->binding_map[i];
+      unsigned stride = vb->buffer.resource ? vb->stride : 0;
+      if (stride && stride < ves->min_stride[i])
+         return false;
+   }
+   return true;
+}
 
 VkPipeline
 zink_get_gfx_pipeline(struct zink_context *ctx,
@@ -743,6 +809,7 @@ zink_get_gfx_pipeline(struct zink_context *ctx,
    struct zink_screen *screen = zink_screen(ctx->base.screen);
    const bool have_EXT_vertex_input_dynamic_state = screen->info.have_EXT_vertex_input_dynamic_state;
    const bool have_EXT_extended_dynamic_state = screen->info.have_EXT_extended_dynamic_state;
+   bool uses_dynamic_stride = state->uses_dynamic_stride;
 
    VkPrimitiveTopology vkmode = zink_primitive_topology(mode);
    const unsigned idx = get_pipeline_idx(screen->info.have_EXT_extended_dynamic_state, mode, vkmode);
@@ -764,7 +831,9 @@ zink_get_gfx_pipeline(struct zink_context *ctx,
    if (!have_EXT_vertex_input_dynamic_state && ctx->vertex_state_changed) {
       if (state->pipeline)
          state->final_hash ^= state->vertex_hash;
-      if (!have_EXT_extended_dynamic_state) {
+      if (have_EXT_extended_dynamic_state)
+         uses_dynamic_stride = check_vertex_strides(ctx);
+      if (!uses_dynamic_stride) {
          uint32_t hash = 0;
          /* if we don't have dynamic states, we have to hash the enabled vertex buffer bindings */
          uint32_t vertex_buffers_enabled_mask = state->vertex_buffers_enabled_mask;
@@ -782,6 +851,7 @@ zink_get_gfx_pipeline(struct zink_context *ctx,
       state->final_hash ^= state->vertex_hash;
    }
    state->modules_changed = false;
+   state->uses_dynamic_stride = uses_dynamic_stride;
    ctx->vertex_state_changed = false;
 
    entry = _mesa_hash_table_search_pre_hashed(&prog->pipelines[idx], state->final_hash, state);
@@ -883,6 +953,8 @@ bind_stage(struct zink_context *ctx, enum pipe_shader_type stage,
          ctx->compute_pipeline_state.module_hash = ctx->curr_compute->curr->hash;
          ctx->compute_pipeline_state.module = ctx->curr_compute->curr->shader;
          ctx->compute_pipeline_state.final_hash ^= ctx->compute_pipeline_state.module_hash;
+         if (ctx->compute_pipeline_state.key.base.nonseamless_cube_mask)
+            ctx->dirty_shader_stages |= BITFIELD_BIT(PIPE_SHADER_COMPUTE);
       } else if (!shader)
          ctx->curr_compute = NULL;
       ctx->compute_stage = shader;
@@ -1113,4 +1185,18 @@ zink_program_init(struct zink_context *ctx)
    ctx->base.create_compute_state = zink_create_cs_state;
    ctx->base.bind_compute_state = zink_bind_cs_state;
    ctx->base.delete_compute_state = zink_delete_shader_state;
+}
+
+bool
+zink_set_rasterizer_discard(struct zink_context *ctx, bool disable)
+{
+   bool value = disable ? false : (ctx->rast_state ? ctx->rast_state->base.rasterizer_discard : false);
+   bool changed = ctx->gfx_pipeline_state.dyn_state2.rasterizer_discard != value;
+   ctx->gfx_pipeline_state.dyn_state2.rasterizer_discard = value;
+   if (!changed)
+      return false;
+   if (!zink_screen(ctx->base.screen)->info.have_EXT_extended_dynamic_state2)
+      ctx->gfx_pipeline_state.dirty |= true;
+   ctx->rasterizer_discard_changed = true;
+   return true;
 }

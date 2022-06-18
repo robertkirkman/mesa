@@ -1,11 +1,10 @@
-lavapipe,radv,anv KHR_dynamic_rendering
-radv EXT_image_view_min_lod
-VK_KHR_synchronization2 on RADV.
-OpenSWR has been moved to the Amber branch
-radeonsi, zink ARB_sparse_texture
-d3d12 GLES3.1 (shader storage buffers, images, compute, indirect draw, draw params, ARB_framebuffer_no_attachments, ARB_sample_shading, and GLSL400)
-radeonsi, zink ARB_sparse_texture2
-zink EXT_memory_object, EXT_memory_object_fd, EXT_semaphore, EXT_semaphore_fd
-anv VK_VALVE_mutable_descriptor_type
-Vulkan 1.3 on RADV,Anv.
-radeonsi ARB_sparse_texture_clamp
+WGL_ARB_create_context_robustness
+d3d12 ARB_robust_buffer_access_behavior
+VK_EXT_robustness2 for lavapipe
+VK_EXT_image_2d_view_of_3d on RADV
+zink GL_EXT_memory_object_win32 and GL_EXT_semaphore_win32 support
+vertexAttributeInstanceRateZeroDivisor support for lavapipe
+panfrost Valhall support (conformant OpenGL ES 3.1 on Mali-G57)
+VK_EXT_primitives_generated_query on RADV
+VK_EXT_non_seamless_cube_map on RADV, ANV
+VK_EXT_border_color_swizzle on lavapipe, ANV, turnip, RADV

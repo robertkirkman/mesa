@@ -1,5 +1,5 @@
 /*
- * Copyright © 2020 Raspberry Pi
+ * Copyright © 2020 Raspberry Pi Ltd
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -160,11 +160,15 @@ v3dv_CmdClearColorImage(VkCommandBuffer commandBuffer,
       .color = *pColor,
    };
 
+   cmd_buffer->state.is_transfer = true;
+
    for (uint32_t i = 0; i < rangeCount; i++) {
       if (clear_image_tlb(cmd_buffer, image, &clear_value, &pRanges[i]))
          continue;
       unreachable("Unsupported color clear.");
    }
+
+   cmd_buffer->state.is_transfer = false;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -182,11 +186,15 @@ v3dv_CmdClearDepthStencilImage(VkCommandBuffer commandBuffer,
       .depthStencil = *pDepthStencil,
    };
 
+   cmd_buffer->state.is_transfer = true;
+
    for (uint32_t i = 0; i < rangeCount; i++) {
       if (clear_image_tlb(cmd_buffer, image, &clear_value, &pRanges[i]))
          continue;
       unreachable("Unsupported depth/stencil clear.");
    }
+
+   cmd_buffer->state.is_transfer = false;
 }
 
 static void

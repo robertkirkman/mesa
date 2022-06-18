@@ -330,16 +330,13 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
        * assert-failures in the packing function below, we only set the field
        * when it's actually going to be used by the hardware.
        *
-       * Similaraly, the MinimumArrayElement field is ignored by all hardware
-       * prior to Sky Lake when texturing and we want it set to 0 anyway.
-       * Since it's already initialized to 0, we can just leave it alone for
-       * texture surfaces.
+       * The MinimumArrayElement field is ignored by all hardware
+       * prior to Sky Lake when texturing, and drivers are responsible
+       * for validating the correctness of this parameter.
+       * KHR_gl_texture_3D_image requires this functionality.
        */
-      if (info->view->usage & (ISL_SURF_USAGE_RENDER_TARGET_BIT |
-                               ISL_SURF_USAGE_STORAGE_BIT)) {
-         s.MinimumArrayElement = info->view->base_array_layer;
-         s.RenderTargetViewExtent = info->view->array_len - 1;
-      }
+      s.MinimumArrayElement = info->view->base_array_layer;
+      s.RenderTargetViewExtent = info->view->array_len - 1;
       break;
    default:
       unreachable("bad SurfaceType");
@@ -442,11 +439,30 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
    s.CubeFaceEnableNegativeX = 1;
 
 #if GFX_VER >= 6
+   /* From the Broadwell PRM for "Number of Multisamples":
+    *
+    *    "If this field is any value other than MULTISAMPLECOUNT_1, Surface
+    *    Min LOD, Mip Count / LOD, and Resource Min LOD must be set to zero."
+    *
+    * This is fine because no 3D API allows multisampling and mipmapping at
+    * the same time.
+    */
+   if (info->surf->samples > 1) {
+      assert(info->view->min_lod_clamp == 0);
+      assert(info->view->base_level == 0);
+      assert(info->view->levels == 1);
+   }
    s.NumberofMultisamples = ffs(info->surf->samples) - 1;
 #if GFX_VER >= 7
    s.MultisampledSurfaceStorageFormat =
       isl_encode_multisample_layout[info->surf->msaa_layout];
 #endif
+#endif
+
+#if GFX_VER >= 7
+   s.ResourceMinLOD = info->view->min_lod_clamp;
+#else
+   assert(info->view->min_lod_clamp == 0);
 #endif
 
 #if (GFX_VERx10 >= 75)
@@ -596,6 +612,42 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
 #endif
 #if GFX_VER >= 12
       s.MemoryCompressionEnable = info->aux_usage == ISL_AUX_USAGE_MC;
+#endif
+#if GFX_VER >= 9
+      /* Some CCS aux usages have format restrictions. The Skylake PRM doc for
+       * RENDER_SURFACE_STATE::AuxiliarySurfaceMode says:
+       *
+       *    If Number of Multisamples is MULTISAMPLECOUNT_1, AUX_CCS_E setting
+       *    is only allowed if Surface Format is supported for Render Target
+       *    Compression. This setting enables render target compression.
+       *
+       * If CCS_E is in use, the format must support it.
+       */
+      if (info->aux_usage == ISL_AUX_USAGE_CCS_E ||
+          info->aux_usage == ISL_AUX_USAGE_GFX12_CCS_E)
+         assert(isl_format_supports_ccs_e(dev->info, info->view->format));
+
+      /* It also says:
+       *
+       *    If Number of Multisamples is MULTISAMPLECOUNT_1, AUX_CCS_D setting
+       *    is only allowed if Surface Format supported for Fast Clear. In
+       *    addition, if the surface is bound to the sampling engine, Surface
+       *    Format must be supported for Render Target Compression for
+       *    surfaces bound to the sampling engine. For render target surfaces,
+       *    this setting disables render target compression. For sampling
+       *    engine surfaces, this mode behaves the same as AUX_CCS_E.
+       *
+       * If CCS_D is in use while rendering, the format must support it. If
+       * it's in use while sampling, the format must support CCS_E.
+       */
+      if (info->aux_usage == ISL_AUX_USAGE_CCS_D) {
+         if (info->view->usage & ISL_SURF_USAGE_RENDER_TARGET_BIT) {
+            assert(isl_format_supports_ccs_d(dev->info, info->view->format));
+         } else {
+            assert(info->view->usage & ISL_SURF_USAGE_TEXTURE_BIT);
+            assert(isl_format_supports_ccs_e(dev->info, info->view->format));
+         }
+      }
 #endif
 #if GFX_VER >= 8
       s.AuxiliarySurfaceMode = isl_encode_aux_mode[info->aux_usage];

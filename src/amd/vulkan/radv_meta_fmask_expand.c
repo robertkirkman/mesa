@@ -33,7 +33,8 @@ build_fmask_expand_compute_shader(struct radv_device *device, int samples)
       glsl_sampler_type(GLSL_SAMPLER_DIM_MS, false, true, GLSL_TYPE_FLOAT);
    const struct glsl_type *img_type = glsl_image_type(GLSL_SAMPLER_DIM_MS, true, GLSL_TYPE_FLOAT);
 
-   nir_builder b = radv_meta_init_shader(MESA_SHADER_COMPUTE, "meta_fmask_expand_cs-%d", samples);
+   nir_builder b =
+      radv_meta_init_shader(device, MESA_SHADER_COMPUTE, "meta_fmask_expand_cs-%d", samples);
    b.shader->info.workgroup_size[0] = 8;
    b.shader->info.workgroup_size[1] = 8;
 
@@ -106,14 +107,14 @@ radv_expand_fmask_image_inplace(struct radv_cmd_buffer *cmd_buffer, struct radv_
                         pipeline);
 
    cmd_buffer->state.flush_bits |= radv_dst_access_flush(
-      cmd_buffer, VK_ACCESS_2_SHADER_READ_BIT_KHR | VK_ACCESS_2_SHADER_WRITE_BIT_KHR, image);
+      cmd_buffer, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT, image);
 
    radv_image_view_init(&iview, device,
                         &(VkImageViewCreateInfo){
                            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                            .image = radv_image_to_handle(image),
                            .viewType = radv_meta_get_view_type(image),
-                           .format = vk_format_no_srgb(image->vk_format),
+                           .format = vk_format_no_srgb(image->vk.format),
                            .subresourceRange =
                               {
                                  .aspectMask = subresourceRange->aspectMask,
@@ -123,7 +124,7 @@ radv_expand_fmask_image_inplace(struct radv_cmd_buffer *cmd_buffer, struct radv_
                                  .layerCount = layer_count,
                               },
                         },
-                        NULL);
+                        0, NULL);
 
    radv_meta_push_descriptor_set(
       cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -159,7 +160,7 @@ radv_expand_fmask_image_inplace(struct radv_cmd_buffer *cmd_buffer, struct radv_
 
    cmd_buffer->state.flush_bits |=
       RADV_CMD_FLAG_CS_PARTIAL_FLUSH |
-      radv_src_access_flush(cmd_buffer, VK_ACCESS_2_SHADER_WRITE_BIT_KHR, image);
+      radv_src_access_flush(cmd_buffer, VK_ACCESS_2_SHADER_WRITE_BIT, image);
 
    /* Re-initialize FMASK in fully expanded mode. */
    cmd_buffer->state.flush_bits |= radv_init_fmask(cmd_buffer, image, subresourceRange);

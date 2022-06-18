@@ -53,7 +53,7 @@ radv_amdgpu_bo_va_op(struct radv_amdgpu_winsys *ws, amdgpu_bo_handle bo, uint64_
    if (bo) {
       flags = AMDGPU_VM_PAGE_READABLE | AMDGPU_VM_PAGE_EXECUTABLE;
 
-      if ((bo_flags & RADEON_FLAG_VA_UNCACHED) && ws->info.chip_class >= GFX9)
+      if ((bo_flags & RADEON_FLAG_VA_UNCACHED) && ws->info.gfx_level >= GFX9)
          flags |= AMDGPU_VM_MTYPE_UC;
 
       if (!(bo_flags & RADEON_FLAG_READ_ONLY))
@@ -132,7 +132,7 @@ radv_amdgpu_winsys_bo_virtual_bind(struct radeon_winsys *_ws, struct radeon_wins
    }
 
    if (r) {
-      fprintf(stderr, "amdgpu: Failed to replace a PRT VA region (%d).\n", r);
+      fprintf(stderr, "radv/amdgpu: Failed to replace a PRT VA region (%d).\n", r);
       return VK_ERROR_OUT_OF_DEVICE_MEMORY;
    }
 
@@ -321,7 +321,7 @@ radv_amdgpu_winsys_bo_destroy(struct radeon_winsys *_ws, struct radeon_winsys_bo
       /* Clear mappings of this PRT VA region. */
       r = radv_amdgpu_bo_va_op(ws, bo->bo, 0, bo->size, bo->base.va, 0, 0, AMDGPU_VA_OP_CLEAR);
       if (r) {
-         fprintf(stderr, "amdgpu: Failed to clear a PRT VA region (%d).\n", r);
+         fprintf(stderr, "radv/amdgpu: Failed to clear a PRT VA region (%d).\n", r);
       }
 
       free(bo->bos);
@@ -415,7 +415,7 @@ radv_amdgpu_winsys_bo_create(struct radeon_winsys *_ws, uint64_t size, unsigned 
       r = radv_amdgpu_bo_va_op(ws, NULL, 0, size, bo->base.va, 0, AMDGPU_VM_PAGE_PRT,
                                AMDGPU_VA_OP_MAP);
       if (r) {
-         fprintf(stderr, "amdgpu: Failed to reserve a PRT VA region (%d).\n", r);
+         fprintf(stderr, "radv/amdgpu: Failed to reserve a PRT VA region (%d).\n", r);
          result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
          goto error_ranges_alloc;
       }
@@ -473,7 +473,6 @@ radv_amdgpu_winsys_bo_create(struct radeon_winsys *_ws, uint64_t size, unsigned 
       request.flags |= AMDGPU_GEM_CREATE_VM_ALWAYS_VALID;
    }
 
-   /* this won't do anything on pre 4.9 kernels */
    if (initial_domain & RADEON_DOMAIN_VRAM) {
       if (ws->zero_all_vram_allocs || (flags & RADEON_FLAG_ZERO_VRAM))
          request.flags |= AMDGPU_GEM_CREATE_VRAM_CLEARED;
@@ -481,10 +480,10 @@ radv_amdgpu_winsys_bo_create(struct radeon_winsys *_ws, uint64_t size, unsigned 
 
    r = amdgpu_bo_alloc(ws->dev, &request, &buf_handle);
    if (r) {
-      fprintf(stderr, "amdgpu: Failed to allocate a buffer:\n");
-      fprintf(stderr, "amdgpu:    size      : %" PRIu64 " bytes\n", size);
-      fprintf(stderr, "amdgpu:    alignment : %u bytes\n", alignment);
-      fprintf(stderr, "amdgpu:    domains   : %u\n", initial_domain);
+      fprintf(stderr, "radv/amdgpu: Failed to allocate a buffer:\n");
+      fprintf(stderr, "radv/amdgpu:    size      : %" PRIu64 " bytes\n", size);
+      fprintf(stderr, "radv/amdgpu:    alignment : %u bytes\n", alignment);
+      fprintf(stderr, "radv/amdgpu:    domains   : %u\n", initial_domain);
       result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
       goto error_bo_alloc;
    }
@@ -574,7 +573,7 @@ radv_amdgpu_get_optimal_vm_alignment(struct radv_amdgpu_winsys *ws, uint64_t siz
    /* Gfx9: Increase the VM alignment to the most significant bit set
     * in the size for faster address translation.
     */
-   if (ws->info.chip_class >= GFX9) {
+   if (ws->info.gfx_level >= GFX9) {
       unsigned msb = util_last_bit64(size); /* 0 = no bit is set */
       uint64_t msb_alignment = msb ? 1ull << (msb - 1) : 0;
 
@@ -871,7 +870,7 @@ radv_amdgpu_winsys_bo_set_metadata(struct radeon_winsys *_ws, struct radeon_wins
    struct amdgpu_bo_metadata metadata = {0};
    uint64_t tiling_flags = 0;
 
-   if (ws->info.chip_class >= GFX9) {
+   if (ws->info.gfx_level >= GFX9) {
       tiling_flags |= AMDGPU_TILING_SET(SWIZZLE_MODE, md->u.gfx9.swizzle_mode);
       tiling_flags |= AMDGPU_TILING_SET(DCC_OFFSET_256B, md->u.gfx9.dcc_offset_256b);
       tiling_flags |= AMDGPU_TILING_SET(DCC_PITCH_MAX, md->u.gfx9.dcc_pitch_max);
@@ -925,7 +924,7 @@ radv_amdgpu_winsys_bo_get_metadata(struct radeon_winsys *_ws, struct radeon_wins
 
    uint64_t tiling_flags = info.metadata.tiling_info;
 
-   if (ws->info.chip_class >= GFX9) {
+   if (ws->info.gfx_level >= GFX9) {
       md->u.gfx9.swizzle_mode = AMDGPU_TILING_GET(tiling_flags, SWIZZLE_MODE);
       md->u.gfx9.scanout = AMDGPU_TILING_GET(tiling_flags, SCANOUT);
    } else {

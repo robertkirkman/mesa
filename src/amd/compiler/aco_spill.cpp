@@ -697,25 +697,22 @@ init_live_in_vars(spill_ctx& ctx, Block* block, unsigned block_idx)
 
       std::vector<unsigned>& preds =
          phi->opcode == aco_opcode::p_phi ? block->logical_preds : block->linear_preds;
-      bool spill = true;
-
+      bool is_all_spilled = true;
       for (unsigned i = 0; i < phi->operands.size(); i++) {
-         /* non-temp operands can increase the register pressure */
-         if (!phi->operands[i].isTemp()) {
-            partial_spills.insert(phi->definitions[0].getTemp());
+         if (phi->operands[i].isUndefined())
             continue;
-         }
-
-         if (!ctx.spills_exit[preds[i]].count(phi->operands[i].getTemp()))
-            spill = false;
-         else
-            partial_spills.insert(phi->definitions[0].getTemp());
+         is_all_spilled &= phi->operands[i].isTemp() &&
+                           ctx.spills_exit[preds[i]].count(phi->operands[i].getTemp());
       }
-      if (spill) {
+
+      if (is_all_spilled) {
+         /* The phi is spilled at all predecessors. Keep it spilled. */
          ctx.spills_entry[block_idx][phi->definitions[0].getTemp()] =
             ctx.allocate_spill_id(phi->definitions[0].regClass());
-         partial_spills.erase(phi->definitions[0].getTemp());
          spilled_registers += phi->definitions[0].getTemp();
+      } else {
+         /* Phis might increase the register pressure. */
+         partial_spills.insert(phi->definitions[0].getTemp());
       }
    }
 
@@ -1402,7 +1399,7 @@ load_scratch_resource(spill_ctx& ctx, Temp& scratch_offset,
    }
 
    Temp private_segment_buffer = ctx.program->private_segment_buffer;
-   if (ctx.program->stage != compute_cs)
+   if (ctx.program->stage.hw != HWStage::CS)
       private_segment_buffer =
          bld.smem(aco_opcode::s_load_dwordx2, bld.def(s2), private_segment_buffer, Operand::zero());
 
@@ -1413,16 +1410,17 @@ load_scratch_resource(spill_ctx& ctx, Temp& scratch_offset,
    uint32_t rsrc_conf =
       S_008F0C_ADD_TID_ENABLE(1) | S_008F0C_INDEX_STRIDE(ctx.program->wave_size == 64 ? 3 : 2);
 
-   if (ctx.program->chip_class >= GFX10) {
+   if (ctx.program->gfx_level >= GFX10) {
       rsrc_conf |= S_008F0C_FORMAT(V_008F0C_GFX10_FORMAT_32_FLOAT) |
-                   S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_RAW) | S_008F0C_RESOURCE_LEVEL(1);
-   } else if (ctx.program->chip_class <= GFX7) {
+                   S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_RAW) |
+                   S_008F0C_RESOURCE_LEVEL(ctx.program->gfx_level < GFX11);
+   } else if (ctx.program->gfx_level <= GFX7) {
       /* dfmt modifies stride on GFX8/GFX9 when ADD_TID_EN=1 */
       rsrc_conf |= S_008F0C_NUM_FORMAT(V_008F0C_BUF_NUM_FORMAT_FLOAT) |
                    S_008F0C_DATA_FORMAT(V_008F0C_BUF_DATA_FORMAT_32);
    }
    /* older generations need element size = 4 bytes. element size removed in GFX9 */
-   if (ctx.program->chip_class <= GFX8)
+   if (ctx.program->gfx_level <= GFX8)
       rsrc_conf |= S_008F0C_ELEMENT_SIZE(1);
 
    return bld.pseudo(aco_opcode::p_create_vector, bld.def(s4), private_segment_buffer,

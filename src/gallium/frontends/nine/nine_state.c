@@ -163,8 +163,7 @@ nine_csmt_create( struct NineDevice9 *This )
 
     ctx->device = This;
 
-    ctx->worker = u_thread_create(nine_csmt_worker, ctx);
-    if (!ctx->worker) {
+    if (thrd_success != u_thread_create(&ctx->worker, nine_csmt_worker, ctx)) {
         nine_queue_delete(ctx->pool);
         FREE(ctx);
         return NULL;
@@ -2371,6 +2370,7 @@ init_draw_info(struct pipe_draw_info *info,
     info->take_index_buffer_ownership = FALSE;
     info->index_bias_varies = FALSE;
     info->increment_draw_id = FALSE;
+    info->was_line_loop = FALSE;
     info->restart_index = 0;
 }
 

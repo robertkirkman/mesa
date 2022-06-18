@@ -136,13 +136,13 @@ Core Mesa environment variables
    integers, such as ``130``. Mesa will not really implement all the
    features of the given language version if it's higher than what's
    normally reported. (for developers only)
-:envvar:`MESA_GLSL_CACHE_DISABLE`
-   if set to ``true``, disables the GLSL shader cache. If set to
-   ``false``, enables the GLSL shader cache when it is disabled by
+:envvar:`MESA_SHADER_CACHE_DISABLE`
+   if set to ``true``, disables the on-disk shader cache. If set to
+   ``false``, enables the on-disk shader cache when it is disabled by
    default.
-:envvar:`MESA_GLSL_CACHE_MAX_SIZE`
+:envvar:`MESA_SHADER_CACHE_MAX_SIZE`
    if set, determines the maximum size of the on-disk cache of compiled
-   GLSL programs. Should be set to a number optionally followed by
+   shader programs. Should be set to a number optionally followed by
    ``K``, ``M``, or ``G`` to specify a size in kilobytes, megabytes, or
    gigabytes. By default, gigabytes will be assumed. And if unset, a
    maximum size of 1GB will be used.
@@ -154,9 +154,9 @@ Core Mesa environment variables
       you may end up with a 1GB cache for x86_64 and another 1GB cache for
       i386.
 
-:envvar:`MESA_GLSL_CACHE_DIR`
+:envvar:`MESA_SHADER_CACHE_DIR`
    if set, determines the directory to be used for the on-disk cache of
-   compiled GLSL programs. If this variable is not set, then the cache
+   compiled shader programs. If this variable is not set, then the cache
    will be stored in ``$XDG_CACHE_HOME/mesa_shader_cache`` (if that
    variable is set), or else within ``.cache/mesa_shader_cache`` within
    the user's home directory.
@@ -226,6 +226,19 @@ the :doc:`Xlib software driver page <xlibdriver>` for details.
 :envvar:`MESA_GLX_ALPHA_BITS`
    specifies default number of bits for alpha channel.
 
+Mesa WGL driver environment variables
+-------------------------------------
+
+The following are only applicable to the Mesa WGL driver, which is in use
+on Windows.
+
+:envvar:`WGL_FORCE_MSAA`
+   if set to a positive value, specifies the number of MSAA samples to
+   force when choosing the display configuration.
+:envvar:`WGL_DISABLE_ERROR_DIALOGS`
+   if set to 1, true or yes, disables Win32 error dialogs. Useful for
+   automated test-runs.
+
 Intel driver environment variables
 ----------------------------------------------------
 
@@ -233,6 +246,12 @@ Intel driver environment variables
    if set to 1, true or yes, then the OpenGL implementation will
    default ``GL_BLACKHOLE_RENDER_INTEL`` to true, thus disabling any
    rendering.
+:envvar:`INTEL_COMPUTE_CLASS`
+   If set to 1, true or yes, then I915_ENGINE_CLASS_COMPUTE will be
+   supported. For OpenGL, iris will attempt to use a compute engine
+   for compute dispatches if one is detected. For Vulkan, anvil will
+   advertise support for a compute queue if a compute engine is
+   detected.
 :envvar:`INTEL_DEBUG`
    a comma-separated list of named flags, which do various things:
 
@@ -287,8 +306,8 @@ Intel driver environment variables
       suppress generation of dual-object geometry shader code
    ``nofc``
       disable fast clears
-   ``norbc``
-      disable single sampled render buffer compression
+   ``noccs``
+      disable lossless color compression
    ``optimizer``
       dump shader assembly to files at each optimization pass and
       iteration that make progress
@@ -313,11 +332,14 @@ Intel driver environment variables
    ``spill_vec4``
       force spilling of all registers in the vec4 backend (useful to
       debug spilling code)
+   ``stall``
+      inserts a stall on the GPU after each draw/dispatch command to
+      wait for it to finish before starting any new work.
    ``submit``
       emit batchbuffer usage statistics
    ``sync``
-      after sending each batch, emit a message and wait for that batch
-      to finish rendering
+      after sending each batch, wait on the CPU for that batch to
+      finish rendering
    ``task``
       dump shader assembly for task shaders
    ``tcs``
@@ -419,6 +441,19 @@ DRI environment variables
 
 :envvar:`DRI_NO_MSAA`
    disable MSAA for GLX/EGL MSAA visuals
+
+
+Vulkan mesa device select layer environment variables
+-----------------------------------------------------
+
+:envvar:`MESA_VK_DEVICE_SELECT`
+   when set to "list" prints the list of devices.
+   when set to "vid:did" number from pci device. That pci device is
+   selected as default. The default device is returned as the first
+   device in vkEnumeratePhysicalDevices api.
+:envvar:`MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE`
+   when set to 1, the device identified as default will be the only
+   one returned in vkEnumeratePhysicalDevices api.
 
 
 EGL environment variables
@@ -575,30 +610,19 @@ VC4 driver environment variables
 --------------------------------
 
 :envvar:`VC4_DEBUG`
-   a comma-separated list of named flags, which do various things:
+   a comma-separated list of named flags, which do various things. Use
+   `VC4_DEBUG=help` to print a list of available options.
 
-   ``cl``
-      dump command list during creation
-   ``qpu``
-      dump generated QPU instructions
-   ``qir``
-      dump QPU IR during program compile
-   ``nir``
-      dump NIR during program compile
-   ``tgsi``
-      dump TGSI during program compile
-   ``shaderdb``
-      dump program compile information for shader-db analysis
-   ``perf``
-      print during performance-related events
-   ``norast``
-      skip actual hardware execution of commands
-   ``always_flush``
-      flush after each draw call
-   ``always_sync``
-      wait for finish after each flush
-   ``dump``
-      write a GPU command stream trace file (VC4 simulator only)
+
+V3D/V3DV driver environment variables
+-------------------------------------
+
+:envvar:`V3D_DEBUG`
+    a comma-separated list of debug options. Use `V3D_DEBUG=help` to
+    print a list of available options.
+
+
+.. _radv env-vars:
 
 RADV driver environment variables
 ---------------------------------
@@ -650,7 +674,7 @@ RADV driver environment variables
    ``nomemorycache``
       disable memory shaders cache
    ``nongg``
-      disable NGG for GFX10+
+      disable NGG for GFX10 and GFX10.3
    ``nonggc``
       disable NGG culling on GPUs where it's enabled by default (GFX10.3+ only).
    ``nooutoforder``
@@ -689,7 +713,11 @@ RADV driver environment variables
 :envvar:`RADV_FORCE_VRS`
    allow to force per-pipeline vertex VRS rates on GFX10.3+. This is only
    forced for pipelines that don't explicitely use VRS or flat shading.
-   The supported values are 2x2, 1x2 and 2x1. Only for testing purposes.
+   The supported values are 2x2, 1x2, 2x1 and 1x1. Only for testing purposes.
+
+:envvar:`RADV_FORCE_VRS_CONFIG_FILE`
+   similar to `RADV_FORCE_VRS` but allow to configure from a file. If present,
+   this supersedes `RADV_FORCE_VRS`.
 
 :envvar:`RADV_PERFTEST`
    a comma-separated list of named flags, which do various things:
@@ -700,9 +728,9 @@ RADV driver environment variables
       enable wave32 for compute shaders (GFX10+)
    ``dccmsaa``
       enable DCC for MSAA images
-   ``force_emulate_rt``
-      forces ray-tracing to be emulated in software,
-      even if there is hardware support.
+   ``emulate_rt``
+      forces ray-tracing to be emulated in software on GFX10_3+ and enables
+      rt extensions with older hardware.
    ``gewave32``
       enable wave32 for vertex/tess/geometry shaders (GFX10+)
    ``localbos``
@@ -716,7 +744,7 @@ RADV driver environment variables
    ``nggc``
       enable NGG culling on GPUs where it's not enabled by default (GFX10.1 only).
    ``rt``
-      enable rt extensions whose implementation is still experimental.
+      enable rt pipelines whose implementation is still experimental.
    ``sam``
       enable optimizations to move more driver internal objects to VRAM.
    ``rtwave64``
@@ -770,13 +798,24 @@ RADV driver environment variables
 radeonsi driver environment variables
 -------------------------------------
 
+:envvar:`radeonsi_no_infinite_interp`
+   Kill PS with infinite interp coeff (might fix hangs)
+
+:envvar:`radeonsi_clamp_div_by_zero`
+   Clamp div by zero (x / 0 becomes FLT_MAX instead of NaN) (might fix rendering corruptions)
+
+:envvar:`radeonsi_zerovram`
+   Clear all allocated memory to 0 before usage (might fix rendering corruptions)
+
 :envvar:`AMD_DEBUG`
    a comma-separated list of named flags, which do various things:
 
    ``nodcc``
       Disable DCC.
    ``nodccclear``
-      Disable DCC fast clear.
+      Disable DCC fast clear
+   ``nodisplaydcc``
+      disable Delta Color Compression (DCC) on displayable images
    ``nodccmsaa``
       Disable DCC for MSAA
    ``nodpbb``
@@ -819,8 +858,6 @@ radeonsi driver environment variables
       Don't print disassembled shaders
    ``preoptir``
       Print the LLVM IR before initial optimizations
-   ``gisel``
-      Enable LLVM global instruction selector.
    ``w32ge``
       Use Wave32 for vertex, tessellation, and geometry shaders.
    ``w32ps``

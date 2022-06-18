@@ -24,6 +24,7 @@
 #include "d3d12_format.h"
 
 #include "pipe/p_format.h"
+#include "pipe/p_video_enums.h"
 #include "util/format/u_format.h"
 #include "util/u_math.h"
 #include "util/compiler.h"
@@ -155,6 +156,11 @@
    MAP_FORMAT2(RGTC2, UNORM, BC5, UNORM) \
    MAP_FORMAT2(RGTC2, SNORM, BC5, SNORM) \
 \
+   MAP_FORMAT2(BPTC, RGBA_UNORM, BC7, UNORM) \
+   MAP_FORMAT2(BPTC, SRGBA, BC7, UNORM_SRGB) \
+   MAP_FORMAT2(BPTC, RGB_FLOAT, BC6H, SF16) \
+   MAP_FORMAT2(BPTC, RGB_UFLOAT, BC6H, UF16) \
+\
    MAP_FORMAT2(Z32, FLOAT, R32, TYPELESS) \
    MAP_FORMAT2(Z16, UNORM, R16, TYPELESS) \
    MAP_FORMAT2(Z24X8, UNORM, R24G8, TYPELESS) \
@@ -244,6 +250,10 @@ d3d12_get_default_pipe_format(DXGI_FORMAT format)
       return PIPE_FORMAT_RGTC1_UNORM;
    case DXGI_FORMAT_BC5_TYPELESS:
       return PIPE_FORMAT_RGTC2_UNORM;
+   case DXGI_FORMAT_BC6H_TYPELESS:
+      return PIPE_FORMAT_BPTC_RGB_FLOAT;
+   case DXGI_FORMAT_BC7_TYPELESS:
+      return PIPE_FORMAT_BPTC_RGBA_UNORM;
    default:
       return PIPE_FORMAT_NONE;
    }
@@ -425,4 +435,54 @@ d3d12_get_format_num_planes(enum pipe_format fmt)
 {
    return util_format_is_depth_or_stencil(fmt) ?
       util_bitcount(util_format_get_mask(fmt)) : 1;
+}
+
+DXGI_FORMAT
+d3d12_convert_pipe_video_profile_to_dxgi_format(enum pipe_video_profile profile)
+{
+   switch (profile) {
+      case PIPE_VIDEO_PROFILE_MPEG4_AVC_BASELINE:
+      case PIPE_VIDEO_PROFILE_MPEG4_AVC_CONSTRAINED_BASELINE:
+      case PIPE_VIDEO_PROFILE_MPEG4_AVC_MAIN:
+      case PIPE_VIDEO_PROFILE_MPEG4_AVC_EXTENDED:
+      case PIPE_VIDEO_PROFILE_MPEG4_AVC_HIGH:
+         return DXGI_FORMAT_NV12;
+      case PIPE_VIDEO_PROFILE_MPEG4_AVC_HIGH10:
+         return DXGI_FORMAT_P010;
+      default:
+      {
+         unreachable("Unsupported pipe video profile");
+      } break;
+   }
+}
+
+DXGI_COLOR_SPACE_TYPE
+d3d12_convert_from_legacy_color_space(bool rgb, uint32_t bits_per_element, bool studio_rgb, bool p709, bool studio_yuv)
+{
+   if (rgb) {
+      if (bits_per_element > 32) {
+         // All 16 bit color channel data is assumed to be linear rather than SRGB
+         return DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
+      } else {
+         if (studio_rgb) {
+            return DXGI_COLOR_SPACE_RGB_STUDIO_G22_NONE_P709;
+         } else {
+            return DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+         }
+      }
+   } else {
+      if (p709) {
+         if (studio_yuv) {
+            return DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709;
+         } else {
+            return DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709;
+         }
+      } else {
+         if (studio_yuv) {
+            return DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P601;
+         } else {
+            return DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P601;
+         }
+      }
+   }
 }

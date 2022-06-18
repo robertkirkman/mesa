@@ -973,6 +973,8 @@
       <value name="MINIMUM" value="2"/>
       <value name="MAXIMUM" value="3"/>
     </field>
+    <field name="Allow Low Quality LOD Calculation" start="120" end="120" type="bool"/>
+    <field name="Low Quality Filter" start="122" end="122" type="bool"/>
   </struct>
 
   <struct name="SAMPLER_STATE_8X8_AVS_COEFFICIENTS" length="8">
@@ -6450,6 +6452,7 @@
   <instruction name="PIPE_CONTROL" bias="2" length="6" engine="render">
     <field name="DWord Length" start="0" end="7" type="uint" default="4"/>
     <field name="HDC Pipeline Flush Enable" start="9" end="9" type="bool"/>
+    <field name="L3 Read Only Cache Invalidation Enable" start="10" end="10" type="bool"/>
     <field name="3D Command Sub Opcode" start="16" end="23" type="uint" default="0"/>
     <field name="3D Command Opcode" start="24" end="26" type="uint" default="2"/>
     <field name="Command SubType" start="27" end="28" type="uint" default="3"/>
@@ -7200,7 +7203,9 @@
       <value name="Mid-cmdbuffer Preemption" value="0"/>
       <value name="Object Level Preemption" value="1"/>
     </field>
+    <field name="Disable Preemption and High Priority Pausing due to 3DPRIMITIVE Command" start="10" end="10" type="bool"/>
     <field name="Replay Mode Mask" start="16" end="16" type="bool"/>
+    <field name="Disable Preemption and High Priority Pausing due to 3DPRIMITIVE Command Mask" start="26" end="26" type="bool"/>
   </register>
 
   <register name="CS_DEBUG_MODE2" length="1" num="0x20d8">
@@ -7362,11 +7367,6 @@
     <field name="MS SUBSLICED FORK" start="29" end="29" type="bool"/>
     <field name="VMESC Done" start="30" end="30" type="bool"/>
     <field name="RDE Done" start="31" end="31" type="bool"/>
-  </register>
-
-  <register name="SAMPLER_MODE" length="1" num="0x0e18c">
-    <field name="Headerless Message for Pre-emptable Contexts" start="5" end="5" type="bool"/>
-    <field name="Headerless Message for Pre-emptable Contexts Mask" start="21" end="21" type="bool"/>
   </register>
 
   <register name="SC_INSTDONE" length="1" num="0x7100">

@@ -25,6 +25,7 @@
 #define BRW_COMPILER_H
 
 #include <stdio.h>
+#include "c11/threads.h"
 #include "dev/intel_device_info.h"
 #include "main/config.h"
 #include "util/ralloc.h"
@@ -44,6 +45,11 @@ typedef struct nir_shader nir_shader;
 
 struct brw_compiler {
    const struct intel_device_info *devinfo;
+
+   /* This lock must be taken if the compiler is to be modified in any way,
+    * including adding something to the ralloc child list.
+    */
+   mtx_t mutex;
 
    struct {
       struct ra_regs *regs;
@@ -109,6 +115,8 @@ struct brw_compiler {
     * constant or data cache, UBOs must use VK_FORMAT_RAW.
     */
    bool indirect_ubos_use_sampler;
+
+   struct nir_shader *clc_shader;
 };
 
 #define brw_shader_debug_log(compiler, data, fmt, ... ) do {    \
@@ -138,9 +146,9 @@ brw_shader_stage_is_bindless(gl_shader_stage stage)
 }
 
 static inline bool
-brw_shader_stage_is_mesh(gl_shader_stage stage)
+brw_shader_stage_requires_bindless_resources(gl_shader_stage stage)
 {
-   return stage == MESA_SHADER_TASK || stage == MESA_SHADER_MESH;
+   return brw_shader_stage_is_bindless(stage) || gl_shader_stage_is_mesh(stage);
 }
 
 /**
@@ -239,6 +247,13 @@ struct brw_base_prog_key {
 
    enum brw_subgroup_size_type subgroup_size_type;
    bool robust_buffer_access;
+
+   /**
+    * Apply workarounds for SIN and COS input range problems.
+    * This limits input range for SIN and COS to [-2p : 2p] to
+    * avoid precision issues.
+    */
+   bool limit_trig_input_range;
    struct brw_sampler_prog_key_data tex;
 };
 
@@ -769,6 +784,9 @@ struct brw_stage_prog_data {
    /** Does this program pull from any UBO or other constant buffers? */
    bool has_ubo_pull;
 
+   /** How many ray queries objects in this shader. */
+   unsigned ray_queries;
+
    /**
     * Register where the thread expects to find input data from the URB
     * (typically uniforms, followed by vertex or fragment attributes).
@@ -850,6 +868,7 @@ struct brw_wm_prog_data {
       /** @} */
    } binding_table;
 
+   uint8_t color_outputs_written;
    uint8_t computed_depth_mode;
    bool computed_stencil;
 
@@ -868,6 +887,7 @@ struct brw_wm_prog_data {
    bool uses_src_w;
    bool uses_depth_w_coefficients;
    bool uses_sample_mask;
+   bool uses_vmask;
    bool has_render_target_reads;
    bool has_side_effects;
    bool pulls_bary;
@@ -1401,8 +1421,6 @@ struct brw_clip_prog_data {
 };
 
 struct brw_tue_map {
-   int32_t start_dw[VARYING_SLOT_MAX];
-
    uint32_t size_dw;
 
    uint32_t per_task_data_start_dw;
@@ -1950,7 +1968,9 @@ brw_stage_has_packed_dispatch(ASSERTED const struct intel_device_info *devinfo,
        */
       const struct brw_wm_prog_data *wm_prog_data =
          (const struct brw_wm_prog_data *)prog_data;
-      return devinfo->verx10 < 125 && !wm_prog_data->persample_dispatch;
+      return devinfo->verx10 < 125 &&
+             !wm_prog_data->persample_dispatch &&
+             wm_prog_data->uses_vmask;
    }
    case MESA_SHADER_COMPUTE:
       /* Compute shaders will be spawned with either a fully enabled dispatch
@@ -1987,7 +2007,7 @@ static inline int
 brw_compute_first_urb_slot_required(uint64_t inputs_read,
                                     const struct brw_vue_map *prev_stage_vue_map)
 {
-   if ((inputs_read & (VARYING_BIT_LAYER | VARYING_BIT_VIEWPORT)) == 0) {
+   if ((inputs_read & (VARYING_BIT_LAYER | VARYING_BIT_VIEWPORT | VARYING_BIT_PRIMITIVE_SHADING_RATE)) == 0) {
       for (int i = 0; i < prev_stage_vue_map->num_slots; i++) {
          int varying = prev_stage_vue_map->slot_to_varying[i];
          if (varying > 0 && (inputs_read & BITFIELD64_BIT(varying)) != 0)
@@ -2006,6 +2026,24 @@ brw_compute_first_urb_slot_required(uint64_t inputs_read,
 
 #define BRW_TASK_MESH_PUSH_CONSTANTS_SIZE_DW \
    (BRW_TASK_MESH_INLINE_DATA_SIZE_DW - BRW_TASK_MESH_PUSH_CONSTANTS_START_DW)
+
+/**
+ * This enum is used as the base indice of the nir_load_topology_id_intel
+ * intrinsic. This is used to return different values based on some aspect of
+ * the topology of the device.
+ */
+enum brw_topology_id
+{
+   /* A value based of the DSS identifier the shader is currently running on.
+    * Be mindful that the DSS ID can be higher than the total number of DSS on
+    * the device. This is because of the fusing that can occur on different
+    * parts.
+    */
+   BRW_TOPOLOGY_ID_DSS,
+
+   /* A value composed of EU ID, thread ID & SIMD lane ID. */
+   BRW_TOPOLOGY_ID_EU_THREAD_SIMD,
+};
 
 #ifdef __cplusplus
 } /* extern "C" */

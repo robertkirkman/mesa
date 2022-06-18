@@ -64,6 +64,14 @@ def define_tracepoints(args):
                           Arg(type='uint8_t', var='msaa', c_format='%hhu'),
                           Arg(type='uint32_t', var='subpass_count', c_format='%u'),])
 
+    begin_end_tp('dyn_render_pass',
+                 tp_args=[Arg(type='uint16_t', var='width', c_format='%hu'),
+                          Arg(type='uint16_t', var='height', c_format='%hu'),
+                          Arg(type='uint8_t', var='att_count', c_format='%hhu'),
+                          Arg(type='uint8_t', var='msaa', c_format='%hhu'),
+                          Arg(type='uint8_t', var='suspend', c_format='%hhu'),
+                          Arg(type='uint8_t', var='resume', c_format='%hhu'),])
+
     begin_end_tp('blorp',
                  tp_args=[Arg(type='uint32_t', name='width', var='width', c_format='%u'),
                           Arg(type='uint32_t', name='height', var='height', c_format='%u'),
@@ -144,7 +152,8 @@ def generate_code(args):
     from u_trace import utrace_generate_perfetto_utils
 
     utrace_generate(cpath=args.utrace_src, hpath=args.utrace_hdr,
-                    ctx_param='struct intel_ds_device *dev')
+                    ctx_param='struct intel_ds_device *dev',
+                    need_cs_param=False)
     utrace_generate_perfetto_utils(hpath=args.perfetto_hdr)
 
 

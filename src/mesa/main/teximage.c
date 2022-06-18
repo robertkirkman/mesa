@@ -2823,7 +2823,7 @@ _mesa_choose_texture_format(struct gl_context *ctx,
                             GLenum target, GLint level,
                             GLenum internalFormat, GLenum format, GLenum type)
 {
-   mesa_format f;
+   mesa_format f = MESA_FORMAT_NONE;
 
    /* see if we've already chosen a format for the previous level */
    if (level > 0) {

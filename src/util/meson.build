@@ -102,7 +102,6 @@ files_mesa_util = files(
   'rounding.h',
   'set.c',
   'set.h',
-  'simple_list.h',
   'simple_mtx.h',
   'slab.c',
   'slab.h',
@@ -144,8 +143,10 @@ files_mesa_util = files(
   'u_debug_memory.c',
   'u_cpu_detect.c',
   'u_cpu_detect.h',
-  'u_printf.cpp',
+  'u_printf.c',
   'u_printf.h',
+  'u_worklist.c',
+  'u_worklist.h',
   'vl_vlc.h',
   'vl_rbsp.h',
   'vma.c',
@@ -205,6 +206,7 @@ deps_for_libmesa_util = [
   dep_zstd,
   dep_dl,
   dep_unwind,
+  idep_mesautilc11
 ]
 
 if with_platform_android
@@ -248,12 +250,20 @@ u_unfilled_gen_c = custom_target(
   capture : true,
 )
 
+libmesa_util_sse41 = static_library(
+		'mesa_util_sse41',
+		files('streaming-load-memcpy.c'),
+		c_args : [c_msvc_compat_args, sse41_args],
+		include_directories : [inc_include, inc_src, inc_mesa],
+		gnu_symbol_visibility : 'hidden',
+)
+
 _libmesa_util = static_library(
   'mesa_util',
   [files_mesa_util, files_debug_stack, format_srgb, u_indices_gen_c, u_unfilled_gen_c],
   include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
   dependencies : deps_for_libmesa_util,
-  link_with: libmesa_format,
+  link_with: [libmesa_format, libmesa_util_sse41],
   c_args : [c_msvc_compat_args],
   gnu_symbol_visibility : 'hidden',
   build_by_default : false
@@ -323,14 +333,17 @@ if with_tests
     'tests/dag_test.cpp',
     'tests/fast_idiv_by_const_test.cpp',
     'tests/fast_urem_by_const_test.cpp',
+    'tests/half_float_test.cpp',
     'tests/int_min_max.cpp',
     'tests/rb_tree_test.cpp',
     'tests/register_allocate_test.cpp',
     'tests/roundeven_test.cpp',
     'tests/set_test.cpp',
     'tests/sparse_array_test.cpp',
+    'tests/timespec_test.cpp',
     'tests/u_atomic_test.cpp',
     'tests/u_debug_stack_test.cpp',
+    'tests/u_printf_test.cpp',
     'tests/u_qsort_test.cpp',
     'tests/vector_test.cpp',
   )
@@ -339,12 +352,6 @@ if with_tests
     # FIXME: These tests fail with mingw, but not with msvc.
     files_util_tests += files(
       'tests/string_buffer_test.cpp',
-    )
-  endif
-
-  if cc.has_header('sys/time.h')  # MinGW has this, but Vanilla windows doesn't
-    files_util_tests += files(
-      'tests/timespec_test.cpp'
     )
   endif
 
@@ -387,7 +394,8 @@ if with_tests
     # https://gitlab.freedesktop.org/mesa/mesa/-/issues/2788
     prog_winepath = find_program('winepath')
     process_test_exe_full_path = run_command(
-      prog_winepath, '-w', process_test_exe.full_path()
+      prog_winepath, '-w', process_test_exe.full_path(),
+      check : true
     ).stdout().strip()
   else
     process_test_exe_full_path = process_test_exe.full_path()

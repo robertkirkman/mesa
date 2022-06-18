@@ -93,7 +93,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "c99_compat.h"
 #include "c11/threads.h"
 #include "util/debug.h"
 #include "util/macros.h"
@@ -629,6 +628,10 @@ eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor)
       if (disp->Options.ForceSoftware)
          _eglLog(_EGL_DEBUG, "Found 'LIBGL_ALWAYS_SOFTWARE' set, will use a CPU renderer");
 
+      const char *env = getenv("MESA_LOADER_DRIVER_OVERRIDE");
+      disp->Options.Zink = env && !strcmp(env, "zink");
+      disp->Options.ForceSoftware |= disp->Options.Zink;
+
       /**
        * Initialize the display using the driver's function.
        * If the initialisation fails, try again using only software rendering.
@@ -1027,6 +1030,15 @@ _fixupNativeWindow(_EGLDisplay *disp, void *native_window)
       return (void *)(* (Window*) native_window);
    }
 #endif
+#ifdef HAVE_XCB_PLATFORM
+   if (disp && disp->Platform == _EGL_PLATFORM_XCB && native_window != NULL) {
+      /* Similar to with X11, we need to convert (xcb_window_t *)
+       * (i.e., uint32_t *) to xcb_window_t. We have to do an intermediate cast
+       * to uintptr_t, since uint32_t may be smaller than a pointer.
+       */
+      return (void *)(uintptr_t) (* (uint32_t*) native_window);
+   }
+#endif
    return native_window;
 }
 
@@ -1080,6 +1092,15 @@ _fixupNativePixmap(_EGLDisplay *disp, void *native_pixmap)
     */
    if (disp && disp->Platform == _EGL_PLATFORM_X11 && native_pixmap != NULL)
       return (void *)(* (Pixmap*) native_pixmap);
+#endif
+#ifdef HAVE_XCB_PLATFORM
+   if (disp && disp->Platform == _EGL_PLATFORM_XCB && native_pixmap != NULL) {
+      /* Similar to with X11, we need to convert (xcb_pixmap_t *)
+       * (i.e., uint32_t *) to xcb_pixmap_t. We have to do an intermediate cast
+       * to uintptr_t, since uint32_t may be smaller than a pointer.
+       */
+      return (void *)(uintptr_t) (* (uint32_t*) native_pixmap);
+   }
 #endif
    return native_pixmap;
 }

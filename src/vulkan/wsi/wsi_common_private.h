@@ -25,6 +25,7 @@
 
 #include "wsi_common.h"
 #include "vulkan/runtime/vk_object.h"
+#include "vulkan/runtime/vk_sync.h"
 
 struct wsi_image;
 struct wsi_swapchain;
@@ -44,8 +45,14 @@ struct wsi_image_info {
    uint32_t modifier_prop_count;
    struct VkDrmFormatModifierPropertiesEXT *modifier_props;
 
-   /* For prime blit images, the linear stride in bytes */
+   /* For buffer blit images, the linear stride in bytes */
    uint32_t linear_stride;
+   uint32_t size_align;
+
+   uint32_t (*select_image_memory_type)(const struct wsi_device *wsi,
+                                        uint32_t type_bits);
+   uint32_t (*select_buffer_memory_type)(const struct wsi_device *wsi,
+                                         uint32_t type_bits);
 
    uint8_t *(*alloc_shm)(struct wsi_image *image, unsigned size);
 
@@ -66,14 +73,18 @@ struct wsi_image {
       VkBuffer buffer;
       VkDeviceMemory memory;
       VkCommandBuffer *blit_cmd_buffers;
-   } prime;
+   } buffer;
 
+#ifndef _WIN32
    uint64_t drm_modifier;
+#endif
    int num_planes;
    uint32_t sizes[4];
    uint32_t offsets[4];
    uint32_t row_pitches[4];
-   int fds[4];
+#ifndef _WIN32
+   int dma_buf_fd;
+#endif
 };
 
 struct wsi_swapchain {
@@ -84,20 +95,23 @@ struct wsi_swapchain {
    VkDevice device;
    VkAllocationCallbacks alloc;
    VkFence* fences;
-   VkSemaphore* prime_blit_semaphores;
+   VkSemaphore* buffer_blit_semaphores;
    VkPresentModeKHR present_mode;
+
+   int signal_dma_buf_from_semaphore;
+   VkSemaphore dma_buf_semaphore;
 
    struct wsi_image_info image_info;
    uint32_t image_count;
 
-   bool use_prime_blit;
+   bool use_buffer_blit;
 
-   /* If the driver wants to use a special queue to execute the prime blit,
-    * it'll implement the wsi_device::get_prime_blit_queue callback.
+   /* If the driver wants to use a special queue to execute the buffer blit,
+    * it'll implement the wsi_device::get_buffer_blit_queue callback.
     * The created queue will be stored here and will be used to execute the
-    * prime blit instead of using the present queue.
+    * buffer blit instead of using the present queue.
     */
-   VkQueue prime_blit_queue;
+   VkQueue buffer_blit_queue;
 
    /* Command pools, one per queue family */
    VkCommandPool *cmd_pools;
@@ -123,7 +137,7 @@ wsi_swapchain_init(const struct wsi_device *wsi,
                    VkDevice device,
                    const VkSwapchainCreateInfoKHR *pCreateInfo,
                    const VkAllocationCallbacks *pAllocator,
-                   bool use_prime_blit);
+                   bool use_buffer_blit);
 
 enum VkPresentModeKHR
 wsi_swapchain_get_present_mode(struct wsi_device *wsi,
@@ -148,6 +162,23 @@ wsi_configure_prime_image(UNUSED const struct wsi_swapchain *chain,
                           struct wsi_image_info *info);
 
 VkResult
+wsi_create_buffer_image_mem(const struct wsi_swapchain *chain,
+                            const struct wsi_image_info *info,
+                            struct wsi_image *image,
+                            VkExternalMemoryHandleTypeFlags handle_types,
+                            bool implicit_sync);
+
+VkResult
+wsi_finish_create_buffer_image(const struct wsi_swapchain *chain,
+                               const struct wsi_image_info *info,
+                               struct wsi_image *image);
+
+VkResult
+wsi_configure_buffer_image(UNUSED const struct wsi_swapchain *chain,
+                           const VkSwapchainCreateInfoKHR *pCreateInfo,
+                           struct wsi_image_info *info);
+
+VkResult
 wsi_configure_image(const struct wsi_swapchain *chain,
                     const VkSwapchainCreateInfoKHR *pCreateInfo,
                     VkExternalMemoryHandleTypeFlags handle_types,
@@ -160,9 +191,23 @@ wsi_create_image(const struct wsi_swapchain *chain,
                  const struct wsi_image_info *info,
                  struct wsi_image *image);
 void
+wsi_image_init(struct wsi_image *image);
+
+void
 wsi_destroy_image(const struct wsi_swapchain *chain,
                   struct wsi_image *image);
 
+VkResult
+wsi_prepare_signal_dma_buf_from_semaphore(struct wsi_swapchain *chain,
+                                          const struct wsi_image *image);
+VkResult
+wsi_signal_dma_buf_from_semaphore(const struct wsi_swapchain *chain,
+                                  const struct wsi_image *image);
+VkResult
+wsi_create_sync_for_dma_buf_wait(const struct wsi_swapchain *chain,
+                                 const struct wsi_image *image,
+                                 enum vk_sync_features sync_features,
+                                 struct vk_sync **sync_out);
 
 struct wsi_interface {
    VkResult (*get_support)(VkIcdSurfaceBase *surface,

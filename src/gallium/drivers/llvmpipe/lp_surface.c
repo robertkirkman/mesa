@@ -142,8 +142,6 @@ static void lp_blit(struct pipe_context *pipe,
       info.mask = PIPE_MASK_R;
    }
 
-   /* XXX turn off occlusion and streamout queries */
-
    util_blitter_save_vertex_buffer_slot(lp->blitter, lp->vertex_buffer);
    util_blitter_save_vertex_elements(lp->blitter, (void*)lp->velems);
    util_blitter_save_vertex_shader(lp->blitter, (void*)lp->vs);
@@ -176,6 +174,7 @@ static void lp_blit(struct pipe_context *pipe,
 static void
 lp_flush_resource(struct pipe_context *ctx, struct pipe_resource *resource)
 {
+   llvmpipe_flush_resource(ctx, resource, 0, true, true, false, "resource");
 }
 
 
@@ -311,6 +310,9 @@ llvmpipe_clear_render_target(struct pipe_context *pipe,
    if (render_condition_enabled && !llvmpipe_check_render_cond(llvmpipe))
       return;
 
+   width = MIN2(width, dst->texture->width0 - dstx);
+   height = MIN2(height, dst->texture->height0 - dsty);
+
    if (dst->texture->nr_samples > 1) {
       struct pipe_box box;
       u_box_2d(dstx, dsty, width, height, &box);
@@ -378,6 +380,9 @@ llvmpipe_clear_depth_stencil(struct pipe_context *pipe,
 
    if (render_condition_enabled && !llvmpipe_check_render_cond(llvmpipe))
       return;
+
+   width = MIN2(width, dst->texture->width0 - dstx);
+   height = MIN2(height, dst->texture->height0 - dsty);
 
    if (dst->texture->nr_samples > 1) {
       uint64_t zstencil = util_pack64_z_stencil(dst->format, depth, stencil);

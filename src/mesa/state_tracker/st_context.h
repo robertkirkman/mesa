@@ -149,6 +149,7 @@ struct st_context
    boolean has_shareable_shaders;
    boolean has_half_float_packing;
    boolean has_multi_draw_indirect;
+   boolean has_indirect_partial_stride;
    boolean has_single_pipe_stat;
    boolean has_indep_blend_func;
    boolean needs_rgb_dst_alpha_override;
@@ -382,6 +383,8 @@ struct st_context
       struct st_zombie_shader_node list;
       simple_mtx_t mutex;
    } zombie_shaders;
+
+   struct hash_table *hw_select_shaders;
 };
 
 

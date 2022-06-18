@@ -40,6 +40,10 @@ tu_cs_init_external(struct tu_cs *cs, struct tu_device *device,
                     uint32_t *start, uint32_t *end);
 
 void
+tu_cs_init_suballoc(struct tu_cs *cs, struct tu_device *device,
+                    struct tu_suballoc_bo *bo);
+
+void
 tu_cs_finish(struct tu_cs *cs);
 
 void
@@ -286,16 +290,18 @@ static inline void
 tu_cond_exec_start(struct tu_cs *cs, uint32_t cond_flags)
 {
    assert(cs->mode == TU_CS_MODE_GROW);
-   assert(!cs->cond_flags && cond_flags);
+   assert(cs->cond_stack_depth < TU_COND_EXEC_STACK_SIZE);
 
    tu_cs_emit_pkt7(cs, CP_COND_REG_EXEC, 2);
    tu_cs_emit(cs, cond_flags);
 
-   cs->cond_flags = cond_flags;
-   cs->cond_dwords = cs->cur;
+   cs->cond_flags[cs->cond_stack_depth] = cond_flags;
+   cs->cond_dwords[cs->cond_stack_depth] = cs->cur;
 
    /* Emit dummy DWORD field here */
    tu_cs_emit(cs, CP_COND_REG_EXEC_1_DWORDS(0));
+
+   cs->cond_stack_depth++;
 }
 #define CP_COND_EXEC_0_RENDER_MODE_GMEM \
    (CP_COND_REG_EXEC_0_MODE(RENDER_MODE) | CP_COND_REG_EXEC_0_GMEM)
@@ -305,11 +311,13 @@ tu_cond_exec_start(struct tu_cs *cs, uint32_t cond_flags)
 static inline void
 tu_cond_exec_end(struct tu_cs *cs)
 {
-   assert(cs->cond_flags);
+   assert(cs->cond_stack_depth > 0);
+   cs->cond_stack_depth--;
 
-   cs->cond_flags = 0;
+   cs->cond_flags[cs->cond_stack_depth] = 0;
    /* Subtract one here to account for the DWORD field itself. */
-   *cs->cond_dwords = cs->cur - cs->cond_dwords - 1;
+   *cs->cond_dwords[cs->cond_stack_depth] =
+      cs->cur - cs->cond_dwords[cs->cond_stack_depth] - 1;
 }
 
 #define fd_reg_pair tu_reg_value
@@ -362,8 +370,8 @@ tu_cond_exec_end(struct tu_cs *cs)
    const struct fd_reg_pair regs[] = { __VA_ARGS__ };   \
    unsigned count = ARRAY_SIZE(regs);                   \
                                                         \
-   STATIC_ASSERT(count > 0);                            \
-   STATIC_ASSERT(count <= 16);                          \
+   STATIC_ASSERT(ARRAY_SIZE(regs) > 0);                 \
+   STATIC_ASSERT(ARRAY_SIZE(regs) <= 16);               \
                                                         \
    tu_cs_emit_pkt4((cs), regs[0].reg, count);             \
    uint32_t *p = (cs)->cur;                               \

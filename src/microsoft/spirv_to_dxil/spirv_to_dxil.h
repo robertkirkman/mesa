@@ -44,7 +44,7 @@ typedef enum {
    DXIL_SPIRV_SHADER_GEOMETRY = 3,
    DXIL_SPIRV_SHADER_FRAGMENT = 4,
    DXIL_SPIRV_SHADER_COMPUTE = 5,
-   DXIL_SPIRV_SHADER_KERNEL = 6,
+   DXIL_SPIRV_SHADER_KERNEL = 14,
 } dxil_spirv_shader_stage;
 
 // Copy of nir_spirv_const_value
@@ -109,6 +109,7 @@ struct dxil_spirv_vertex_runtime_data {
          uint16_t z_flip_mask;
       };
    };
+   uint32_t draw_id;
 };
 
 enum dxil_spirv_yz_flip_mode {
@@ -130,7 +131,7 @@ struct dxil_spirv_vulkan_binding {
 
 struct dxil_spirv_vulkan_descriptor_set {
    uint32_t binding_count;
-   struct dxil_spirv_vulkan_binding *bindings;
+   const struct dxil_spirv_vulkan_binding *bindings;
 };
 
 #define DXIL_SPIRV_MAX_VIEWPORT 16
@@ -147,7 +148,7 @@ struct dxil_spirv_runtime_conf {
    } push_constant_cbv;
 
    uint32_t descriptor_set_count;
-   struct dxil_spirv_vulkan_descriptor_set *descriptor_sets;
+   const struct dxil_spirv_vulkan_descriptor_set *descriptor_sets;
 
    // Set true if vertex and instance ids have already been converted to
    // zero-based. Otherwise, runtime_data will be required to lower them.
@@ -165,6 +166,9 @@ struct dxil_spirv_runtime_conf {
    // The caller supports read-only images to be turned into SRV accesses,
    // which allows us to run the nir_opt_access() pass
    bool read_only_images_as_srvs;
+
+   // Force sample rate shading on a fragment shader
+   bool force_sample_rate_shading;
 };
 
 struct dxil_spirv_debug_options {

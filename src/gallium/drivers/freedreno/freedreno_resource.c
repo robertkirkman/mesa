@@ -196,7 +196,9 @@ realloc_bo(struct fd_resource *rsc, uint32_t size)
    struct pipe_resource *prsc = &rsc->b.b;
    struct fd_screen *screen = fd_screen(rsc->b.b.screen);
    uint32_t flags =
+      COND(rsc->layout.tile_mode, FD_BO_NOMAP) |
       COND(prsc->usage & PIPE_USAGE_STAGING, FD_BO_CACHED_COHERENT) |
+      COND(prsc->bind & PIPE_BIND_SHARED, FD_BO_SHARED) |
       COND(prsc->bind & PIPE_BIND_SCANOUT, FD_BO_SCANOUT);
    /* TODO other flags? */
 
@@ -740,6 +742,43 @@ invalidate_resource(struct fd_resource *rsc, unsigned usage) assert_dt
 }
 
 static void *
+resource_transfer_map_staging(struct pipe_context *pctx,
+                              struct pipe_resource *prsc,
+                              unsigned level, unsigned usage,
+                              const struct pipe_box *box,
+                              struct fd_transfer *trans)
+   in_dt
+{
+   struct fd_context *ctx = fd_context(pctx);
+   struct fd_resource *rsc = fd_resource(prsc);
+   struct fd_resource *staging_rsc;
+
+   assert(prsc->target != PIPE_BUFFER);
+
+   staging_rsc = fd_alloc_staging(ctx, rsc, level, box);
+   if (!staging_rsc)
+      return NULL;
+
+   trans->staging_prsc = &staging_rsc->b.b;
+   trans->b.b.stride = fd_resource_pitch(staging_rsc, 0);
+   trans->b.b.layer_stride = fd_resource_layer_stride(staging_rsc, 0);
+   trans->staging_box = *box;
+   trans->staging_box.x = 0;
+   trans->staging_box.y = 0;
+   trans->staging_box.z = 0;
+
+   if (usage & PIPE_MAP_READ) {
+      fd_blit_to_staging(ctx, trans);
+
+      fd_resource_wait(ctx, staging_rsc, FD_BO_PREP_READ);
+   }
+
+   ctx->stats.staging_uploads++;
+
+   return fd_bo_map(staging_rsc->bo);
+}
+
+static void *
 resource_transfer_map_unsync(struct pipe_context *pctx,
                              struct pipe_resource *prsc, unsigned level,
                              unsigned usage, const struct pipe_box *box,
@@ -751,6 +790,16 @@ resource_transfer_map_unsync(struct pipe_context *pctx,
    char *buf;
 
    buf = fd_bo_map(rsc->bo);
+
+   /* With imported bo's allocated by something outside of mesa, when
+    * running in a VM (using virtio_gpu kernel driver) we could end up in
+    * a situation where we have a linear bo, but are unable to mmap it
+    * because it was allocated without the VIRTGPU_BLOB_FLAG_USE_MAPPABLE
+    * flag.  So we need end up needing to do a staging blit instead:
+    */
+   if (!buf)
+      return resource_transfer_map_staging(pctx, prsc, level, usage, box, trans);
+
    offset = box->y / util_format_get_blockheight(format) * trans->b.b.stride +
             box->x / util_format_get_blockwidth(format) * rsc->layout.cpp +
             fd_resource_offset(rsc, level, box->z);
@@ -793,32 +842,7 @@ resource_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc,
     * texture.
     */
    if (rsc->layout.tile_mode) {
-      struct fd_resource *staging_rsc;
-
-      assert(prsc->target != PIPE_BUFFER);
-
-      staging_rsc = fd_alloc_staging(ctx, rsc, level, box);
-      if (staging_rsc) {
-         trans->staging_prsc = &staging_rsc->b.b;
-         trans->b.b.stride = fd_resource_pitch(staging_rsc, 0);
-         trans->b.b.layer_stride = fd_resource_layer_stride(staging_rsc, 0);
-         trans->staging_box = *box;
-         trans->staging_box.x = 0;
-         trans->staging_box.y = 0;
-         trans->staging_box.z = 0;
-
-         if (usage & PIPE_MAP_READ) {
-            fd_blit_to_staging(ctx, trans);
-
-            fd_resource_wait(ctx, staging_rsc, FD_BO_PREP_READ);
-         }
-
-         buf = fd_bo_map(staging_rsc->bo);
-
-         ctx->stats.staging_uploads++;
-
-         return buf;
-      }
+      return resource_transfer_map_staging(pctx, prsc, level, usage, box, trans);
    } else if ((usage & PIPE_MAP_READ) && !fd_bo_is_cached(rsc->bo)) {
       perf_debug_ctx(ctx, "wc readback: prsc=%p, level=%u, usage=%x, box=%dx%d+%d,%d",
                      prsc, level, usage, box->width, box->height, box->x, box->y);
@@ -956,17 +980,15 @@ fd_resource_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc,
    }
 
    if (usage & TC_TRANSFER_MAP_THREADED_UNSYNC) {
-      ptrans = slab_alloc(&ctx->transfer_pool_unsync);
+      ptrans = slab_zalloc(&ctx->transfer_pool_unsync);
    } else {
-      ptrans = slab_alloc(&ctx->transfer_pool);
+      ptrans = slab_zalloc(&ctx->transfer_pool);
    }
 
    if (!ptrans)
       return NULL;
 
-   /* slab_alloc_st() doesn't zero: */
    trans = fd_transfer(ptrans);
-   memset(trans, 0, sizeof(*trans));
 
    usage = improve_transfer_map_usage(ctx, rsc, usage, box);
 
@@ -1109,7 +1131,7 @@ alloc_resource_struct(struct pipe_screen *pscreen,
 
    pipe_reference_init(&rsc->track->reference, 1);
 
-   threaded_resource_init(prsc, false, 0);
+   threaded_resource_init(prsc, false);
 
    if (tmpl->target == PIPE_BUFFER)
       rsc->b.buffer_id_unique = util_idalloc_mt_alloc(&screen->buffer_ids);
@@ -1627,7 +1649,7 @@ fd_resource_screen_init(struct pipe_screen *pscreen)
    pscreen->resource_destroy = u_transfer_helper_resource_destroy;
 
    pscreen->transfer_helper =
-      u_transfer_helper_create(&transfer_vtbl, true, false, fake_rgtc, true);
+      u_transfer_helper_create(&transfer_vtbl, true, false, fake_rgtc, true, false);
 
    if (!screen->layout_resource_for_modifier)
       screen->layout_resource_for_modifier = fd_layout_resource_for_modifier;

@@ -31,6 +31,7 @@
 #include <string.h>
 
 #include "util/u_math.h"
+#include "util/timespec.h"
 #include "vk_enum_to_str.h"
 
 void PRINTFLIKE(3, 4)
@@ -207,6 +208,35 @@ tu_tiling_config_update_pipes(struct tu_framebuffer *fb,
           sizeof(uint32_t) * (max_pipe_count - used_pipe_count));
 }
 
+static bool
+is_hw_binning_possible(const struct tu_framebuffer *fb)
+{
+   /* Similar to older gens, # of tiles per pipe cannot be more than 32.
+    * But there are no hangs with 16 or more tiles per pipe in either
+    * X or Y direction, so that limit does not seem to apply.
+    */
+   uint32_t tiles_per_pipe = fb->pipe0.width * fb->pipe0.height;
+   return tiles_per_pipe <= 32;
+}
+
+static void
+tu_tiling_config_update_binning(struct tu_framebuffer *fb, const struct tu_device *device)
+{
+   fb->binning_possible = is_hw_binning_possible(fb);
+
+   if (fb->binning_possible) {
+      fb->binning = (fb->tile_count.width * fb->tile_count.height) > 2;
+
+      if (unlikely(device->physical_device->instance->debug_flags & TU_DEBUG_FORCEBIN))
+         fb->binning = true;
+      if (unlikely(device->physical_device->instance->debug_flags &
+                   TU_DEBUG_NOBIN))
+         fb->binning = false;
+   } else {
+      fb->binning = false;
+   }
+}
+
 void
 tu_framebuffer_tiling_config(struct tu_framebuffer *fb,
                              const struct tu_device *device,
@@ -215,4 +245,57 @@ tu_framebuffer_tiling_config(struct tu_framebuffer *fb,
    tu_tiling_config_update_tile_layout(fb, device, pass);
    tu_tiling_config_update_pipe_layout(fb, device);
    tu_tiling_config_update_pipes(fb, device);
+   tu_tiling_config_update_binning(fb, device);
+}
+
+void
+tu_dbg_log_gmem_load_store_skips(struct tu_device *device)
+{
+   static uint32_t last_skipped_loads = 0;
+   static uint32_t last_skipped_stores = 0;
+   static uint32_t last_total_loads = 0;
+   static uint32_t last_total_stores = 0;
+   static struct timespec last_time = {};
+
+   pthread_mutex_lock(&device->submit_mutex);
+
+   struct timespec current_time;
+   clock_gettime(CLOCK_MONOTONIC, &current_time);
+
+   if (timespec_sub_to_nsec(&current_time, &last_time) > 1000 * 1000 * 1000) {
+      last_time = current_time;
+   } else {
+      pthread_mutex_unlock(&device->submit_mutex);
+      return;
+   }
+
+   struct tu6_global *global = device->global_bo->map;
+
+   uint32_t current_taken_loads = global->dbg_gmem_taken_loads;
+   uint32_t current_taken_stores = global->dbg_gmem_taken_stores;
+   uint32_t current_total_loads = global->dbg_gmem_total_loads;
+   uint32_t current_total_stores = global->dbg_gmem_total_stores;
+
+   uint32_t skipped_loads = current_total_loads - current_taken_loads;
+   uint32_t skipped_stores = current_total_stores - current_taken_stores;
+
+   uint32_t current_time_frame_skipped_loads = skipped_loads - last_skipped_loads;
+   uint32_t current_time_frame_skipped_stores = skipped_stores - last_skipped_stores;
+
+   uint32_t current_time_frame_total_loads = current_total_loads - last_total_loads;
+   uint32_t current_time_frame_total_stores = current_total_stores - last_total_stores;
+
+   mesa_logi("[GMEM] loads total: %u skipped: %.1f%%\n",
+         current_time_frame_total_loads,
+         current_time_frame_skipped_loads / (float) current_time_frame_total_loads * 100.f);
+   mesa_logi("[GMEM] stores total: %u skipped: %.1f%%\n",
+         current_time_frame_total_stores,
+         current_time_frame_skipped_stores / (float) current_time_frame_total_stores * 100.f);
+
+   last_skipped_loads = skipped_loads;
+   last_skipped_stores = skipped_stores;
+   last_total_loads = current_total_loads;
+   last_total_stores = current_total_stores;
+
+   pthread_mutex_unlock(&device->submit_mutex);
 }

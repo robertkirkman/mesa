@@ -1926,6 +1926,7 @@ generate_code(struct brw_codegen *p,
       case SHADER_OPCODE_MEMORY_FENCE:
          brw_memory_fence(p, dst, src[0], BRW_OPCODE_SEND,
                           brw_message_target(inst->sfid),
+                          inst->desc,
                           /* commit_enable */ false,
                           /* bti */ 0);
          send_count++;
@@ -1936,7 +1937,7 @@ generate_code(struct brw_codegen *p,
             brw_stage_has_packed_dispatch(devinfo, nir->info.stage,
                                           &prog_data->base) ? brw_imm_ud(~0u) :
             brw_dmask_reg();
-         brw_find_live_channel(p, dst, mask);
+         brw_find_live_channel(p, dst, mask, false);
          break;
       }
 

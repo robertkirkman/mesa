@@ -24,7 +24,6 @@
 
 #include "util/u_memory.h"
 #include "util/u_sampler.h"
-#include "util/simple_list.h"
 #include "util/u_upload_mgr.h"
 #include "util/os_time.h"
 #include "vl/vl_decoder.h"
@@ -370,7 +369,7 @@ static void r300_init_states(struct pipe_context *pipe)
 
 static void
 r300_set_debug_callback(struct pipe_context *context,
-                        const struct pipe_debug_callback *cb)
+                        const struct util_debug_callback *cb)
 {
     struct r300_context *r300 = r300_context(context);
 
@@ -401,12 +400,12 @@ struct pipe_context* r300_create_context(struct pipe_screen* screen,
 
     slab_create_child(&r300->pool_transfers, &r300screen->pool_transfers);
 
-    r300->ctx = rws->ctx_create(rws);
+    r300->ctx = rws->ctx_create(rws, RADEON_CTX_PRIORITY_MEDIUM);
     if (!r300->ctx)
         goto fail;
 
 
-    if (!rws->cs_create(&r300->cs, r300->ctx, RING_GFX, r300_flush_callback, r300, false))
+    if (!rws->cs_create(&r300->cs, r300->ctx, AMD_IP_GFX, r300_flush_callback, r300, false))
         goto fail;
 
     if (!r300screen->caps.has_tcl) {
@@ -442,7 +441,9 @@ struct pipe_context* r300_create_context(struct pipe_screen* screen,
                                      PIPE_BIND_CUSTOM, PIPE_USAGE_STREAM, 0);
     r300->context.stream_uploader = u_upload_create(&r300->context, 1024 * 1024,
                                                     0, PIPE_USAGE_STREAM, 0);
-    r300->context.const_uploader = r300->context.stream_uploader;
+    r300->context.const_uploader = u_upload_create(&r300->context, 1024 * 1024,
+                                                   PIPE_BIND_CONSTANT_BUFFER,
+                                                   PIPE_USAGE_STREAM, 0);
 
     r300->blitter = util_blitter_create(&r300->context);
     if (r300->blitter == NULL)

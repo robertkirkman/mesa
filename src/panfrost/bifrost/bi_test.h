@@ -32,20 +32,28 @@
 #include "compiler.h"
 
 /* Helper to generate a bi_builder suitable for creating test instructions */
+static inline bi_block *
+bit_block(bi_context *ctx)
+{
+        bi_block *blk = rzalloc(ctx, bi_block);
+
+        util_dynarray_init(&blk->predecessors, blk);
+        list_addtail(&blk->link, &ctx->blocks);
+        list_inithead(&blk->instructions);
+
+        blk->index = ctx->num_blocks++;
+
+        return blk;
+}
+
 static inline bi_builder *
 bit_builder(void *memctx)
 {
         bi_context *ctx = rzalloc(memctx, bi_context);
         list_inithead(&ctx->blocks);
+        ctx->inputs = rzalloc(memctx, struct panfrost_compile_inputs);
 
-        bi_block *blk = rzalloc(ctx, bi_block);
-
-        blk->predecessors = _mesa_set_create(blk,
-                        _mesa_hash_pointer,
-                        _mesa_key_pointer_equal);
-
-        list_addtail(&blk->link, &ctx->blocks);
-        list_inithead(&blk->instructions);
+        bi_block *blk = bit_block(ctx);
 
         bi_builder *b = rzalloc(memctx, bi_builder);
         b->shader = ctx;
@@ -92,5 +100,31 @@ bit_shader_equal(bi_context *A, bi_context *B)
 
    return true;
 }
+
+#define ASSERT_SHADER_EQUAL(A, B) \
+   if (!bit_shader_equal(A, B)) { \
+      ADD_FAILURE(); \
+      fprintf(stderr, "Pass produced unexpected results"); \
+      fprintf(stderr, "  Actual:\n"); \
+      bi_print_shader(A, stderr); \
+      fprintf(stderr, " Expected:\n"); \
+      bi_print_shader(B, stderr); \
+      fprintf(stderr, "\n"); \
+   } \
+
+#define INSTRUCTION_CASE(instr, expected, pass) do { \
+   bi_builder *A = bit_builder(mem_ctx); \
+   bi_builder *B = bit_builder(mem_ctx); \
+   { \
+      bi_builder *b = A; \
+      instr; \
+   } \
+   { \
+      bi_builder *b = B; \
+      expected; \
+   } \
+   pass(A->shader); \
+   ASSERT_SHADER_EQUAL(A->shader, B->shader); \
+} while(0)
 
 #endif

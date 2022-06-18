@@ -66,6 +66,15 @@
  * 4 - *S_PARTIAL_FLUSH
  * 5 - TS events
  */
+#define PIXEL_PIPE_STATE_CNTL_COUNTER_ID(x)    ((x) << 3)
+#define PIXEL_PIPE_STATE_CNTL_STRIDE(x)        ((x) << 9)
+/* 0 - 32 bits
+ * 1 - 64 bits
+ * 2 - 128 bits
+ * 3 - 256 bits
+ */
+#define PIXEL_PIPE_STATE_CNTL_INSTANCE_EN_LO(x) ((x) << 11)
+#define PIXEL_PIPE_STATE_CNTL_INSTANCE_EN_HI(x) ((x) >> 21)
 
 /* EVENT_WRITE_EOP (SI-VI) & RELEASE_MEM (GFX9) */
 #define EVENT_TCL1_VOL_ACTION_ENA (1 << 12)
@@ -105,6 +114,7 @@
 #define PKT3_INDEX_BUFFER_SIZE              0x13
 #define PKT3_DISPATCH_DIRECT                0x15
 #define PKT3_DISPATCH_INDIRECT              0x16
+#define PKT3_ATOMIC_MEM                     0x1E
 #define PKT3_OCCLUSION_QUERY                0x1F /* new for CIK */
 #define PKT3_SET_PREDICATION                0x20
 #define PKT3_COND_EXEC                      0x22
@@ -219,6 +229,7 @@
 #define PKT3_LOAD_UCONFIG_REG       0x5E /* GFX7+ */
 #define PKT3_LOAD_SH_REG            0x5F
 #define PKT3_LOAD_CONTEXT_REG       0x61
+#define PKT3_LOAD_SH_REG_INDEX      0x63 /* GFX8+ */
 #define PKT3_SET_CONFIG_REG         0x68
 #define PKT3_SET_CONTEXT_REG        0x69
 #define PKT3_SET_SH_REG             0x76
@@ -233,6 +244,12 @@
 #define PKT3_WAIT_ON_CE_COUNTER     0x86
 #define PKT3_SET_SH_REG_INDEX       0x9B
 #define PKT3_LOAD_CONTEXT_REG_INDEX 0x9F /* new for VI */
+
+#define PKT3_DISPATCH_TASK_STATE_INIT               0xA9 /* Tells the HW about the task control buffer */
+#define PKT3_DISPATCH_MESH_INDIRECT_MULTI           0x4C /* Indirect mesh shader only dispatch [GFX only] */
+#define PKT3_DISPATCH_TASKMESH_GFX                  0x4D /* Task+mesh shader dispatch [GFX side] */
+#define PKT3_DISPATCH_TASKMESH_DIRECT_ACE           0xAA /* Direct task+mesh shader dispatch [ACE side] */
+#define PKT3_DISPATCH_TASKMESH_INDIRECT_MULTI_ACE   0xAD /* Indirect task+mesh shader dispatch [ACE side] */
 
 #define PKT_TYPE_S(x)         (((unsigned)(x)&0x3) << 30)
 #define PKT_TYPE_G(x)         (((x) >> 30) & 0x3)

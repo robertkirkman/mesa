@@ -33,6 +33,7 @@
 #include "main/macros.h"
 #include "main/spirv_extensions.h"
 #include "main/version.h"
+#include "nir/nir_to_tgsi.h"
 
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
@@ -155,34 +156,32 @@ void st_init_limits(struct pipe_screen *screen,
                         PIPE_CAP_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION);
 
    c->MaxUniformBlockSize =
-      screen->get_shader_param(screen, PIPE_SHADER_FRAGMENT,
-                               PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE);
-   /* GL45-CTS.enhanced_layouts.ssb_member_invalid_offset_alignment fails if
-    * this is larger than INT_MAX - 100. Use a nicely aligned limit.
-    */
-   c->MaxUniformBlockSize = MIN2(c->MaxUniformBlockSize, INT_MAX - 127);
+      screen->get_param(screen, PIPE_CAP_MAX_CONSTANT_BUFFER_SIZE_UINT);
 
    if (c->MaxUniformBlockSize < 16384) {
       can_ubo = false;
    }
 
+   /* Round down to a multiple of 4 to make piglit happy. Bytes are not
+    * addressible by UBOs anyway.
+    */
+   c->MaxUniformBlockSize &= ~3;
+
    for (sh = 0; sh < PIPE_SHADER_TYPES; ++sh) {
-      struct gl_shader_compiler_options *options;
-      struct gl_program_constants *pc;
-      const nir_shader_compiler_options *nir_options = NULL;
+      const gl_shader_stage stage = tgsi_processor_to_shader_stage(sh);
+      struct gl_shader_compiler_options *options =
+         &c->ShaderCompilerOptions[stage];
+      struct gl_program_constants *pc = &c->Program[stage];
 
       bool prefer_nir = PIPE_SHADER_IR_NIR ==
          screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_PREFERRED_IR);
+      if (screen->get_compiler_options)
+         options->NirOptions = screen->get_compiler_options(screen, PIPE_SHADER_IR_NIR, sh);
 
-      if (screen->get_compiler_options && prefer_nir) {
-         nir_options = (const nir_shader_compiler_options *)
-            screen->get_compiler_options(screen, PIPE_SHADER_IR_NIR, sh);
+      if (!options->NirOptions) {
+         options->NirOptions =
+            nir_to_tgsi_get_compiler_options(screen, PIPE_SHADER_IR_NIR, sh);
       }
-
-      const gl_shader_stage stage = tgsi_processor_to_shader_stage(sh);
-      pc = &c->Program[stage];
-      options = &c->ShaderCompilerOptions[stage];
-      c->ShaderCompilerOptions[stage].NirOptions = nir_options;
 
       if (sh == PIPE_SHADER_COMPUTE) {
          if (!screen->get_param(screen, PIPE_CAP_COMPUTE))
@@ -225,7 +224,7 @@ void st_init_limits(struct pipe_screen *screen,
 
       pc->MaxUniformComponents =
          screen->get_shader_param(screen, sh,
-                                  PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE) / 4;
+                                  PIPE_SHADER_CAP_MAX_CONST_BUFFER0_SIZE) / 4;
 
       /* reserve space in the default-uniform for lowered state */
       if (sh == PIPE_SHADER_VERTEX ||
@@ -291,8 +290,10 @@ void st_init_limits(struct pipe_screen *screen,
          pc->MaxAtomicBuffers = pc->MaxShaderStorageBlocks / 2;
          pc->MaxShaderStorageBlocks -= pc->MaxAtomicBuffers;
       }
-      pc->MaxImageUniforms = screen->get_shader_param(
-            screen, sh, PIPE_SHADER_CAP_MAX_SHADER_IMAGES);
+      pc->MaxImageUniforms =
+         _min(screen->get_shader_param(screen, sh,
+                                       PIPE_SHADER_CAP_MAX_SHADER_IMAGES),
+              MAX_IMAGE_UNIFORMS);
 
       /* Gallium doesn't really care about local vs. env parameters so use the
        * same limits.
@@ -325,21 +326,12 @@ void st_init_limits(struct pipe_screen *screen,
          screen->get_shader_param(screen, sh,
                                   PIPE_SHADER_CAP_MAX_CONTROL_FLOW_DEPTH);
 
-      /* If we're using NIR, then leave GLSL loop handling to NIR.  If we set
-       * this flag, then GLSL jump lowering will turn the breaks into something
-       * that GLSL loop unrolling can't handle, and then you get linker failures
-       * about samplers with non-const indexes in loops that should be unrollable.
-       */
-      options->EmitNoLoops = !prefer_nir &&
-         !screen->get_shader_param(screen, sh,
-                                   PIPE_SHADER_CAP_MAX_CONTROL_FLOW_DEPTH);
-
       options->EmitNoMainReturn =
          !screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_SUBROUTINES);
 
       options->EmitNoCont =
          !screen->get_shader_param(screen, sh,
-                                   PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED);
+                                   PIPE_SHADER_CAP_CONT_SUPPORTED);
 
       options->EmitNoIndirectInput =
          !screen->get_shader_param(screen, sh,
@@ -359,23 +351,8 @@ void st_init_limits(struct pipe_screen *screen,
          can_ubo = false;
       }
 
-      if (options->EmitNoLoops)
-         options->MaxUnrollIterations =
-            MIN2(screen->get_shader_param(screen, sh,
-                                          PIPE_SHADER_CAP_MAX_INSTRUCTIONS),
-                 65536);
-      else
-         options->MaxUnrollIterations =
-            screen->get_shader_param(screen, sh,
-                                  PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT);
-
       if (!screen->get_param(screen, PIPE_CAP_NIR_COMPACT_ARRAYS))
          options->LowerCombinedClipCullDistance = true;
-
-      /* NIR can do the lowering on our behalf and we'll get better results
-       * because it can actually optimize SSBO access.
-       */
-      options->LowerBufferInterfaceBlocks = !prefer_nir;
 
       if (sh == PIPE_SHADER_VERTEX || sh == PIPE_SHADER_GEOMETRY) {
          if (screen->get_param(screen, PIPE_CAP_VIEWPORT_TRANSFORM_LOWERED))
@@ -384,6 +361,9 @@ void st_init_limits(struct pipe_screen *screen,
             options->LowerBuiltinVariablesXfb |= VARYING_BIT_PSIZ;
       }
 
+      /* Note: If the driver doesn't prefer NIR, then st_create_nir_shader()
+       * will call nir_to_tgsi, and TGSI doesn't support 16-bit ops.
+       */
       if (prefer_nir) {
          options->LowerPrecisionFloat16 =
             screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_FP16);
@@ -405,8 +385,6 @@ void st_init_limits(struct pipe_screen *screen,
       c->Program[MESA_SHADER_GEOMETRY].MaxUniformComponents +
       c->Program[MESA_SHADER_FRAGMENT].MaxUniformComponents;
 
-   c->GLSLOptimizeConservatively =
-      screen->get_param(screen, PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY);
    c->GLSLLowerConstArrays =
       screen->get_param(screen, PIPE_CAP_PREFER_IMM_ARRAYS_AS_CONSTBUF);
    c->GLSLTessLevelsAsInputs =
@@ -505,11 +483,11 @@ void st_init_limits(struct pipe_screen *screen,
    }
 
    c->GLSLFragCoordIsSysVal =
-      screen->get_param(screen, PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL);
+      screen->get_param(screen, PIPE_CAP_FS_POSITION_IS_SYSVAL);
    c->GLSLPointCoordIsSysVal =
-      screen->get_param(screen, PIPE_CAP_TGSI_FS_POINT_IS_SYSVAL);
+      screen->get_param(screen, PIPE_CAP_FS_POINT_IS_SYSVAL);
    c->GLSLFrontFacingIsSysVal =
-      screen->get_param(screen, PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL);
+      screen->get_param(screen, PIPE_CAP_FS_FACE_IS_INTEGER_SYSVAL);
 
    /* GL_ARB_get_program_binary */
    if (screen->get_disk_shader_cache && screen->get_disk_shader_cache(screen))
@@ -569,7 +547,7 @@ void st_init_limits(struct pipe_screen *screen,
       c->MaxCombinedShaderOutputResources +=
          c->MaxCombinedShaderStorageBlocks;
       c->MaxShaderStorageBlockSize =
-         screen->get_param(screen, PIPE_CAP_MAX_SHADER_BUFFER_SIZE);
+         screen->get_param(screen, PIPE_CAP_MAX_SHADER_BUFFER_SIZE_UINT);
       if (c->Program[MESA_SHADER_FRAGMENT].MaxShaderStorageBlocks)
          extensions->ARB_shader_storage_buffer_object = GL_TRUE;
    }
@@ -648,6 +626,9 @@ void st_init_limits(struct pipe_screen *screen,
       screen->get_param(screen, PIPE_CAP_MAX_SPARSE_ARRAY_TEXTURE_LAYERS);
    c->SparseTextureFullArrayCubeMipmaps =
       screen->get_param(screen, PIPE_CAP_SPARSE_TEXTURE_FULL_ARRAY_CUBE_MIPMAPS);
+
+   c->HardwareAcceleratedSelect =
+      screen->get_param(screen, PIPE_CAP_HARDWARE_GL_SELECT);
 }
 
 
@@ -789,10 +770,10 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(OES_copy_image),                   PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS },
       { o(ARB_cull_distance),                PIPE_CAP_CULL_DISTANCE                    },
       { o(ARB_depth_clamp),                  PIPE_CAP_DEPTH_CLIP_DISABLE               },
-      { o(ARB_derivative_control),           PIPE_CAP_TGSI_FS_FINE_DERIVATIVE          },
+      { o(ARB_derivative_control),           PIPE_CAP_FS_FINE_DERIVATIVE               },
       { o(ARB_draw_buffers_blend),           PIPE_CAP_INDEP_BLEND_FUNC                 },
       { o(ARB_draw_indirect),                PIPE_CAP_DRAW_INDIRECT                    },
-      { o(ARB_draw_instanced),               PIPE_CAP_TGSI_INSTANCEID                  },
+      { o(ARB_draw_instanced),               PIPE_CAP_VS_INSTANCEID                    },
       { o(ARB_fragment_program_shadow),      PIPE_CAP_TEXTURE_SHADOW_MAP               },
       { o(ARB_framebuffer_object),           PIPE_CAP_MIXED_FRAMEBUFFER_SIZES          },
       { o(ARB_gpu_shader_int64),             PIPE_CAP_INT64                            },
@@ -810,14 +791,14 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(ARB_sample_shading),               PIPE_CAP_SAMPLE_SHADING                   },
       { o(ARB_sample_locations),             PIPE_CAP_PROGRAMMABLE_SAMPLE_LOCATIONS    },
       { o(ARB_seamless_cube_map),            PIPE_CAP_SEAMLESS_CUBE_MAP                },
-      { o(ARB_shader_ballot),                PIPE_CAP_TGSI_BALLOT                      },
-      { o(ARB_shader_clock),                 PIPE_CAP_TGSI_CLOCK                       },
+      { o(ARB_shader_ballot),                PIPE_CAP_SHADER_BALLOT                    },
+      { o(ARB_shader_clock),                 PIPE_CAP_SHADER_CLOCK                     },
       { o(ARB_shader_draw_parameters),       PIPE_CAP_DRAW_PARAMETERS                  },
-      { o(ARB_shader_group_vote),            PIPE_CAP_TGSI_VOTE                        },
+      { o(ARB_shader_group_vote),            PIPE_CAP_SHADER_GROUP_VOTE                },
       { o(EXT_shader_image_load_formatted),  PIPE_CAP_IMAGE_LOAD_FORMATTED             },
-      { o(EXT_shader_image_load_store),      PIPE_CAP_TGSI_ATOMINC_WRAP                },
+      { o(EXT_shader_image_load_store),      PIPE_CAP_IMAGE_ATOMIC_INC_WRAP            },
       { o(ARB_shader_stencil_export),        PIPE_CAP_SHADER_STENCIL_EXPORT            },
-      { o(ARB_shader_texture_image_samples), PIPE_CAP_TGSI_TXQS                        },
+      { o(ARB_shader_texture_image_samples), PIPE_CAP_TEXTURE_QUERY_SAMPLES            },
       { o(ARB_shader_texture_lod),           PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD      },
       { o(ARB_shadow),                       PIPE_CAP_TEXTURE_SHADOW_MAP               },
       { o(ARB_sparse_buffer),                PIPE_CAP_SPARSE_BUFFER_PAGE_SIZE          },
@@ -848,10 +829,16 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(EXT_memory_object),                PIPE_CAP_MEMOBJ                           },
 #ifndef _WIN32
       { o(EXT_memory_object_fd),             PIPE_CAP_MEMOBJ                           },
+#else
+      { o(EXT_memory_object_win32),          PIPE_CAP_MEMOBJ                           },
 #endif
       { o(EXT_multisampled_render_to_texture), PIPE_CAP_SURFACE_SAMPLE_COUNT           },
       { o(EXT_semaphore),                    PIPE_CAP_FENCE_SIGNAL                     },
+#ifndef _WIN32
       { o(EXT_semaphore_fd),                 PIPE_CAP_FENCE_SIGNAL                     },
+#else
+      { o(EXT_semaphore_win32),              PIPE_CAP_FENCE_SIGNAL                     },
+#endif
       { o(EXT_shader_samples_identical),     PIPE_CAP_SHADER_SAMPLES_IDENTICAL         },
       { o(EXT_texture_array),                PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS         },
       { o(EXT_texture_filter_anisotropic),   PIPE_CAP_ANISOTROPIC_FILTER               },
@@ -876,7 +863,7 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(NV_conditional_render),            PIPE_CAP_CONDITIONAL_RENDER               },
       { o(NV_fill_rectangle),                PIPE_CAP_POLYGON_MODE_FILL_RECTANGLE      },
       { o(NV_primitive_restart),             PIPE_CAP_PRIMITIVE_RESTART                },
-      { o(NV_shader_atomic_float),           PIPE_CAP_TGSI_ATOMFADD                    },
+      { o(NV_shader_atomic_float),           PIPE_CAP_IMAGE_ATOMIC_FLOAT_ADD           },
       { o(NV_shader_atomic_int64),           PIPE_CAP_SHADER_ATOMIC_INT64              },
       { o(NV_texture_barrier),               PIPE_CAP_TEXTURE_BARRIER                  },
       { o(NV_viewport_array2),               PIPE_CAP_VIEWPORT_MASK                    },
@@ -1186,7 +1173,7 @@ void st_init_extensions(struct pipe_screen *screen,
    /* This extension needs full OpenGL 3.2, but we don't know if that's
     * supported at this point. Only check the GLSL version. */
    if (GLSLVersion >= 150 &&
-       screen->get_param(screen, PIPE_CAP_TGSI_VS_LAYER_VIEWPORT)) {
+       screen->get_param(screen, PIPE_CAP_VS_LAYER_VIEWPORT)) {
       extensions->AMD_vertex_shader_layer = GL_TRUE;
    }
 
@@ -1199,7 +1186,8 @@ void st_init_extensions(struct pipe_screen *screen,
       extensions->EXT_gpu_shader4 = GL_TRUE;
       extensions->EXT_texture_buffer_object = GL_TRUE;
 
-      if (screen->get_param(screen, PIPE_CAP_TGSI_ARRAY_COMPONENTS))
+      if (consts->MaxTransformFeedbackBuffers &&
+          screen->get_param(screen, PIPE_CAP_SHADER_ARRAY_COMPONENTS))
          extensions->ARB_enhanced_layouts = GL_TRUE;
    }
 
@@ -1473,8 +1461,7 @@ void st_init_extensions(struct pipe_screen *screen,
 
    if (extensions->ARB_texture_buffer_object) {
       consts->MaxTextureBufferSize =
-         _min(screen->get_param(screen, PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE),
-              (1u << 31) - 1);
+         screen->get_param(screen, PIPE_CAP_MAX_TEXEL_BUFFER_ELEMENTS_UINT);
       consts->TextureBufferOffsetAlignment =
          screen->get_param(screen, PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT);
 
@@ -1551,7 +1538,7 @@ void st_init_extensions(struct pipe_screen *screen,
 
    if (extensions->AMD_vertex_shader_layer &&
        extensions->AMD_vertex_shader_viewport_index &&
-       screen->get_param(screen, PIPE_CAP_TGSI_TES_LAYER_VIEWPORT))
+       screen->get_param(screen, PIPE_CAP_TES_LAYER_VIEWPORT))
       extensions->ARB_shader_viewport_layer_array = GL_TRUE;
 
    /* ARB_framebuffer_no_attachments */
@@ -1637,7 +1624,8 @@ void st_init_extensions(struct pipe_screen *screen,
          consts->MaxComputeSharedMemorySize = max_local_size;
 
          for (i = 0; i < 3; i++) {
-            consts->MaxComputeWorkGroupCount[i] = grid_size[i];
+            /* There are tests that fail if we report more that INT_MAX - 1. */
+            consts->MaxComputeWorkGroupCount[i] = MIN2(grid_size[i], INT_MAX - 1);
             consts->MaxComputeWorkGroupSize[i] = block_size[i];
          }
 
@@ -1811,7 +1799,10 @@ void st_init_extensions(struct pipe_screen *screen,
       _mesa_fill_supported_spirv_extensions(consts->SpirVExtensions, spirv_caps);
    }
 
-   consts->AllowDrawOutOfOrder = options->allow_draw_out_of_order;
+   consts->AllowDrawOutOfOrder =
+      api == API_OPENGL_COMPAT &&
+      options->allow_draw_out_of_order &&
+      screen->get_param(screen, PIPE_CAP_ALLOW_DRAW_OUT_OF_ORDER);
    consts->GLThreadNopCheckFramebufferStatus = options->glthread_nop_check_framebuffer_status;
 
    bool prefer_nir = PIPE_SHADER_IR_NIR ==

@@ -67,6 +67,7 @@ const struct panfrost_model panfrost_model_list[] = {
         MODEL(0x7211, "G76", "TNOx", HAS_ANISO, {}),
         MODEL(0x7212, "G52", "TGOx", HAS_ANISO, {}),
         MODEL(0x7402, "G52 r1", "TGOx", HAS_ANISO, {}),
+        MODEL(0x9093, "G57", "TNAx", HAS_ANISO, {}),
 };
 
 #undef NO_ANISO
@@ -115,16 +116,6 @@ panfrost_query_raw(
 static unsigned
 panfrost_query_gpu_version(int fd)
 {
-#ifndef NDEBUG
-        /* In debug builds, allow overriding the GPU ID, for example to run
-         * Bifrost shader-db on a Midgard machine. This is a bit less heavy
-         * handed than setting up the entirety of drm-shim */
-        char *override_version = getenv("PAN_GPU_ID");
-
-        if (override_version)
-                return strtol(override_version, NULL, 16);
-#endif
-
         return panfrost_query_raw(fd, DRM_PANFROST_PARAM_GPU_PROD_ID, true, 0);
 }
 
@@ -132,6 +123,18 @@ static unsigned
 panfrost_query_gpu_revision(int fd)
 {
         return panfrost_query_raw(fd, DRM_PANFROST_PARAM_GPU_REVISION, true, 0);
+}
+
+unsigned
+panfrost_query_l2_slices(const struct panfrost_device *dev)
+{
+        /* Query MEM_FEATURES register */
+        uint32_t mem_features =
+                panfrost_query_raw(dev->fd, DRM_PANFROST_PARAM_MEM_FEATURES,
+                                   true, 0);
+
+        /* L2_SLICES is MEM_FEATURES[11:8] minus(1) */
+        return ((mem_features >> 8) & 0xF) + 1;
 }
 
 static struct panfrost_tiler_features
@@ -271,8 +274,10 @@ panfrost_open_device(void *memctx, int fd, struct panfrost_device *dev)
 
         if (dev->arch <= 6)
                 dev->formats = panfrost_pipe_format_v6;
-        else
+        else if (dev->arch <= 7)
                 dev->formats = panfrost_pipe_format_v7;
+        else
+                dev->formats = panfrost_pipe_format_v9;
 
         util_sparse_array_init(&dev->bo_map, sizeof(struct panfrost_bo), 512);
 
@@ -290,7 +295,7 @@ panfrost_open_device(void *memctx, int fd, struct panfrost_device *dev)
          * active for a single job chain at once, so a single heap can be
          * shared across batches/contextes */
 
-        dev->tiler_heap = panfrost_bo_create(dev, 64 * 1024 * 1024,
+        dev->tiler_heap = panfrost_bo_create(dev, 128 * 1024 * 1024,
                         PAN_BO_INVISIBLE | PAN_BO_GROWABLE, "Tiler heap");
 
         pthread_mutex_init(&dev->submit_lock, NULL);

@@ -81,6 +81,8 @@ offset(const fs_reg &reg, const brw::fs_builder &bld, unsigned delta)
 struct shader_stats {
    const char *scheduler_mode;
    unsigned promoted_constants;
+   unsigned spill_count;
+   unsigned fill_count;
 };
 
 /**
@@ -136,6 +138,7 @@ public:
    void setup_cs_payload();
    bool fixup_sends_duplicate_payload();
    void fixup_3src_null_dest();
+   void emit_dummy_memory_fence_before_eot();
    bool fixup_nomask_control_flow();
    void assign_curb_setup();
    void assign_urb_setup();
@@ -202,6 +205,7 @@ public:
    void emit_dummy_fs();
    void emit_repclear_shader();
    void emit_fragcoord_interpolation(fs_reg wpos);
+   void emit_is_helper_invocation(fs_reg result);
    fs_reg emit_frontfacing_interpolation();
    fs_reg emit_samplepos_setup();
    fs_reg emit_sampleid_setup();
@@ -307,7 +311,6 @@ public:
    fs_inst *emit_single_fb_write(const brw::fs_builder &bld,
                                  fs_reg color1, fs_reg color2,
                                  fs_reg src0_alpha, unsigned components);
-   void emit_alpha_to_coverage_workaround(const fs_reg &src0_alpha);
    void emit_fb_writes();
    fs_inst *emit_non_coherent_fb_read(const brw::fs_builder &bld,
                                       const fs_reg &dst, unsigned target);

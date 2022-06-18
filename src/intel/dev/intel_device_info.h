@@ -72,7 +72,8 @@ enum intel_platform {
    INTEL_PLATFORM_ADL,
    INTEL_PLATFORM_RPL,
    INTEL_PLATFORM_GROUP_START(DG2, INTEL_PLATFORM_DG2_G10),
-   INTEL_PLATFORM_GROUP_END(DG2, INTEL_PLATFORM_DG2_G11),
+   INTEL_PLATFORM_DG2_G11,
+   INTEL_PLATFORM_GROUP_END(DG2, INTEL_PLATFORM_DG2_G12),
 };
 
 #undef INTEL_PLATFORM_GROUP_START
@@ -136,6 +137,7 @@ struct intel_device_info
    bool has_aux_map;
    bool has_tiling_uapi;
    bool has_ray_tracing;
+   bool has_ray_query;
    bool has_local_mem;
    bool has_lsc;
    bool has_mesh_shading;
@@ -145,6 +147,12 @@ struct intel_device_info
     *  @{
     */
    bool has_negative_rhw_bug;
+
+   /**
+    * Whether this platform supports fragment shading rate controlled by a
+    * primitive in geometry shaders and by a control buffer.
+    */
+   bool has_coarse_pixel_primitive_and_cb;
 
    /**
     * Some versions of Gen hardware don't do centroid interpolation correctly

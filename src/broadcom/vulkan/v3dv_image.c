@@ -1,5 +1,5 @@
 /*
- * Copyright © 2019 Raspberry Pi
+ * Copyright © 2019 Raspberry Pi Ltd
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -257,7 +257,7 @@ create_image(struct v3dv_device *device,
    /* When using the simulator the WSI common code will see that our
     * driver wsi device doesn't match the display device and because of that
     * it will not attempt to present directly from the swapchain images,
-    * instead it will use the prime blit path (use_prime_blit flag in
+    * instead it will use the prime blit path (use_buffer_blit flag in
     * struct wsi_swapchain), where it copies the contents of the swapchain
     * images to a linear buffer with appropriate row stride for presentation.
     * As a result, on that path, swapchain images do not have any special
@@ -491,18 +491,18 @@ v3dv_image_type_to_view_type(VkImageType type)
    }
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL
-v3dv_CreateImageView(VkDevice _device,
-                     const VkImageViewCreateInfo *pCreateInfo,
-                     const VkAllocationCallbacks *pAllocator,
-                     VkImageView *pView)
+static VkResult
+create_image_view(struct v3dv_device *device,
+                  bool driver_internal,
+                  const VkImageViewCreateInfo *pCreateInfo,
+                  const VkAllocationCallbacks *pAllocator,
+                  VkImageView *pView)
 {
-   V3DV_FROM_HANDLE(v3dv_device, device, _device);
    V3DV_FROM_HANDLE(v3dv_image, image, pCreateInfo->image);
    struct v3dv_image_view *iview;
 
-   iview = vk_image_view_create(&device->vk, pCreateInfo, pAllocator,
-                                sizeof(*iview));
+   iview = vk_image_view_create(&device->vk, driver_internal, pCreateInfo,
+                                pAllocator, sizeof(*iview));
    if (iview == NULL)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
@@ -536,13 +536,13 @@ v3dv_CreateImageView(VkDevice _device,
                                            image_view_swizzle);
    }
 
-   iview->vk.format = format;
+   iview->vk.view_format = format;
    iview->format = v3dv_X(device, get_format)(format);
    assert(iview->format && iview->format->supported);
 
-   if (vk_format_is_depth_or_stencil(iview->vk.format)) {
+   if (vk_format_is_depth_or_stencil(iview->vk.view_format)) {
       iview->internal_type =
-         v3dv_X(device, get_internal_depth_type)(iview->vk.format);
+         v3dv_X(device, get_internal_depth_type)(iview->vk.view_format);
    } else {
       v3dv_X(device, get_internal_type_bpp_for_output_format)
          (iview->format->rt_type, &iview->internal_type, &iview->internal_bpp);
@@ -560,6 +560,25 @@ v3dv_CreateImageView(VkDevice _device,
    *pView = v3dv_image_view_to_handle(iview);
 
    return VK_SUCCESS;
+}
+
+VkResult
+v3dv_create_image_view(struct v3dv_device *device,
+                       const VkImageViewCreateInfo *pCreateInfo,
+                       VkImageView *pView)
+{
+   return create_image_view(device, true, pCreateInfo, NULL, pView);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+v3dv_CreateImageView(VkDevice _device,
+                     const VkImageViewCreateInfo *pCreateInfo,
+                     const VkAllocationCallbacks *pAllocator,
+                     VkImageView *pView)
+{
+   V3DV_FROM_HANDLE(v3dv_device, device, _device);
+
+   return create_image_view(device, false, pCreateInfo, pAllocator, pView);
 }
 
 VKAPI_ATTR void VKAPI_CALL

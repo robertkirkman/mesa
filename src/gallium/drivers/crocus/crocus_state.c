@@ -1984,9 +1984,9 @@ get_line_width(const struct pipe_rasterizer_state *state)
        * "Grid Intersection Quantization" rules as specified by the
        * "Zero-Width (Cosmetic) Line Rasterization" section of the docs.
        */
-      line_width = 0.0f;
+      /* hack around this for gfx4/5 fps counters in hud. */
+      line_width = GFX_VER < 6 ? 1.5f : 0.0f;
    }
-
    return line_width;
 }
 
@@ -2745,6 +2745,10 @@ crocus_create_sampler_view(struct pipe_context *ctx,
    if (tmpl->target != PIPE_BUFFER) {
       isv->view.base_level = tmpl->u.tex.first_level;
       isv->view.levels = tmpl->u.tex.last_level - tmpl->u.tex.first_level + 1;
+
+      /* Hardware older than skylake ignores this value */
+      assert(tex->target != PIPE_TEXTURE_3D || !tmpl->u.tex.first_layer);
+
       // XXX: do I need to port f9fd0cf4790cb2a530e75d1a2206dbb9d8af7cb2?
       isv->view.base_array_layer = tmpl->u.tex.first_layer;
       isv->view.array_len =
@@ -5967,7 +5971,7 @@ crocus_upload_dirty_render_state(struct crocus_context *ice,
          float vp_ymin = viewport_extent(state, 1, -1.0f);
          float vp_ymax = viewport_extent(state, 1,  1.0f);
 #endif
-         intel_calculate_guardband_size(cso_fb->width, cso_fb->height,
+         intel_calculate_guardband_size(0, cso_fb->width, 0, cso_fb->height,
                                         state->scale[0], state->scale[1],
                                         state->translate[0], state->translate[1],
                                         &gb_xmin, &gb_xmax, &gb_ymin, &gb_ymax);
@@ -6437,7 +6441,7 @@ crocus_upload_dirty_render_state(struct crocus_context *ice,
           * incorrect for subspans where some of the pixels are unlit.  We believe
           * the bit just didn't take effect in previous generations.
           */
-         ps.VectorMaskEnable = GFX_VER >= 8;
+         ps.VectorMaskEnable = GFX_VER >= 8 && wm_prog_data->uses_vmask;
 
          ps._8PixelDispatchEnable = wm_prog_data->dispatch_8;
          ps._16PixelDispatchEnable = wm_prog_data->dispatch_16;

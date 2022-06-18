@@ -120,7 +120,7 @@ static struct pipe_resource *noop_resource_create(struct pipe_screen *screen,
       FREE(nresource);
       return NULL;
    }
-   threaded_resource_init(&nresource->b.b, false, 0);
+   threaded_resource_init(&nresource->b.b, false);
    return &nresource->b.b;
 }
 
@@ -616,6 +616,14 @@ static bool noop_check_resource_capability(struct pipe_screen *screen,
    return true;
 }
 
+static void noop_create_fence_win32(struct pipe_screen *screen,
+                                    struct pipe_fence_handle **fence,
+                                    void *handle,
+                                    enum pipe_fd_type type)
+{
+   screen->create_fence_win32(screen, fence, handle, type);
+}
+
 static void noop_set_max_shader_compiler_threads(struct pipe_screen *screen,
                                                  unsigned max_threads)
 {
@@ -662,6 +670,22 @@ static void noop_get_device_uuid(struct pipe_screen *screen, char *uuid)
    struct pipe_screen *oscreen = noop_screen->oscreen;
 
    oscreen->get_device_uuid(oscreen, uuid);
+}
+
+static void noop_get_device_luid(struct pipe_screen *screen, char *luid)
+{
+   struct noop_pipe_screen *noop_screen = (struct noop_pipe_screen*)screen;
+   struct pipe_screen *oscreen = noop_screen->oscreen;
+
+   oscreen->get_device_luid(oscreen, luid);
+}
+
+static uint32_t noop_get_device_node_mask(struct pipe_screen *screen)
+{
+   struct noop_pipe_screen *noop_screen = (struct noop_pipe_screen*)screen;
+   struct pipe_screen *oscreen = noop_screen->oscreen;
+
+   return oscreen->get_device_node_mask(oscreen);
 }
 
 static int noop_get_sparse_texture_virtual_page_size(struct pipe_screen *screen,
@@ -756,6 +780,8 @@ struct pipe_screen *noop_screen_create(struct pipe_screen *oscreen)
    screen->get_disk_shader_cache = noop_get_disk_shader_cache;
    screen->get_compiler_options = noop_get_compiler_options;
    screen->finalize_nir = noop_finalize_nir;
+   if (screen->create_fence_win32)
+      screen->create_fence_win32 = noop_create_fence_win32;
    screen->check_resource_capability = noop_check_resource_capability;
    screen->set_max_shader_compiler_threads = noop_set_max_shader_compiler_threads;
    screen->is_parallel_shader_compilation_finished = noop_is_parallel_shader_compilation_finished;
@@ -763,6 +789,8 @@ struct pipe_screen *noop_screen_create(struct pipe_screen *oscreen)
    screen->get_dmabuf_modifier_planes = noop_get_dmabuf_modifier_planes;
    screen->get_driver_uuid = noop_get_driver_uuid;
    screen->get_device_uuid = noop_get_device_uuid;
+   screen->get_device_luid = noop_get_device_luid;
+   screen->get_device_node_mask = noop_get_device_node_mask;
    screen->query_dmabuf_modifiers = noop_query_dmabuf_modifiers;
    screen->resource_create_with_modifiers = noop_resource_create_with_modifiers;
    screen->create_vertex_state = noop_create_vertex_state;

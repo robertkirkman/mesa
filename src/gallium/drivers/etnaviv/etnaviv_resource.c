@@ -85,8 +85,7 @@ etna_screen_resource_alloc_ts(struct pipe_screen *pscreen,
 {
    struct etna_screen *screen = etna_screen(pscreen);
    size_t rt_ts_size, ts_layer_stride;
-   size_t ts_bits_per_tile, bytes_per_tile;
-   uint8_t ts_mode = TS_MODE_128B; /* only used by halti5 */
+   uint8_t ts_mode = TS_MODE_128B;
    int8_t ts_compress_fmt;
 
    assert(!rsc->ts_bo);
@@ -98,22 +97,16 @@ etna_screen_resource_alloc_ts(struct pipe_screen *pscreen,
    ts_compress_fmt = (screen->specs.v4_compression || rsc->base.nr_samples > 1) ?
                       translate_ts_format(rsc->base.format) : -1;
 
-   if (screen->specs.halti >= 5) {
-      /* enable 256B ts mode with compression, as it improves performance
-       * the size of the resource might also determine if we want to use it or not
-       */
-      if (ts_compress_fmt >= 0)
+   /* enable 256B ts mode with compression, as it improves performance
+    * the size of the resource might also determine if we want to use it or not
+    */
+   if (VIV_FEATURE(screen, chipMinorFeatures6, CACHE128B256BPERLINE) &&
+       ts_compress_fmt >= 0)
          ts_mode = TS_MODE_256B;
 
-      ts_bits_per_tile = 4;
-      bytes_per_tile = ts_mode == TS_MODE_256B ? 256 : 128;
-   } else {
-      ts_bits_per_tile = screen->specs.bits_per_tile;
-      bytes_per_tile = 64;
-   }
-
    ts_layer_stride = align(DIV_ROUND_UP(rsc->levels[0].layer_stride,
-                                        bytes_per_tile * 8 / ts_bits_per_tile),
+                                        etna_screen_get_tile_size(screen, ts_mode) *
+                                        8 / screen->specs.bits_per_tile),
                            0x100 * screen->specs.pixel_pipes);
    rt_ts_size = ts_layer_stride * rsc->base.array_size;
    if (rt_ts_size == 0)
@@ -348,7 +341,8 @@ etna_resource_create(struct pipe_screen *pscreen,
          layout |= ETNA_LAYOUT_BIT_MULTI;
       if (screen->specs.can_supertile)
          layout |= ETNA_LAYOUT_BIT_SUPER;
-   } else if (VIV_FEATURE(screen, chipMinorFeatures2, SUPERTILED_TEXTURE) &&
+   } else if (screen->specs.can_supertile &&
+              VIV_FEATURE(screen, chipMinorFeatures2, SUPERTILED_TEXTURE) &&
               etna_resource_hw_tileable(screen->specs.use_blt, templat)) {
       layout |= ETNA_LAYOUT_BIT_SUPER;
    }

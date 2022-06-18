@@ -67,7 +67,7 @@ struct gl_buffer_object;
 #define PIPE_MAX_SHADER_OUTPUTS   80 /* 32 GENERIC + 32 PATCH + 16 others */
 #define PIPE_MAX_SHADER_SAMPLER_VIEWS 128
 #define PIPE_MAX_SHADER_BUFFERS   32
-#define PIPE_MAX_SHADER_IMAGES    32
+#define PIPE_MAX_SHADER_IMAGES    64
 #define PIPE_MAX_TEXTURE_LEVELS   16
 #define PIPE_MAX_SO_BUFFERS        4
 #define PIPE_MAX_SO_OUTPUTS       64
@@ -845,7 +845,8 @@ struct pipe_draw_info
    bool take_index_buffer_ownership:1; /**< callee inherits caller's refcount
          (no need to reference indexbuf, but still needs to unreference it) */
    bool index_bias_varies:1;   /**< true if index_bias varies between draws */
-   uint8_t _pad:2;
+   bool was_line_loop:1; /**< true if pipe_prim_type was LINE_LOOP before translation */
+   uint8_t _pad:1;
 
    unsigned start_instance; /**< first instance id */
    unsigned instance_count; /**< number of instances */
@@ -997,37 +998,6 @@ struct pipe_compute_state
    unsigned req_local_mem; /**< Required size of the LOCAL resource. */
    unsigned req_private_mem; /**< Required size of the PRIVATE resource. */
    unsigned req_input_mem; /**< Required size of the INPUT resource. */
-};
-
-/**
- * Structure that contains a callback for debug messages from the driver back
- * to the gallium frontend.
- */
-struct pipe_debug_callback
-{
-   /**
-    * When set to \c true, the callback may be called asynchronously from a
-    * driver-created thread.
-    */
-   bool async;
-
-   /**
-    * Callback for the driver to report debug/performance/etc information back
-    * to the gallium frontend.
-    *
-    * \param data       user-supplied data pointer
-    * \param id         message type identifier, if pointed value is 0, then a
-    *                   new id is assigned
-    * \param type       PIPE_DEBUG_TYPE_*
-    * \param format     printf-style format string
-    * \param args       args for format string
-    */
-   void (*debug_message)(void *data,
-                         unsigned *id,
-                         enum pipe_debug_type type,
-                         const char *fmt,
-                         va_list args);
-   void *data;
 };
 
 /**

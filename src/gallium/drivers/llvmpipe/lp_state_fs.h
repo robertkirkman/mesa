@@ -30,6 +30,7 @@
 #define LP_STATE_FS_H_
 
 
+#include "util/list.h"
 #include "pipe/p_compiler.h"
 #include "pipe/p_state.h"
 #include "tgsi/tgsi_scan.h" /* for tgsi_shader_info */
@@ -145,14 +146,14 @@ static inline struct lp_image_static_state *
 lp_fs_variant_key_images(struct lp_fragment_shader_variant_key *key)
 {
    return (struct lp_image_static_state *)
-      &(lp_fs_variant_key_samplers(key)[key->nr_samplers]);
+      &(lp_fs_variant_key_samplers(key)[MAX2(key->nr_samplers, key->nr_sampler_views)]);
 }
 
 /** doubly-linked list item */
 struct lp_fs_variant_list_item
 {
+   struct list_head list;
    struct lp_fragment_shader_variant *base;
-   struct lp_fs_variant_list_item *next, *prev;
 };
 
 
@@ -174,9 +175,9 @@ struct lp_fragment_shader_variant
    LLVMTypeRef jit_thread_data_ptr_type;
    LLVMTypeRef jit_linear_context_ptr_type;
 
-   LLVMValueRef function[2];
+   LLVMValueRef function[2]; // [RAST_WHOLE], [RAST_EDGE_TEST]
 
-   lp_jit_frag_func jit_function[2];
+   lp_jit_frag_func jit_function[2]; // [RAST_WHOLE], [RAST_EDGE_TEST]
 
    lp_jit_linear_func jit_linear;
    lp_jit_linear_func jit_linear_blit;
@@ -211,12 +212,8 @@ struct lp_fragment_shader
    struct pipe_reference reference;
    struct lp_tgsi_info info;
 
-   /*
-    * Analysis results
-    */
-
+   /* Analysis results */
    enum lp_fs_kind kind;
-
 
    struct lp_fs_variant_list_item variants;
 
@@ -233,6 +230,8 @@ struct lp_fragment_shader
 };
 
 
+void
+llvmpipe_fs_analyse_nir(struct lp_fragment_shader *shader);
 void
 llvmpipe_fs_analyse(struct lp_fragment_shader *shader,
                     const struct tgsi_token *tokens);

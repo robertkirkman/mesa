@@ -105,6 +105,9 @@ v3d_create_rasterizer_state(struct pipe_context *pctx,
         v3dx_pack(&so->depth_offset, DEPTH_OFFSET, depth) {
                 depth.depth_offset_factor = cso->offset_scale;
                 depth.depth_offset_units = cso->offset_units;
+#if V3D_VERSION >= 41
+                depth.limit = cso->offset_clamp;
+#endif
         }
 
         /* The HW treats polygon offset units based on a Z24 buffer, so we
@@ -113,6 +116,9 @@ v3d_create_rasterizer_state(struct pipe_context *pctx,
         v3dx_pack(&so->depth_offset_z16, DEPTH_OFFSET, depth) {
                 depth.depth_offset_factor = cso->offset_scale;
                 depth.depth_offset_units = cso->offset_units * 256.0;
+#if V3D_VERSION >= 41
+                depth.limit = cso->offset_clamp;
+#endif
         }
 
         return so;
@@ -579,8 +585,12 @@ v3d_upload_sampler_state_variant(void *map,
                                 sampler.maximum_anisotropy = 1;
                 }
 
-                if (variant == V3D_SAMPLER_STATE_BORDER_0) {
+                if (variant == V3D_SAMPLER_STATE_BORDER_0000) {
                         sampler.border_color_mode = V3D_BORDER_COLOR_0000;
+                } else if (variant == V3D_SAMPLER_STATE_BORDER_0001) {
+                        sampler.border_color_mode = V3D_BORDER_COLOR_0001;
+                } else if (variant == V3D_SAMPLER_STATE_BORDER_1111) {
+                        sampler.border_color_mode = V3D_BORDER_COLOR_1111;
                 } else {
                         sampler.border_color_mode = V3D_BORDER_COLOR_FOLLOWS;
 
@@ -723,16 +733,37 @@ v3d_create_sampler_state(struct pipe_context *pctx,
         enum V3DX(Wrap_Mode) wrap_t = translate_wrap(cso->wrap_t);
         enum V3DX(Wrap_Mode) wrap_r = translate_wrap(cso->wrap_r);
 
+#if V3D_VERSION >= 40
         bool uses_border_color = (wrap_s == V3D_WRAP_MODE_BORDER ||
                                   wrap_t == V3D_WRAP_MODE_BORDER ||
                                   wrap_r == V3D_WRAP_MODE_BORDER);
-        so->border_color_variants = (uses_border_color &&
-                                     (cso->border_color.ui[0] != 0 ||
-                                      cso->border_color.ui[1] != 0 ||
-                                      cso->border_color.ui[2] != 0 ||
-                                      cso->border_color.ui[3] != 0));
 
-#if V3D_VERSION >= 40
+        so->border_color_variants = false;
+
+        /* This is the variant with the default hardware settings */
+        enum v3d_sampler_state_variant border_variant = V3D_SAMPLER_STATE_BORDER_0000;
+
+        if (uses_border_color) {
+                if (cso->border_color.ui[0] == 0 &&
+                    cso->border_color.ui[1] == 0 &&
+                    cso->border_color.ui[2] == 0 &&
+                    cso->border_color.ui[3] == 0) {
+                        border_variant = V3D_SAMPLER_STATE_BORDER_0000;
+                } else if (cso->border_color.ui[0] == 0 &&
+                           cso->border_color.ui[1] == 0 &&
+                           cso->border_color.ui[2] == 0 &&
+                           cso->border_color.ui[3] == 0x3F800000) {
+                        border_variant = V3D_SAMPLER_STATE_BORDER_0001;
+                } else if (cso->border_color.ui[0] == 0x3F800000 &&
+                           cso->border_color.ui[1] == 0x3F800000 &&
+                           cso->border_color.ui[2] == 0x3F800000 &&
+                           cso->border_color.ui[3] == 0x3F800000) {
+                        border_variant = V3D_SAMPLER_STATE_BORDER_1111;
+                } else {
+                        so->border_color_variants = true;
+                }
+        }
+
         void *map;
         int sampler_align = so->border_color_variants ? 32 : 8;
         int sampler_size = align(cl_packet_length(SAMPLER_STATE), sampler_align);
@@ -748,7 +779,8 @@ v3d_create_sampler_state(struct pipe_context *pctx,
                 so->sampler_state_offset[i] =
                         so->sampler_state_offset[0] + i * sampler_size;
                 v3d_upload_sampler_state_variant(map + i * sampler_size,
-                                                 cso, i);
+                                                 cso,
+                                                 so->border_color_variants ? i : border_variant);
         }
 
 #else /* V3D_VERSION < 40 */
@@ -923,10 +955,13 @@ v3dX(create_texture_shader_state_bo)(struct v3d_context *v3d,
                                      struct v3d_sampler_view *so)
 {
         struct pipe_resource *prsc = so->texture;
+        struct v3d_resource *rsc = v3d_resource(prsc);
         const struct pipe_sampler_view *cso = &so->base;
         struct v3d_screen *screen = v3d->screen;
 
         void *map;
+
+        assert(so->serial_id != rsc->serial_id);
 
 #if V3D_VERSION >= 40
         v3d_bo_unreference(&so->bo);
@@ -1010,6 +1045,8 @@ v3dX(create_texture_shader_state_bo)(struct v3d_context *v3d,
                                                               cso->format);
                 }
         };
+
+        so->serial_id = rsc->serial_id;
 }
 
 static struct pipe_sampler_view *
@@ -1042,8 +1079,8 @@ v3d_create_sampler_view(struct pipe_context *pctx, struct pipe_resource *prsc,
                 v3d_get_format_swizzle(&screen->devinfo, so->base.format);
         util_format_compose_swizzles(fmt_swizzle, view_swizzle, so->swizzle);
 
+        pipe_reference_init(&so->base.reference, 1);
         so->base.texture = prsc;
-        so->base.reference.count = 1;
         so->base.context = pctx;
 
         if (rsc->separate_stencil &&
@@ -1204,6 +1241,18 @@ v3d_set_sampler_views(struct pipe_context *pctx,
                         stage_tex->textures[i] = views[i];
                 } else {
                         pipe_sampler_view_reference(&stage_tex->textures[i], views[i]);
+                }
+                /* If our sampler serial doesn't match our texture serial it
+                 * means the texture has been updated with a new BO, in which
+                 * case we need to update the sampler state to point to the
+                 * new BO as well
+                 */
+                if (stage_tex->textures[i]) {
+                        struct v3d_sampler_view *so =
+                                v3d_sampler_view(stage_tex->textures[i]);
+                        struct v3d_resource *rsc = v3d_resource(so->texture);
+                        if (so->serial_id != rsc->serial_id)
+                                v3d_create_texture_shader_state_bo(v3d, so);
                 }
         }
 

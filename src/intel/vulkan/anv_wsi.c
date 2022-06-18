@@ -71,6 +71,22 @@ anv_finish_wsi(struct anv_physical_device *physical_device)
                      &physical_device->instance->vk.alloc);
 }
 
+VkResult anv_AcquireNextImage2KHR(
+   VkDevice _device,
+   const VkAcquireNextImageInfoKHR *pAcquireInfo,
+   uint32_t *pImageIndex)
+{
+   VK_FROM_HANDLE(anv_device, device, _device);
+
+   VkResult result =
+      wsi_common_acquire_next_image2(&device->physical->wsi_device,
+                                     _device, pAcquireInfo, pImageIndex);
+   if (result == VK_SUCCESS)
+      anv_measure_acquire(device);
+
+   return result;
+}
+
 VkResult anv_QueuePresentKHR(
     VkQueue                                  _queue,
     const VkPresentInfoKHR*                  pPresentInfo)
@@ -81,7 +97,7 @@ VkResult anv_QueuePresentKHR(
 
    if (device->debug_frame_desc) {
       device->debug_frame_desc->frame_id++;
-      if (!device->info.has_llc) {
+      if (device->physical->memory.need_clflush) {
          intel_clflush_range(device->debug_frame_desc,
                            sizeof(*device->debug_frame_desc));
       }
@@ -95,17 +111,6 @@ VkResult anv_QueuePresentKHR(
                                      anv_device_to_handle(queue->device),
                                      _queue, 0,
                                      pPresentInfo);
-
-   for (uint32_t i = 0; i < pPresentInfo->waitSemaphoreCount; i++) {
-      VK_FROM_HANDLE(vk_semaphore, semaphore, pPresentInfo->pWaitSemaphores[i]);
-      /* From the Vulkan 1.0.53 spec:
-       *
-       *    "If the import is temporary, the implementation must restore the
-       *    semaphore to its prior permanent state after submitting the next
-       *    semaphore wait operation."
-       */
-      vk_semaphore_reset_temporary(&queue->device->vk, semaphore);
-   }
 
    u_trace_context_process(&device->ds.trace_context, true);
 

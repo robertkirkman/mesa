@@ -45,6 +45,7 @@
 #include "lima_resource.h"
 #include "lima_bo.h"
 #include "lima_util.h"
+#include "lima_blit.h"
 
 #include "pan_minmax_cache.h"
 #include "pan_tiling.h"
@@ -657,11 +658,10 @@ lima_transfer_map(struct pipe_context *pctx,
    if (!lima_bo_map(bo))
       return NULL;
 
-   trans = slab_alloc(&ctx->transfer_pool);
+   trans = slab_zalloc(&ctx->transfer_pool);
    if (!trans)
       return NULL;
 
-   memset(trans, 0, sizeof(*trans));
    ptrans = &trans->base;
 
    pipe_resource_reference(&ptrans->resource, pres);
@@ -678,6 +678,10 @@ lima_transfer_map(struct pipe_context *pctx,
       trans->staging = malloc(ptrans->stride * ptrans->box.height * ptrans->box.depth);
 
       if (usage & PIPE_MAP_READ) {
+         unsigned line_stride = res->levels[level].stride;
+         unsigned row_height = util_format_is_compressed(pres->format) ? 4 : 16;
+         unsigned row_stride = line_stride * row_height;
+
          unsigned i;
          for (i = 0; i < ptrans->box.depth; i++)
             panfrost_load_tiled_image(
@@ -686,7 +690,7 @@ lima_transfer_map(struct pipe_context *pctx,
                ptrans->box.x, ptrans->box.y,
                ptrans->box.width, ptrans->box.height,
                ptrans->stride,
-               res->levels[level].stride,
+               row_stride,
                pres->format);
       }
 
@@ -784,13 +788,17 @@ lima_transfer_unmap_inner(struct lima_context *ctx,
             /* Update texture descriptor */
             ctx->dirty |= LIMA_CONTEXT_DIRTY_TEXTURES;
          } else {
+            unsigned line_stride = res->levels[ptrans->level].stride;
+            unsigned row_height = util_format_is_compressed(pres->format) ? 4 : 16;
+            unsigned row_stride = line_stride * row_height;
+
             for (i = 0; i < trans->base.box.depth; i++)
                panfrost_store_tiled_image(
                   bo->map + res->levels[trans->base.level].offset + (i + trans->base.box.z) * res->levels[trans->base.level].layer_stride,
                   trans->staging + i * ptrans->stride * ptrans->box.height,
                   ptrans->box.x, ptrans->box.y,
                   ptrans->box.width, ptrans->box.height,
-                  res->levels[ptrans->level].stride,
+                  row_stride,
                   ptrans->stride,
                   pres->format);
          }
@@ -847,6 +855,10 @@ lima_blit(struct pipe_context *pctx, const struct pipe_blit_info *blit_info)
 {
    struct lima_context *ctx = lima_context(pctx);
    struct pipe_blit_info info = *blit_info;
+
+   if (lima_do_blit(pctx, blit_info)) {
+       return;
+   }
 
    if (util_try_blit_via_copy_region(pctx, &info, false)) {
       return; /* done */

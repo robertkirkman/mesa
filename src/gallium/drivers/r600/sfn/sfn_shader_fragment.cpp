@@ -35,8 +35,8 @@ FragmentShaderFromNir::FragmentShaderFromNir(const nir_shader& nir,
                                              r600_shader& sh,
                                              r600_pipe_shader_selector &sel,
                                              const r600_shader_key &key,
-                                             enum chip_class chip_class):
-   ShaderFromNirProcessor(PIPE_SHADER_FRAGMENT, sel, sh, nir.scratch_size, chip_class, 0),
+                                             enum amd_gfx_level gfx_level):
+   ShaderFromNirProcessor(PIPE_SHADER_FRAGMENT, sel, sh, nir.scratch_size, gfx_level, 0),
    m_max_color_exports(MAX2(key.ps.nr_cbufs,1)),
    m_max_counted_color_exports(0),
    m_two_sided_color(key.ps.color_two_side),
@@ -1060,12 +1060,6 @@ void FragmentShaderFromNir::do_finalize()
    sh_info().two_side = m_shaderio.two_sided();
    sh_info().nlds = m_shaderio.nlds();
 
-   sh_info().nr_ps_max_color_exports = m_max_counted_color_exports;
-
-   if (sh_info().fs_write_all) {
-      sh_info().nr_ps_max_color_exports = m_max_color_exports;
-   }
-
    if (!m_last_pixel_export) {
       GPRVector v(0, {7,7,7,7});
       m_last_pixel_export = new ExportInstruction(0, v, ExportInstruction::et_pixel);
@@ -1075,9 +1069,6 @@ void FragmentShaderFromNir::do_finalize()
    }
 
    m_last_pixel_export->set_last();
-
-   if (sh_info().fs_write_all)
-      sh_info().nr_ps_max_color_exports = 8;
 }
 
 }

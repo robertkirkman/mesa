@@ -63,6 +63,16 @@ static const std::array<aco_compiler_statistic_info, aco::num_statistics> statis
 const unsigned aco_num_statistics = aco::num_statistics;
 const aco_compiler_statistic_info* aco_statistic_infos = statistic_infos.data();
 
+uint64_t
+aco_get_codegen_flags()
+{
+   aco::init();
+   /* Exclude flags which don't affect code generation. */
+   uint64_t exclude = aco::DEBUG_VALIDATE_IR | aco::DEBUG_VALIDATE_RA | aco::DEBUG_PERFWARN |
+                      aco::DEBUG_PERF_INFO | aco::DEBUG_LIVE_INFO;
+   return aco::debug_flags & ~exclude;
+}
+
 static void
 validate(aco::Program* program)
 {
@@ -104,8 +114,8 @@ get_disasm_string(aco::Program* program, std::vector<uint32_t>& code,
 }
 
 void
-aco_compile_shader(const struct radv_nir_compiler_options* options,
-                   const struct radv_shader_info* info,
+aco_compile_shader(const struct aco_compiler_options* options,
+                   const struct aco_shader_info* info,
                    unsigned shader_count, struct nir_shader* const* shaders,
                    const struct radv_shader_args *args,
                    struct radv_shader_binary** binary)
@@ -212,7 +222,7 @@ aco_compile_shader(const struct radv_nir_compiler_options* options,
    aco::insert_wait_states(program.get());
    aco::insert_NOPs(program.get());
 
-   if (program->chip_class >= GFX10)
+   if (program->gfx_level >= GFX10)
       aco::form_hard_clauses(program.get());
 
    if (program->collect_statistics || (aco::debug_flags & aco::DEBUG_PERF_INFO))
@@ -279,9 +289,9 @@ aco_compile_shader(const struct radv_nir_compiler_options* options,
 }
 
 void
-aco_compile_vs_prolog(const struct radv_nir_compiler_options* options,
-                      const struct radv_shader_info* info,
-                      const struct radv_vs_prolog_key* key,
+aco_compile_vs_prolog(const struct aco_compiler_options* options,
+                      const struct aco_shader_info* info,
+                      const struct aco_vs_prolog_key* key,
                       const struct radv_shader_args* args,
                       struct radv_prolog_binary** binary)
 {

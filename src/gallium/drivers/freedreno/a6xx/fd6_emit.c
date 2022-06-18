@@ -132,14 +132,14 @@ setup_border_colors(struct fd_texture_stateobj *tex,
           * stencil border color value in bc->ui[0] but according
           * to desc->swizzle and desc->channel, the .x/.w component
           * is NONE and the stencil value is in the y component.
-          * Meanwhile the hardware wants this in the .w component
-          * for x24s8 and the .x component for x32_s8x24.
+          * Meanwhile the hardware wants this in the .x component
+          * for x24s8 and x32_s8x24.
           */
          if ((format == PIPE_FORMAT_X24S8_UINT) ||
              (format == PIPE_FORMAT_X32_S8X24_UINT)) {
             if (j == 0) {
                c = 1;
-               cd = (format == PIPE_FORMAT_X32_S8X24_UINT) ? 0 : 3;
+               cd = 0;
             } else {
                continue;
             }
@@ -567,7 +567,7 @@ build_vbo_state(struct fd6_emit *emit) assert_dt
          OUT_RING(ring, 0);
       } else {
          uint32_t off = vb->buffer_offset;
-         uint32_t size = fd_bo_size(rsc->bo) - off;
+         uint32_t size = vb->buffer.resource->width0 - off;
 
          OUT_RELOC(ring, rsc->bo, off, 0, 0);
          OUT_RING(ring, size);       /* VFD_FETCH[j].SIZE */
@@ -586,7 +586,7 @@ compute_ztest_mode(struct fd6_emit *emit, bool lrz_valid) assert_dt
    struct fd6_zsa_stateobj *zsa = fd6_zsa_stateobj(ctx->zsa);
    const struct ir3_shader_variant *fs = emit->fs;
 
-   if (fs->shader->nir->info.fs.early_fragment_tests)
+   if (fs->fs.early_fragment_tests)
       return A6XX_EARLY_Z;
 
    if (fs->no_earlyz || fs->writes_pos || !zsa->base.depth_enabled ||
@@ -856,7 +856,7 @@ fd6_emit_streamout(struct fd_ringbuffer *ring, struct fd6_emit *emit) assert_dt
 {
    struct fd_context *ctx = emit->ctx;
    const struct fd6_program_state *prog = fd6_emit_get_prog(emit);
-   struct ir3_stream_output_info *info = prog->stream_output;
+   const struct ir3_stream_output_info *info = prog->stream_output;
    struct fd_streamout_stateobj *so = &ctx->streamout;
 
    emit->streamout_mask = 0;

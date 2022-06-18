@@ -78,7 +78,7 @@ traces:
   - path: glmark2/bump:bump-render=height.trace
     expectations:
       - device: gl-panfrost-t860
-        checksum: 2efca26d7eb85d826276b30f3265153b
+        checksum: 73cb74446b0aefcfcf7b41d80eaed016
   - path: glmark2/bump:bump-render=high-poly.trace
     expectations:
       - device: gl-panfrost-t860
@@ -158,7 +158,7 @@ traces:
   - path: glmark2/refract.trace
     expectations:
       - device: gl-panfrost-t860
-        checksum: 6557deca1a47a7a77723658ea579ac63
+        checksum: 427c2ec78338288526a98cedae291703
   - path: glmark2/shading:shading=blinn-phong-inf.trace
     expectations:
       - device: gl-panfrost-t860
@@ -234,7 +234,7 @@ traces:
     expectations:
       # Missing the coins and the texture on the "Nev" of the level.
       - device: gl-panfrost-t860
-        checksum: 33235a5466d402348adbf3196cf3cf6b
+        checksum: 12c8f3af1ed07b939b5e1de8067e5edd
   - path: paraview/pv-manyspheres.trace
     expectations:
       - device: gl-panfrost-t860
@@ -258,3 +258,49 @@ traces:
   #   expectations:
   #     - device: gl-panfrost-t860
   #       checksum: bbe74b2171d62fc6738086740e1aa0d8
+  # crashes
+  #- path: ror/ror-default.trace
+  #  expectations:
+      #- device: gl-panfrost-t860
+      #  checksum: 0
+  - path: nheko/nheko-colors.trace
+    expectations:
+      - device: gl-panfrost-t760
+        checksum: 03251159007917a90247d2aa2cf5f68b
+      - device: gl-panfrost-t860
+        checksum: 03251159007917a90247d2aa2cf5f68b
+  #- path: blender/blender-demo-cube_diorama.trace
+  #  expectations:
+      # needs GL 4.5
+      #- device: gl-panfrost-t760
+      #- device: gl-panfrost-t860
+  #- path: blender/blender-demo-ellie_pose.trace
+  #  expectations:
+      # needs GL 4.5
+      #- device: gl-panfrost-t760
+      #- device: gl-panfrost-t860
+  #- path: freedoom/freedoom-phase2-gl-high.trace
+  #  expectations:
+      # needs GL 4.6
+      #- device: gl-panfrost-t760
+      #- device: gl-panfrost-t860
+  #- path: unvanquished/unvanquished-lowest.trace
+  #  expectations:
+      # error: GLSL 4.60 is not supported
+      #- device: gl-panfrost-t760
+      #  checksum: 0
+      #- device: gl-panfrost-t860
+      #  checksum: 0
+  #- path: unvanquished/unvanquished-ultra.trace
+  #  expectations:
+      # error: GLSL 4.60 is not supported
+      #- device: gl-panfrost-t760
+      #  checksum: 0
+      #- device: gl-panfrost-t860
+      #  checksum: 0
+  - path: warzone2100/warzone2100-default.trace
+    expectations:
+      - device: gl-panfrost-t760
+        checksum: 4bc5eb01ffe1bf5ba4953ce17f09375f
+      - device: gl-panfrost-t860
+        checksum: e4e92aa7bda9d68a12770d94b3e98f5a

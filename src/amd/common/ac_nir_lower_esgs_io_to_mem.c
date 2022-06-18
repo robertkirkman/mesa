@@ -42,7 +42,10 @@
 
 typedef struct {
    /* Which hardware generation we're dealing with */
-   enum chip_class chip_class;
+   enum amd_gfx_level gfx_level;
+
+   /* I/O semantic -> real location used by lowering. */
+   ac_nir_map_io_driver_location map_io;
 
    /* Number of ES outputs for which memory should be reserved.
     * When compacted, this should be the number of linked ES outputs.
@@ -125,9 +128,9 @@ lower_es_output_store(nir_builder *b,
    unsigned write_mask = nir_intrinsic_write_mask(intrin);
 
    b->cursor = nir_before_instr(instr);
-   nir_ssa_def *io_off = nir_build_calc_io_offset(b, intrin, nir_imm_int(b, 16u), 4u);
+   nir_ssa_def *io_off = ac_nir_calc_io_offset(b, intrin, nir_imm_int(b, 16u), 4u, st->map_io);
 
-   if (st->chip_class <= GFX8) {
+   if (st->gfx_level <= GFX8) {
       /* GFX6-8: ES is a separate HW stage, data is passed from ES to GS in VRAM. */
       nir_ssa_def *ring = nir_build_load_ring_esgs_amd(b);
       nir_ssa_def *es2gs_off = nir_build_load_ring_es2gs_offset_amd(b);
@@ -193,12 +196,12 @@ gs_per_vertex_input_offset(nir_builder *b,
                            nir_intrinsic_instr *instr)
 {
    nir_src *vertex_src = nir_get_io_arrayed_index_src(instr);
-   nir_ssa_def *vertex_offset = st->chip_class >= GFX9
+   nir_ssa_def *vertex_offset = st->gfx_level >= GFX9
                                 ? gs_per_vertex_input_vertex_offset_gfx9(b, vertex_src)
                                 : gs_per_vertex_input_vertex_offset_gfx6(b, vertex_src);
 
-   unsigned base_stride = st->chip_class >= GFX9 ? 1 : 64 /* Wave size on GFX6-8 */;
-   nir_ssa_def *io_off = nir_build_calc_io_offset(b, instr, nir_imm_int(b, base_stride * 4u), base_stride);
+   unsigned base_stride = st->gfx_level >= GFX9 ? 1 : 64 /* Wave size on GFX6-8 */;
+   nir_ssa_def *io_off = ac_nir_calc_io_offset(b, instr, nir_imm_int(b, base_stride * 4u), base_stride, st->map_io);
    nir_ssa_def *off = nir_iadd(b, io_off, vertex_offset);
    return nir_imul_imm(b, off, 4u);
 }
@@ -212,7 +215,7 @@ lower_gs_per_vertex_input_load(nir_builder *b,
    nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
    nir_ssa_def *off = gs_per_vertex_input_offset(b, st, intrin);
 
-   if (st->chip_class >= GFX9)
+   if (st->gfx_level >= GFX9)
       return nir_build_load_shared(b, intrin->dest.ssa.num_components, intrin->dest.ssa.bit_size, off,
                                    .align_mul = 16u, .align_offset = (nir_intrinsic_component(intrin) * 4u) % 16u);
 
@@ -230,12 +233,14 @@ filter_load_per_vertex_input(const nir_instr *instr, UNUSED const void *state)
 
 void
 ac_nir_lower_es_outputs_to_mem(nir_shader *shader,
-                               enum chip_class chip_class,
+                               ac_nir_map_io_driver_location map,
+                               enum amd_gfx_level gfx_level,
                                unsigned num_reserved_es_outputs)
 {
    lower_esgs_io_state state = {
-      .chip_class = chip_class,
+      .gfx_level = gfx_level,
       .num_reserved_es_outputs = num_reserved_es_outputs,
+      .map_io = map,
    };
 
    nir_shader_instructions_pass(shader,
@@ -246,12 +251,14 @@ ac_nir_lower_es_outputs_to_mem(nir_shader *shader,
 
 void
 ac_nir_lower_gs_inputs_to_mem(nir_shader *shader,
-                              enum chip_class chip_class,
+                              ac_nir_map_io_driver_location map,
+                              enum amd_gfx_level gfx_level,
                               unsigned num_reserved_es_outputs)
 {
    lower_esgs_io_state state = {
-      .chip_class = chip_class,
+      .gfx_level = gfx_level,
       .num_reserved_es_outputs = num_reserved_es_outputs,
+      .map_io = map,
    };
 
    nir_shader_lower_instructions(shader,

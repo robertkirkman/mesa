@@ -893,6 +893,16 @@ struct gl_sampler_object
    struct util_dynarray Handles;
 };
 
+/**
+ * YUV color space that should be used to sample textures backed by YUV
+ * images.
+ */
+enum gl_texture_yuv_color_space
+{
+   GL_TEXTURE_YUV_COLOR_SPACE_REC601,
+   GL_TEXTURE_YUV_COLOR_SPACE_REC709,
+   GL_TEXTURE_YUV_COLOR_SPACE_REC2020,
+};
 
 /**
  * Texture object state.  Contains the array of mipmap images, border color,
@@ -1008,6 +1018,12 @@ struct gl_texture_object
     * views and surfaces instead of pt->format.
     */
    enum pipe_format surface_format;
+
+   /* If surface_based is true and surface_format is a YUV format, these
+    * settings should be used to convert from YUV to RGB.
+    */
+   enum gl_texture_yuv_color_space yuv_color_space;
+   bool yuv_full_range;
 
    /* When non-negative, samplers should use this level instead of the level
     * range specified by the GL state.
@@ -1787,6 +1803,15 @@ struct gl_selection
    GLboolean HitFlag;	/**< hit flag */
    GLfloat HitMinZ;	/**< minimum hit depth */
    GLfloat HitMaxZ;	/**< maximum hit depth */
+
+   /* HW GL_SELECT */
+   void *SaveBuffer;        /**< array holds multi stack data */
+   GLuint SaveBufferTail;   /**< offset to SaveBuffer's tail */
+   GLuint SavedStackNum;    /**< number of saved stacks */
+
+   GLboolean ResultUsed;    /**< whether any draw used result buffer */
+   GLuint ResultOffset;     /**< offset into result buffer */
+   struct gl_buffer_object *Result; /**< result buffer */
 };
 
 
@@ -3062,7 +3087,6 @@ struct gl_client_attrib_node
  * The VBO module implemented in src/vbo.
  */
 struct vbo_context {
-   struct gl_vertex_buffer_binding binding;
    struct gl_array_attributes current[VBO_ATTRIB_MAX];
 
    struct gl_vertex_array_object *VAO;
@@ -3247,6 +3271,11 @@ struct gl_context
     * display list).  Only valid functions between those two are set.
     */
    struct _glapi_table *BeginEnd;
+   /**
+    * Same as BeginEnd except vertex postion set functions. Used when
+    * HW GL_SELECT mode instead of BeginEnd.
+    */
+   struct _glapi_table *HWSelectModeBeginEnd;
    /**
     * Dispatch table for when a graphics reset has happened.
     */
@@ -3538,6 +3567,9 @@ struct gl_context
    GLboolean _NeedEyeCoords;
 
    GLuint TextureStateTimestamp; /**< detect changes to shared state */
+
+   GLboolean LastVertexStageDirty; /**< the last vertex stage has changed */
+   GLboolean PointSizeIsOne; /**< the glPointSize value is 1.0 */
 
    /** \name For debugging/development only */
    /*@{*/

@@ -45,6 +45,11 @@ bool EmitInstruction::emit(nir_instr* instr)
    return do_emit(instr);
 }
 
+bool EmitInstruction::use_legacy_math_rules(void)
+{
+   return m_proc.use_legacy_math_rules();
+}
+
 PValue EmitInstruction::from_nir(const nir_src& v, unsigned component, unsigned swizzled)
 {
    return m_proc.from_nir(v, component, swizzled);
@@ -124,7 +129,7 @@ PValue EmitInstruction::create_register_from_nir_src(const nir_src& src, unsigne
    return m_proc.create_register_from_nir_src(src, swizzle);
 }
 
-enum chip_class EmitInstruction::get_chip_class(void) const
+enum amd_gfx_level EmitInstruction::get_chip_class(void) const
 {
    return m_proc.get_chip_class();
 }

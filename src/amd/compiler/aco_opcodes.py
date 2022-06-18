@@ -90,8 +90,8 @@ class Format(Enum):
                  ('bool', 'dlc', 'false'),
                  ('bool', 'nv', 'false')]
       elif self == Format.DS:
-         return [('int16_t', 'offset0', '0'),
-                 ('int8_t', 'offset1', '0'),
+         return [('uint16_t', 'offset0', '0'),
+                 ('uint8_t', 'offset1', '0'),
                  ('bool', 'gds', 'false')]
       elif self == Format.MTBUF:
          return [('unsigned', 'dfmt', None),
@@ -126,7 +126,8 @@ class Format(Enum):
                  ('bool', 'slc', 'false'),
                  ('bool', 'tfe', 'false'),
                  ('bool', 'lwe', 'false'),
-                 ('bool', 'r128_a16', 'false', 'r128'),
+                 ('bool', 'r128', 'false'),
+                 ('bool', 'a16', 'false'),
                  ('bool', 'd16', 'false')]
          return [('unsigned', 'attribute', None),
                  ('unsigned', 'component', None)]
@@ -385,8 +386,8 @@ for (gfx6, gfx7, gfx8, gfx9, gfx10, name, cls) in default_class(SOP2, InstrClass
 SOPK = {
   # GFX6, GFX7, GFX8, GFX9, GFX10, name
    (0x00, 0x00, 0x00, 0x00, 0x00, "s_movk_i32"),
-   (  -1,   -1,   -1,   -1, 0x01, "s_version"), # GFX10+
-   (0x02, 0x02, 0x01, 0x01, 0x02, "s_cmovk_i32"), # GFX8_GFX9
+   (  -1,   -1,   -1,   -1, 0x01, "s_version"),
+   (0x02, 0x02, 0x01, 0x01, 0x02, "s_cmovk_i32"),
    (0x03, 0x03, 0x02, 0x02, 0x03, "s_cmpk_eq_i32"),
    (0x04, 0x04, 0x03, 0x03, 0x04, "s_cmpk_lg_i32"),
    (0x05, 0x05, 0x04, 0x04, 0x05, "s_cmpk_gt_i32"),
@@ -972,7 +973,7 @@ opcode("v_dot4_i32_i8", -1, 0x28, 0x16, Format.VOP3P, InstrClass.Valu32)
 opcode("v_dot4_u32_u8", -1, 0x29, 0x17, Format.VOP3P, InstrClass.Valu32)
 
 
-# VINTERP instructions: 
+# VINTERP instructions:
 VINTRP = {
    (0x00, "v_interp_p1_f32"),
    (0x01, "v_interp_p2_f32"),

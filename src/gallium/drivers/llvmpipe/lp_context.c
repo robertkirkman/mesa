@@ -1,9 +1,9 @@
 /**************************************************************************
- * 
+ *
  * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
  * Copyright 2008 VMware, Inc.  All rights reserved.
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
@@ -11,11 +11,11 @@
  * distribute, sub license, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice (including the
  * next paragraph) shall be included in all copies or substantial portions
  * of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
@@ -23,7 +23,7 @@
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- * 
+ *
  **************************************************************************/
 
 /* Author:
@@ -36,7 +36,7 @@
 #include "util/u_inlines.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
-#include "util/simple_list.h"
+#include "util/list.h"
 #include "util/u_upload_mgr.h"
 #include "lp_clear.h"
 #include "lp_context.h"
@@ -47,6 +47,7 @@
 #include "lp_query.h"
 #include "lp_setup.h"
 #include "lp_screen.h"
+#include "lp_fence.h"
 
 /* This is only safe if there's just one concurrent context */
 #ifdef EMBEDDED_DEVICE
@@ -118,6 +119,16 @@ do_flush( struct pipe_context *pipe,
    llvmpipe_flush(pipe, fence, __FUNCTION__);
 }
 
+static void
+llvmpipe_fence_server_sync(struct pipe_context *pipe,
+                           struct pipe_fence_handle *fence)
+{
+   struct lp_fence *f = (struct lp_fence *)fence;
+
+   if (!f->issued)
+      return;
+   lp_fence_wait(f);
+}
 
 static void
 llvmpipe_render_condition(struct pipe_context *pipe,
@@ -148,7 +159,7 @@ llvmpipe_render_condition_mem(struct pipe_context *pipe,
 static void
 llvmpipe_texture_barrier(struct pipe_context *pipe, unsigned flags)
 {
-   llvmpipe_flush(pipe, NULL, __FUNCTION__);
+   llvmpipe_finish(pipe, "barrier");
 }
 
 static void lp_draw_disk_cache_find_shader(void *cookie,
@@ -188,11 +199,11 @@ llvmpipe_create_context(struct pipe_screen *screen, void *priv,
 
    memset(llvmpipe, 0, sizeof *llvmpipe);
 
-   make_empty_list(&llvmpipe->fs_variants_list);
+   list_inithead(&llvmpipe->fs_variants_list.list);
 
-   make_empty_list(&llvmpipe->setup_variants_list);
+   list_inithead(&llvmpipe->setup_variants_list.list);
 
-   make_empty_list(&llvmpipe->cs_variants_list);
+   list_inithead(&llvmpipe->cs_variants_list.list);
 
    llvmpipe->pipe.screen = screen;
    llvmpipe->pipe.priv = priv;
@@ -207,6 +218,7 @@ llvmpipe_create_context(struct pipe_screen *screen, void *priv,
    llvmpipe->pipe.render_condition = llvmpipe_render_condition;
    llvmpipe->pipe.render_condition_mem = llvmpipe_render_condition_mem;
 
+   llvmpipe->pipe.fence_server_sync = llvmpipe_fence_server_sync;
    llvmpipe->pipe.get_device_reset_status = llvmpipe_get_device_reset_status;
    llvmpipe_init_blend_funcs(llvmpipe);
    llvmpipe_init_clip_funcs(llvmpipe);
@@ -276,7 +288,7 @@ llvmpipe_create_context(struct pipe_screen *screen, void *priv,
    draw_install_aapoint_stage(llvmpipe->draw, &llvmpipe->pipe);
    draw_install_pstipple_stage(llvmpipe->draw, &llvmpipe->pipe);
 
-   /* convert points and lines into triangles: 
+   /* convert points and lines into triangles:
     * (otherwise, draw points and lines natively)
     */
    draw_wide_point_sprites(llvmpipe->draw, FALSE);

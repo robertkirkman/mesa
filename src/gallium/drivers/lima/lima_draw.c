@@ -147,17 +147,6 @@ lima_update_job_wb(struct lima_context *ctx, unsigned buffers)
 }
 
 static void
-lima_damage_rect_union(struct pipe_scissor_state *rect,
-                       unsigned minx, unsigned maxx,
-                       unsigned miny, unsigned maxy)
-{
-   rect->minx = MIN2(rect->minx, minx);
-   rect->miny = MIN2(rect->miny, miny);
-   rect->maxx = MAX2(rect->maxx, maxx);
-   rect->maxy = MAX2(rect->maxy, maxy);
-}
-
-static void
 lima_clear(struct pipe_context *pctx, unsigned buffers, const struct pipe_scissor_state *scissor_state,
            const union pipe_color_union *color, double depth, unsigned stencil)
 {
@@ -1207,7 +1196,6 @@ lima_draw_vbo(struct pipe_context *pctx,
    if (job->draws > MAX_DRAWS_PER_JOB) {
       unsigned resolve = job->resolve;
       lima_do_job(job);
-      job = lima_job_get(ctx);
       /* Subsequent job will need to resolve the same buffers */
       lima_update_job_wb(ctx, resolve);
    }

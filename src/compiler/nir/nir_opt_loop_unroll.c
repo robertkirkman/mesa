@@ -946,6 +946,43 @@ process_loops(nir_shader *sh, nir_cf_node *cf_node, bool *has_nested_loop_out,
     */
    if (!progress && loop->control != nir_loop_control_dont_unroll) {
 
+      /* Remove the conditional break statements associated with all terminators
+       * that are associated with a fixed iteration count, except for the one
+       * associated with the limiting terminator--that one needs to stay, since
+       * it terminates the loop.
+       */
+      if (loop->info->limiting_terminator) {
+         list_for_each_entry_safe(nir_loop_terminator, t,
+                                  &loop->info->loop_terminator_list,
+                                  loop_terminator_link) {
+            if (t->exact_trip_count_unknown)
+               continue;
+
+            if (t != loop->info->limiting_terminator) {
+
+               /* Only delete the if-statement if the continue block is empty.
+                * We trust that nir_opt_if() does its job well enough to
+                * remove all instructions from the continue block when possible.
+                */
+               nir_block *first_continue_from_blk = t->continue_from_then ?
+                  nir_if_first_then_block(t->nif) :
+                  nir_if_first_else_block(t->nif);
+
+               if (!(nir_cf_node_is_last(&first_continue_from_blk->cf_node) &&
+                     exec_list_is_empty(&first_continue_from_blk->instr_list)))
+                  continue;
+
+               /* Now delete the if */
+               nir_cf_node_remove(&t->nif->cf_node);
+
+               /* Also remove it from the terminator list */
+               list_del(&t->loop_terminator_link);
+
+               progress = true;
+            }
+         }
+      }
+
       /* Check for the classic
        *
        *    do {
@@ -1053,10 +1090,12 @@ exit:
 
 static bool
 nir_opt_loop_unroll_impl(nir_function_impl *impl,
-                         nir_variable_mode indirect_mask)
+                         nir_variable_mode indirect_mask,
+                         bool force_unroll_sampler_indirect)
 {
    bool progress = false;
-   nir_metadata_require(impl, nir_metadata_loop_analysis, indirect_mask);
+   nir_metadata_require(impl, nir_metadata_loop_analysis, indirect_mask,
+                        (int) force_unroll_sampler_indirect);
    nir_metadata_require(impl, nir_metadata_block_index);
 
    bool has_nested_loop = false;
@@ -1082,10 +1121,12 @@ nir_opt_loop_unroll(nir_shader *shader)
 {
    bool progress = false;
 
+   bool force_unroll_sampler_indirect = shader->options->force_indirect_unrolling_sampler;
    nir_variable_mode indirect_mask = shader->options->force_indirect_unrolling;
    nir_foreach_function(function, shader) {
       if (function->impl) {
-         progress |= nir_opt_loop_unroll_impl(function->impl, indirect_mask);
+         progress |= nir_opt_loop_unroll_impl(function->impl, indirect_mask,
+                                              force_unroll_sampler_indirect);
       }
    }
    return progress;

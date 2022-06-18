@@ -28,7 +28,6 @@
 
 #include "util/u_hash_table.h"
 #include "util/u_memory.h"
-#include "util/simple_list.h"
 #include "os/os_thread.h"
 #include "os/os_mman.h"
 #include "util/os_time.h"
@@ -1012,7 +1011,8 @@ radeon_winsys_bo_create(struct radeon_winsys *rws,
 {
    struct radeon_drm_winsys *ws = radeon_drm_winsys(rws);
    struct radeon_bo *bo;
-   int heap = -1;
+
+   radeon_canonicalize_bo_flags(&domain, &flags);
 
    assert(!(flags & RADEON_FLAG_SPARSE)); /* not supported */
 
@@ -1020,23 +1020,14 @@ radeon_winsys_bo_create(struct radeon_winsys *rws,
    if (size > UINT_MAX)
       return NULL;
 
-   /* VRAM implies WC. This is not optional. */
-   if (domain & RADEON_DOMAIN_VRAM)
-      flags |= RADEON_FLAG_GTT_WC;
-   /* NO_CPU_ACCESS is valid with VRAM only. */
-   if (domain != RADEON_DOMAIN_VRAM)
-      flags &= ~RADEON_FLAG_NO_CPU_ACCESS;
+   int heap = radeon_get_heap_index(domain, flags);
 
    /* Sub-allocate small buffers from slabs. */
-   if (!(flags & RADEON_FLAG_NO_SUBALLOC) &&
+   if (heap >= 0 &&
        size <= (1 << RADEON_SLAB_MAX_SIZE_LOG2) &&
        ws->info.r600_has_virtual_memory &&
        alignment <= MAX2(1 << RADEON_SLAB_MIN_SIZE_LOG2, util_next_power_of_two(size))) {
       struct pb_slab_entry *entry;
-      int heap = radeon_get_heap_index(domain, flags);
-
-      if (heap < 0 || heap >= RADEON_MAX_SLAB_HEAPS)
-         goto no_slab;
 
       entry = pb_slab_alloc(&ws->bo_slabs, size, heap);
       if (!entry) {
@@ -1054,10 +1045,6 @@ radeon_winsys_bo_create(struct radeon_winsys *rws,
 
       return &bo->base;
    }
-no_slab:
-
-   /* This flag is irrelevant for the cache. */
-   flags &= ~RADEON_FLAG_NO_SUBALLOC;
 
    /* Align size to page size. This is the minimum alignment for normal
     * BOs. Aligning this here helps the cached bufmgr. Especially small BOs,
@@ -1066,12 +1053,14 @@ no_slab:
    size = align(size, ws->info.gart_page_size);
    alignment = align(alignment, ws->info.gart_page_size);
 
-   bool use_reusable_pool = flags & RADEON_FLAG_NO_INTERPROCESS_SHARING;
+   bool use_reusable_pool = flags & RADEON_FLAG_NO_INTERPROCESS_SHARING &&
+                            !(flags & RADEON_FLAG_DISCARDABLE);
 
    /* Shared resources don't use cached heaps. */
    if (use_reusable_pool) {
-      heap = radeon_get_heap_index(domain, flags);
-      assert(heap >= 0 && heap < RADEON_MAX_CACHED_HEAPS);
+      /* RADEON_FLAG_NO_SUBALLOC is irrelevant for the cache. */
+      heap = radeon_get_heap_index(domain, flags & ~RADEON_FLAG_NO_SUBALLOC);
+      assert(heap >= 0 && heap < RADEON_NUM_HEAPS);
 
       bo = radeon_bo(pb_cache_reclaim_buffer(&ws->bo_cache, size, alignment,
                                              0, heap));

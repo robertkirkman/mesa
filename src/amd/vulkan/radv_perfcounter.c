@@ -64,13 +64,17 @@ radv_perfcounter_emit_stop(struct radv_device *device, struct radeon_cmdbuf *cs,
 {
    /* Stop windowed performance counters. */
    if (family == RADV_QUEUE_GENERAL) {
-      radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
-      radeon_emit(cs, EVENT_TYPE(V_028A90_PERFCOUNTER_STOP) | EVENT_INDEX(0));
+      if (!device->physical_device->rad_info.never_send_perfcounter_stop) {
+         radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
+         radeon_emit(cs, EVENT_TYPE(V_028A90_PERFCOUNTER_STOP) | EVENT_INDEX(0));
+      }
    }
    radeon_set_sh_reg(cs, R_00B82C_COMPUTE_PERFCOUNT_ENABLE, S_00B82C_PERFCOUNT_ENABLE(0));
 
    /* Stop SPM counters. */
    radeon_set_uconfig_reg(cs, R_036020_CP_PERFMON_CNTL,
                               S_036020_PERFMON_STATE(V_036020_CP_PERFMON_STATE_DISABLE_AND_RESET) |
-                              S_036020_SPM_PERFMON_STATE(V_036020_STRM_PERFMON_STATE_STOP_COUNTING));
+                              S_036020_SPM_PERFMON_STATE(device->physical_device->rad_info.never_stop_sq_perf_counters ?
+                                                            V_036020_STRM_PERFMON_STATE_START_COUNTING :
+                                                            V_036020_STRM_PERFMON_STATE_STOP_COUNTING));
 }

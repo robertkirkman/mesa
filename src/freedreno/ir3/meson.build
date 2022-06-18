@@ -27,7 +27,7 @@ ir3_nir_trig_c = custom_target(
     '-p', join_paths(meson.source_root(), 'src/compiler/nir/'),
   ],
   capture : true,
-  depend_files : nir_algebraic_py,
+  depend_files : nir_algebraic_depends,
 )
 
 ir3_nir_imul_c = custom_target(
@@ -39,7 +39,7 @@ ir3_nir_imul_c = custom_target(
     '-p', join_paths(meson.source_root(), 'src/compiler/nir/'),
   ],
   capture : true,
-  depend_files : nir_algebraic_py,
+  depend_files : nir_algebraic_depends,
 )
 
 ir3_parser = custom_target(
@@ -100,9 +100,9 @@ libfreedreno_ir3_files = files(
   'ir3_nir_lower_io_offsets.c',
   'ir3_nir_lower_tess.c',
   'ir3_nir_lower_tex_prefetch.c',
-  'ir3_nir_lower_tg4_to_tex.c',
   'ir3_nir_lower_wide_load_store.c',
   'ir3_nir_move_varying_inputs.c',
+  'ir3_nir_opt_preamble.c',
   'ir3_postsched.c',
   'ir3_print.c',
   'ir3_ra.c',

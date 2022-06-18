@@ -1,10 +1,27 @@
 glx@glx_arb_create_context_no_error@no error,Fail
 glx@glx_arb_create_context_robustness@invalid reset notification strategy,Fail
+
+glx@glx_ext_import_context@free context,Fail
 glx@glx_ext_import_context@get context id,Fail
 glx@glx_ext_import_context@import context- single process,Fail
+glx@glx_ext_import_context@query context info,Fail
+
 glx@glx-visuals-stencil -pixmap,Crash
+
+spec@!opengl 1.0@rasterpos,Fail
+spec@!opengl 1.0@rasterpos@glsl_vs_gs_linked,Fail
+spec@!opengl 1.0@rasterpos@glsl_vs_tes_linked,Fail
+
+spec@!opengl 3.2@gl-3.2-adj-prims cull-front pv-first,Fail
+spec@!opengl 3.2@gl-3.2-adj-prims line cull-front pv-first,Fail
+
+spec@nv_alpha_to_coverage_dither_control@nv_alpha_to_coverage_dither_control 0,Fail
+
 spec@arb_direct_state_access@gettextureimage-formats,Crash
+
 spec@arb_es2_compatibility@texwrap formats bordercolor-swizzled,Fail
+spec@arb_es2_compatibility@texwrap formats bordercolor-swizzled@GL_RGB565- swizzled- border color only,Fail
+
 spec@arb_program_interface_query@arb_program_interface_query-getprogramresourceindex@'vs_input2[1][0]' on GL_PROGRAM_INPUT,Fail
 spec@arb_program_interface_query@arb_program_interface_query-getprogramresourceindex,Fail
 spec@arb_shader_texture_lod@execution@arb_shader_texture_lod-texgradcube,Fail
@@ -54,10 +71,6 @@ spec@egl_ext_protected_content@conformance,Fail
 spec@egl_khr_surfaceless_context@viewport,Fail
 spec@egl_mesa_configless_context@basic,Fail
 spec@ext_framebuffer_blit@fbo-blit-check-limits,Fail
-spec@ext_framebuffer_multisample@turn-on-off 2,Fail
-spec@ext_framebuffer_multisample@turn-on-off 4,Fail
-spec@ext_framebuffer_multisample@turn-on-off 6,Fail
-spec@ext_framebuffer_multisample@turn-on-off 8,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_y216,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_yuyv,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_uyvy,Fail
@@ -70,7 +83,21 @@ spec@ext_texture_compression_s3tc@texwrap formats bordercolor-swizzled@GL_COMPRE
 spec@ext_texture_compression_s3tc@texwrap formats bordercolor-swizzled@GL_COMPRESSED_RGBA_S3TC_DXT5_EXT- swizzled- border color only,Fail
 spec@ext_texture_compression_s3tc@texwrap formats bordercolor-swizzled@GL_COMPRESSED_RGB_S3TC_DXT1_EXT- swizzled- border color only,Fail
 spec@ext_texture_integer@fbo-integer,Fail
+
 spec@ext_texture_integer@texwrap formats bordercolor-swizzled,Fail
+spec@ext_texture_integer@texwrap formats bordercolor-swizzled@GL_RGB16I- swizzled- border color only,Fail
+spec@ext_texture_integer@texwrap formats bordercolor-swizzled@GL_RGB16UI- swizzled- border color only,Fail
+spec@ext_texture_integer@texwrap formats bordercolor-swizzled@GL_RGB32I- swizzled- border color only,Fail
+spec@ext_texture_integer@texwrap formats bordercolor-swizzled@GL_RGB32UI- swizzled- border color only,Fail
+spec@ext_texture_integer@texwrap formats bordercolor-swizzled@GL_RGB8I- swizzled- border color only,Fail
+spec@ext_texture_integer@texwrap formats bordercolor-swizzled@GL_RGB8UI- swizzled- border color only,Fail
+spec@ext_texture_integer@texwrap formats bordercolor-swizzled@GL_RGBA16I- swizzled- border color only,Fail
+spec@ext_texture_integer@texwrap formats bordercolor-swizzled@GL_RGBA16UI- swizzled- border color only,Fail
+spec@ext_texture_integer@texwrap formats bordercolor-swizzled@GL_RGBA32I- swizzled- border color only,Fail
+spec@ext_texture_integer@texwrap formats bordercolor-swizzled@GL_RGBA32UI- swizzled- border color only,Fail
+spec@ext_texture_integer@texwrap formats bordercolor-swizzled@GL_RGBA8I- swizzled- border color only,Fail
+spec@ext_texture_integer@texwrap formats bordercolor-swizzled@GL_RGBA8UI- swizzled- border color only,Fail
+
 spec@ext_texture_shared_exponent@texwrap formats bordercolor-swizzled,Fail
 spec@ext_texture_snorm@texwrap formats bordercolor-swizzled,Fail
 spec@ext_texture_snorm@texwrap formats bordercolor-swizzled@GL_R16_SNORM- swizzled- border color only,Fail
@@ -125,3 +152,28 @@ GetCreateConfig/VAAPIGetCreateConfig.CreateConfigWithAttributes/190,Fail
 GetCreateConfig/VAAPIGetCreateConfig.CreateConfigWithAttributes/195,Fail
 GetCreateConfig/VAAPIGetCreateConfig.CreateConfigWithAttributes/210,Fail
 GetCreateConfig/VAAPIGetCreateConfig.CreateConfigWithAttributes/215,Fail
+
+# The following tests started to crash after CI fix, see
+# https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/16325
+CreateContext/VAAPICreateContext.CreateContext/1460,Crash
+CreateContext/VAAPICreateContext.CreateContext/1630,Crash
+CreateContext/VAAPICreateContext.CreateContext/1800,Crash
+CreateContext/VAAPICreateContext.CreateContext/2990,Crash
+CreateContext/VAAPICreateContext.CreateContext/3160,Crash
+
+spec@!opengl 1.0@gl-1.0-user-clip-all-planes,Fail
+spec@!opengl 1.1@texwrap formats bordercolor-swizzled,Fail
+spec@!opengl 1.1@texwrap formats bordercolor-swizzled@GL_R3_G3_B2- swizzled- border color only,Fail
+spec@!opengl 1.1@texwrap formats bordercolor-swizzled@GL_RGB10- swizzled- border color only,Fail
+spec@!opengl 1.1@texwrap formats bordercolor-swizzled@GL_RGB10_A2- swizzled- border color only,Fail
+spec@!opengl 1.1@texwrap formats bordercolor-swizzled@GL_RGB12- swizzled- border color only,Fail
+spec@!opengl 1.1@texwrap formats bordercolor-swizzled@GL_RGB16- swizzled- border color only,Fail
+spec@!opengl 1.1@texwrap formats bordercolor-swizzled@GL_RGB4- swizzled- border color only,Fail
+spec@!opengl 1.1@texwrap formats bordercolor-swizzled@GL_RGB5- swizzled- border color only,Fail
+spec@!opengl 1.1@texwrap formats bordercolor-swizzled@GL_RGB5_A1- swizzled- border color only,Fail
+spec@!opengl 1.1@texwrap formats bordercolor-swizzled@GL_RGB8- swizzled- border color only,Fail
+spec@!opengl 1.1@texwrap formats bordercolor-swizzled@GL_RGBA12- swizzled- border color only,Fail
+spec@!opengl 1.1@texwrap formats bordercolor-swizzled@GL_RGBA16- swizzled- border color only,Fail
+spec@!opengl 1.1@texwrap formats bordercolor-swizzled@GL_RGBA2- swizzled- border color only,Fail
+spec@!opengl 1.1@texwrap formats bordercolor-swizzled@GL_RGBA4- swizzled- border color only,Fail
+spec@!opengl 1.1@texwrap formats bordercolor-swizzled@GL_RGBA8- swizzled- border color only,Fail

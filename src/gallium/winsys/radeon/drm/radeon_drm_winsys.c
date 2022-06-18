@@ -27,7 +27,6 @@
 
 #include "radeon_drm_bo.h"
 #include "radeon_drm_cs.h"
-#include "radeon_drm_public.h"
 
 #include "util/os_file.h"
 #include "util/u_cpu_detect.h"
@@ -213,7 +212,7 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
    case CHIP_RS400:
    case CHIP_RC410:
    case CHIP_RS480:
-      ws->info.chip_class = R300;
+      ws->info.gfx_level = R300;
       break;
    case CHIP_R420:     /* R4xx-based cores. */
    case CHIP_R423:
@@ -224,7 +223,7 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
    case CHIP_RS600:
    case CHIP_RS690:
    case CHIP_RS740:
-      ws->info.chip_class = R400;
+      ws->info.gfx_level = R400;
       break;
    case CHIP_RV515:    /* R5xx-based cores. */
    case CHIP_R520:
@@ -232,7 +231,7 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
    case CHIP_R580:
    case CHIP_RV560:
    case CHIP_RV570:
-      ws->info.chip_class = R500;
+      ws->info.gfx_level = R500;
       break;
    case CHIP_R600:
    case CHIP_RV610:
@@ -242,13 +241,13 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
    case CHIP_RV635:
    case CHIP_RS780:
    case CHIP_RS880:
-      ws->info.chip_class = R600;
+      ws->info.gfx_level = R600;
       break;
    case CHIP_RV770:
    case CHIP_RV730:
    case CHIP_RV710:
    case CHIP_RV740:
-      ws->info.chip_class = R700;
+      ws->info.gfx_level = R700;
       break;
    case CHIP_CEDAR:
    case CHIP_REDWOOD:
@@ -261,24 +260,24 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
    case CHIP_BARTS:
    case CHIP_TURKS:
    case CHIP_CAICOS:
-      ws->info.chip_class = EVERGREEN;
+      ws->info.gfx_level = EVERGREEN;
       break;
    case CHIP_CAYMAN:
    case CHIP_ARUBA:
-      ws->info.chip_class = CAYMAN;
+      ws->info.gfx_level = CAYMAN;
       break;
    case CHIP_TAHITI:
    case CHIP_PITCAIRN:
    case CHIP_VERDE:
    case CHIP_OLAND:
    case CHIP_HAINAN:
-      ws->info.chip_class = GFX6;
+      ws->info.gfx_level = GFX6;
       break;
    case CHIP_BONAIRE:
    case CHIP_KAVERI:
    case CHIP_KABINI:
    case CHIP_HAWAII:
-      ws->info.chip_class = GFX7;
+      ws->info.gfx_level = GFX7;
       break;
    }
 
@@ -305,12 +304,12 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
       ws->info.has_dedicated_vram = true;
    }
 
-   ws->info.num_rings[RING_GFX] = 1;
+   ws->info.ip[AMD_IP_GFX].num_queues = 1;
    /* Check for dma */
-   ws->info.num_rings[RING_DMA] = 0;
+   ws->info.ip[AMD_IP_SDMA].num_queues = 0;
    /* DMA is disabled on R700. There is IB corruption and hangs. */
-   if (ws->info.chip_class >= EVERGREEN && ws->info.drm_minor >= 27) {
-      ws->info.num_rings[RING_DMA] = 1;
+   if (ws->info.gfx_level >= EVERGREEN && ws->info.drm_minor >= 27) {
+      ws->info.ip[AMD_IP_SDMA].num_queues = 1;
    }
 
    /* Check for UVD and VCE */
@@ -322,7 +321,7 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
       if (radeon_get_drm_value(ws->fd, RADEON_INFO_RING_WORKING,
                                "UVD Ring working", &value)) {
          ws->info.has_video_hw.uvd_decode = value;
-         ws->info.num_rings[RING_UVD] = 1;
+         ws->info.ip[AMD_IP_UVD].num_queues = 1;
       }
 
       value = RADEON_CS_RING_VCE;
@@ -332,7 +331,7 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
          if (radeon_get_drm_value(ws->fd, RADEON_INFO_VCE_FW_VERSION,
                                   "VCE FW version", &value)) {
             ws->info.vce_fw_version = value;
-            ws->info.num_rings[RING_VCE] = 1;
+            ws->info.ip[AMD_IP_VCE].num_queues = 1;
             ws->info.has_video_hw.vce_encode = true;
          }
       }
@@ -376,14 +375,20 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
    /* Radeon allocates all buffers contiguously, which makes large allocations
     * unlikely to succeed. */
    if (ws->info.has_dedicated_vram)
-      ws->info.max_alloc_size = ws->info.vram_size * 0.7;
+      ws->info.max_heap_size_kb = ws->info.vram_size_kb;
    else
-      ws->info.max_alloc_size = ws->info.gart_size * 0.7;
+      ws->info.max_heap_size_kb = ws->info.gart_size_kb;
 
+   /* Old kernel driver limitation for allocation sizes. We only use this to limit per-buffer
+    * allocation size.
+    */
    if (ws->info.drm_minor < 40)
-      ws->info.max_alloc_size = MIN2(ws->info.max_alloc_size, 256*1024*1024);
-   /* Both 32-bit and 64-bit address spaces only have 4GB. */
-   ws->info.max_alloc_size = MIN2(ws->info.max_alloc_size, 3ull*1024*1024*1024);
+      ws->info.max_heap_size_kb = MIN2(ws->info.max_heap_size_kb, 256 * 1024);
+
+   /* Both 32-bit and 64-bit address spaces only have 4GB.
+    * This is a limitation of the VM allocator in the winsys.
+    */
+   ws->info.max_heap_size_kb = MIN2(ws->info.max_heap_size_kb, 4 * 1024 * 1024); /* 4 GB */
 
    /* Get max clock frequency info and convert it to MHz */
    radeon_get_drm_value(ws->fd, RADEON_INFO_MAX_SCLK, NULL,
@@ -420,18 +425,18 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
                            &tiling_config);
 
       ws->info.r600_num_banks =
-            ws->info.chip_class >= EVERGREEN ?
+            ws->info.gfx_level >= EVERGREEN ?
                4 << ((tiling_config & 0xf0) >> 4) :
                     4 << ((tiling_config & 0x30) >> 4);
 
       ws->info.pipe_interleave_bytes =
-            ws->info.chip_class >= EVERGREEN ?
+            ws->info.gfx_level >= EVERGREEN ?
                256 << ((tiling_config & 0xf00) >> 8) :
                       256 << ((tiling_config & 0xc0) >> 6);
 
       if (!ws->info.pipe_interleave_bytes)
          ws->info.pipe_interleave_bytes =
-               ws->info.chip_class >= EVERGREEN ? 512 : 256;
+               ws->info.gfx_level >= EVERGREEN ? 512 : 256;
 
       radeon_get_drm_value(ws->fd, RADEON_INFO_NUM_TILE_PIPES, NULL,
                            &ws->info.num_tile_pipes);
@@ -555,7 +560,7 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
       return false;
    }
 
-   if (ws->info.chip_class == GFX7) {
+   if (ws->info.gfx_level == GFX7) {
       if (!radeon_get_drm_value(ws->fd, RADEON_INFO_CIK_MACROTILE_MODE_ARRAY, NULL,
                                 ws->info.cik_macrotile_mode_array)) {
          fprintf(stderr, "radeon: Kernel 3.13 is required for Sea Islands support.\n");
@@ -563,7 +568,7 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
       }
    }
 
-   if (ws->info.chip_class >= GFX6) {
+   if (ws->info.gfx_level >= GFX6) {
       if (!radeon_get_drm_value(ws->fd, RADEON_INFO_SI_TILE_MODE_ARRAY, NULL,
                                 ws->info.si_tile_mode_array)) {
          fprintf(stderr, "radeon: Kernel 3.10 is required for Southern Islands support.\n");
@@ -574,14 +579,14 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
    /* Hawaii with old firmware needs type2 nop packet.
     * accel_working2 with value 3 indicates the new firmware.
     */
-   ws->info.gfx_ib_pad_with_type2 = ws->info.chip_class <= GFX6 ||
+   ws->info.gfx_ib_pad_with_type2 = ws->info.gfx_level <= GFX6 ||
                                     (ws->info.family == CHIP_HAWAII &&
                                      ws->accel_working2 < 3);
    ws->info.tcc_cache_line_size = 64; /* TC L2 line size on GCN */
    ws->info.ib_alignment = 4096;
    ws->info.kernel_flushes_hdp_before_ib = ws->info.drm_minor >= 40;
    /* HTILE is broken with 1D tiling on old kernels and GFX7. */
-   ws->info.htile_cmask_support_1d_tiling = ws->info.chip_class != GFX7 ||
+   ws->info.htile_cmask_support_1d_tiling = ws->info.gfx_level != GFX7 ||
                                                                    ws->info.drm_minor >= 38;
    ws->info.si_TA_CS_BC_BASE_ADDR_allowed = ws->info.drm_minor >= 48;
    ws->info.has_bo_metadata = false;
@@ -591,15 +596,15 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
    ws->info.kernel_flushes_tc_l2_after_ib = true;
    /* Old kernels disallowed register writes via COPY_DATA
     * that are used for indirect compute dispatches. */
-   ws->info.has_indirect_compute_dispatch = ws->info.chip_class == GFX7 ||
-                                            (ws->info.chip_class == GFX6 &&
+   ws->info.has_indirect_compute_dispatch = ws->info.gfx_level == GFX7 ||
+                                            (ws->info.gfx_level == GFX6 &&
                                              ws->info.drm_minor >= 45);
    /* GFX6 doesn't support unaligned loads. */
-   ws->info.has_unaligned_shader_loads = ws->info.chip_class == GFX7 &&
+   ws->info.has_unaligned_shader_loads = ws->info.gfx_level == GFX7 &&
                                          ws->info.drm_minor >= 50;
    ws->info.has_sparse_vm_mappings = false;
    /* 2D tiling on GFX7 is supported since DRM 2.35.0 */
-   ws->info.has_2d_tiling = ws->info.chip_class <= GFX6 || ws->info.drm_minor >= 35;
+   ws->info.has_2d_tiling = ws->info.gfx_level <= GFX6 || ws->info.drm_minor >= 35;
    ws->info.has_read_registers_query = ws->info.drm_minor >= 42;
    ws->info.max_alignment = 1024*1024;
    ws->info.has_graphics = true;
@@ -608,6 +613,9 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
    ws->info.num_physical_sgprs_per_simd = 512;
    ws->info.num_physical_wave64_vgprs_per_simd = 256;
    ws->info.has_3d_cube_border_color_mipmap = true;
+   ws->info.spi_cu_en_has_effect = false;
+   ws->info.spi_cu_en = 0xffff;
+   ws->info.never_stop_sq_perf_counters = false;
 
    ws->check_vm = strstr(debug_get_option("R600_DEBUG", ""), "check_vm") != NULL ||
                                                                             strstr(debug_get_option("AMD_DEBUG", ""), "check_vm") != NULL;
@@ -849,7 +857,7 @@ radeon_drm_winsys_create(int fd, const struct pipe_screen_config *config,
    if (!do_winsys_init(ws))
       goto fail1;
 
-   pb_cache_init(&ws->bo_cache, RADEON_MAX_CACHED_HEAPS,
+   pb_cache_init(&ws->bo_cache, RADEON_NUM_HEAPS,
                  500000, ws->check_vm ? 1.0f : 2.0f, 0,
                  MIN2(ws->info.vram_size, ws->info.gart_size), NULL,
                  radeon_bo_destroy,
@@ -862,7 +870,7 @@ radeon_drm_winsys_create(int fd, const struct pipe_screen_config *config,
        */
       if (!pb_slabs_init(&ws->bo_slabs,
                          RADEON_SLAB_MIN_SIZE_LOG2, RADEON_SLAB_MAX_SIZE_LOG2,
-                         RADEON_MAX_SLAB_HEAPS, false,
+                         RADEON_NUM_HEAPS, false,
                          ws,
                          radeon_bo_can_reclaim_slab,
                          radeon_bo_slab_alloc,

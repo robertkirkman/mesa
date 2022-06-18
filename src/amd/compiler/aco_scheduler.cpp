@@ -613,7 +613,8 @@ perform_hazard_query(hazard_query* query, Instruction* instr, bool upwards)
    /* Don't move memory accesses to before control barriers. I don't think
     * this is necessary for the Vulkan memory model, but it might be for GLSL450. */
    unsigned control_classes =
-      storage_buffer | storage_atomic_counter | storage_image | storage_shared;
+      storage_buffer | storage_atomic_counter | storage_image | storage_shared |
+      storage_task_payload;
    if (first->has_control_barrier &&
        ((second->access_atomic | second->access_relaxed) & control_classes))
       return hazard_fail_barrier;
@@ -1069,6 +1070,7 @@ schedule_program(Program* program, live& live_vars)
       ctx.num_waves = 7 * wave_fac;
    ctx.num_waves = std::max<uint16_t>(ctx.num_waves, program->min_waves);
    ctx.num_waves = std::min<uint16_t>(ctx.num_waves, program->num_waves);
+   ctx.num_waves = max_suitable_waves(program, ctx.num_waves);
 
    /* VMEM_MAX_MOVES and such assume pre-GFX10 wave count */
    ctx.num_waves = std::max<uint16_t>(ctx.num_waves / wave_fac, 1);
@@ -1081,8 +1083,8 @@ schedule_program(Program* program, live& live_vars)
     * Schedule less aggressively when early primitive export is used, and
     * keep the position export at the very bottom when late primitive export is used.
     */
-   if (program->info->has_ngg_culling && program->stage.num_sw_stages() == 1) {
-      if (!program->info->has_ngg_early_prim_export)
+   if (program->info.has_ngg_culling && program->stage.num_sw_stages() == 1) {
+      if (!program->info.has_ngg_early_prim_export)
          ctx.schedule_pos_exports = false;
       else
          ctx.schedule_pos_export_div = 4;

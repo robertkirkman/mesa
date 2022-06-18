@@ -73,6 +73,13 @@ gl_shader_stage_is_compute(gl_shader_stage stage)
 }
 
 static inline bool
+gl_shader_stage_is_mesh(gl_shader_stage stage)
+{
+   return stage == MESA_SHADER_TASK ||
+          stage == MESA_SHADER_MESH;
+}
+
+static inline bool
 gl_shader_stage_uses_workgroup(gl_shader_stage stage)
 {
    return stage == MESA_SHADER_COMPUTE ||
@@ -89,6 +96,19 @@ gl_shader_stage_is_callable(gl_shader_stage stage)
           stage == MESA_SHADER_MISS ||
           stage == MESA_SHADER_INTERSECTION ||
           stage == MESA_SHADER_CALLABLE;
+}
+
+static inline bool
+gl_shader_stage_can_set_fragment_shading_rate(gl_shader_stage stage)
+{
+   /* According to EXT_fragment_shading_rate :
+    *
+    *    "This extension adds support for setting the fragment shading rate
+    *     for a primitive in vertex, geometry, and mesh shading stages"
+    */
+   return stage == MESA_SHADER_VERTEX ||
+          stage == MESA_SHADER_GEOMETRY ||
+          stage == MESA_SHADER_MESH;
 }
 
 /**
@@ -252,6 +272,9 @@ const char *gl_vert_attrib_name(gl_vert_attrib attrib);
 #define VERT_BIT_MAT(i)	         VERT_BIT(VERT_ATTRIB_MAT(i))
 #define VERT_BIT_MAT_ALL         \
    BITFIELD_RANGE(VERT_ATTRIB_MAT(0), VERT_ATTRIB_MAT_MAX)
+
+#define VERT_ATTRIB_SELECT_RESULT_OFFSET VERT_ATTRIB_GENERIC(3)
+#define VERT_BIT_SELECT_RESULT_OFFSET VERT_BIT_GENERIC(3)
 /*@}*/
 
 #define MAX_VARYING 32 /**< number of float[4] vectors */
@@ -307,6 +330,7 @@ typedef enum
    VARYING_SLOT_PRIMITIVE_COUNT = VARYING_SLOT_TESS_LEVEL_OUTER, /* Only appears in MESH. */
    VARYING_SLOT_PRIMITIVE_INDICES = VARYING_SLOT_TESS_LEVEL_INNER, /* Only appears in MESH. */
    VARYING_SLOT_TASK_COUNT = VARYING_SLOT_BOUNDING_BOX0, /* Only appears in TASK. */
+   VARYING_SLOT_CULL_PRIMITIVE = VARYING_SLOT_BOUNDING_BOX0, /* Only appears in MESH. */
 
    VARYING_SLOT_VAR0 = 32, /* First generic varying slot */
    /* the remaining are simply for the benefit of gl_varying_slot_name()
@@ -477,6 +501,7 @@ _mesa_varying_slot_in_fs(gl_varying_slot slot)
 #define VARYING_BIT_LAYER BITFIELD64_BIT(VARYING_SLOT_LAYER)
 #define VARYING_BIT_VIEWPORT BITFIELD64_BIT(VARYING_SLOT_VIEWPORT)
 #define VARYING_BIT_FACE BITFIELD64_BIT(VARYING_SLOT_FACE)
+#define VARYING_BIT_PRIMITIVE_SHADING_RATE BITFIELD64_BIT(VARYING_SLOT_PRIMITIVE_SHADING_RATE)
 #define VARYING_BIT_PNTC BITFIELD64_BIT(VARYING_SLOT_PNTC)
 #define VARYING_BIT_TESS_LEVEL_OUTER BITFIELD64_BIT(VARYING_SLOT_TESS_LEVEL_OUTER)
 #define VARYING_BIT_TESS_LEVEL_INNER BITFIELD64_BIT(VARYING_SLOT_TESS_LEVEL_INNER)
@@ -745,6 +770,7 @@ typedef enum
    SYSTEM_VALUE_BASE_GLOBAL_INVOCATION_ID,
    SYSTEM_VALUE_GLOBAL_INVOCATION_INDEX,
    SYSTEM_VALUE_WORKGROUP_ID,
+   SYSTEM_VALUE_WORKGROUP_INDEX,
    SYSTEM_VALUE_NUM_WORKGROUPS,
    SYSTEM_VALUE_WORKGROUP_SIZE,
    SYSTEM_VALUE_GLOBAL_GROUP_SIZE,
@@ -786,6 +812,7 @@ typedef enum
    /*@{*/
    SYSTEM_VALUE_RAY_LAUNCH_ID,
    SYSTEM_VALUE_RAY_LAUNCH_SIZE,
+   SYSTEM_VALUE_RAY_LAUNCH_SIZE_ADDR_AMD,
    SYSTEM_VALUE_RAY_WORLD_ORIGIN,
    SYSTEM_VALUE_RAY_WORLD_DIRECTION,
    SYSTEM_VALUE_RAY_OBJECT_ORIGIN,
@@ -798,6 +825,7 @@ typedef enum
    SYSTEM_VALUE_RAY_FLAGS,
    SYSTEM_VALUE_RAY_GEOMETRY_INDEX,
    SYSTEM_VALUE_RAY_INSTANCE_CUSTOM_INDEX,
+   SYSTEM_VALUE_CULL_MASK,
    /*@}*/
 
    /**
@@ -923,7 +951,32 @@ enum gl_access_qualifier
    /* The memory used by the access/variable is not written. */
    ACCESS_NON_WRITEABLE = (1 << 4),
 
-   /** The access may use a non-uniform buffer or image index */
+   /**
+    * The access may use a non-uniform buffer or image index.
+    *
+    * This is not allowed in either OpenGL or OpenGL ES, or Vulkan unless
+    * VK_EXT_descriptor_indexing is supported and the appropriate capability is
+    * enabled.
+    *
+    * Some GL spec archaeology justifying this:
+    *
+    * Up through at least GLSL ES 3.20 and GLSL 4.50,  "Opaque Types" says "When
+    * aggregated into arrays within a shader, opaque types can only be indexed
+    * with a dynamically uniform integral expression (see section 3.9.3) unless
+    * otherwise noted; otherwise, results are undefined."
+    *
+    * The original GL_AB_shader_image_load_store specification for desktop GL
+    * didn't have this restriction ("Images may be aggregated into arrays within
+    * a shader (using square brackets [ ]) and can be indexed with general
+    * integer expressions.")  At the same time,
+    * GL_ARB_shader_storage_buffer_objects *did* have the uniform restriction
+    * ("A uniform or shader storage block array can only be indexed with a
+    * dynamically uniform integral expression, otherwise results are
+    * undefined"), just like ARB_gpu_shader5 did when it first introduced a
+    * non-constant indexing of an opaque type with samplers.  So, we assume that
+    * this was an oversight in the original image_load_store spec, and was
+    * considered a correction in the merge to core.
+    */
    ACCESS_NON_UNIFORM   = (1 << 5),
 
    /* This has the same semantics as NIR_INTRINSIC_CAN_REORDER, only to be
@@ -1023,6 +1076,11 @@ enum shader_prim
    SHADER_PRIM_MAX = SHADER_PRIM_PATCHES,
    SHADER_PRIM_UNKNOWN = (SHADER_PRIM_MAX * 2),
 };
+
+/**
+ * Number of vertices per mesh shader primitive.
+ */
+unsigned num_mesh_vertices_per_primitive(unsigned prim);
 
 /**
  * A compare function enum for use in compiler lowering passes.  This is in

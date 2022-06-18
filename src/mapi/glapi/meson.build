@@ -52,7 +52,7 @@ if with_shared_glapi
 else
   static_glapi_args += '-DMAPI_MODE_UTIL'
   if with_platform_windows
-    static_glapi_args += ['-D_GDI32_', '-DBUILD_GL32', '-DKHRONOS_DLL_EXPORTS', '-D_GLAPI_NO_EXPORTS']
+    static_glapi_args += ['-D_GDI32_', '-DKHRONOS_DLL_EXPORTS', '-D_GLAPI_NO_EXPORTS']
   endif
   static_glapi_files += files(
     'glapi_dispatch.c',
@@ -81,7 +81,7 @@ libglapi_static = static_library(
   static_glapi_files,
   include_directories : [inc_mesa, inc_include, inc_src, inc_mapi],
   c_args : [c_msvc_compat_args, static_glapi_args],
-  dependencies : [dep_thread, dep_selinux],
+  dependencies : [dep_thread, dep_selinux, idep_mesautilc11],
   build_by_default : false,
 )
 

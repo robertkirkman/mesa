@@ -28,7 +28,11 @@
 #include "d3d12_context.h"
 #include "d3d12_debug.h"
 #include "d3d12_fence.h"
+#ifdef HAVE_GALLIUM_D3D12_VIDEO
+#include "d3d12_video_screen.h"
+#endif
 #include "d3d12_format.h"
+#include "d3d12_residency.h"
 #include "d3d12_resource.h"
 #include "d3d12_nir_passes.h"
 
@@ -41,6 +45,8 @@
 
 #include "nir.h"
 #include "frontend/sw_winsys.h"
+
+#include "nir_to_dxil.h"
 
 #include <directx/d3d12sdklayers.h>
 
@@ -152,7 +158,6 @@ d3d12_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_INDEP_BLEND_FUNC:
    case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
    case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
-   case PIPE_CAP_VERTEX_SHADER_SATURATE:
    case PIPE_CAP_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION:
    case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:
    case PIPE_CAP_RGB_OVERRIDE_DST_ALPHA_BLEND:
@@ -183,9 +188,9 @@ d3d12_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 1;
 
    case PIPE_CAP_GLSL_FEATURE_LEVEL:
-      return 400;
+      return 420;
    case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
-      return 400;
+      return 420;
    case PIPE_CAP_ESSL_FEATURE_LEVEL:
       return 310;
 
@@ -208,7 +213,7 @@ d3d12_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return PIPE_ENDIAN_NATIVE; /* unsure */
 
    case PIPE_CAP_MAX_VIEWPORTS:
-      return D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT;
+      return D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
 
    case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
       return 1;
@@ -216,15 +221,15 @@ d3d12_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_MAX_TEXTURE_GATHER_COMPONENTS:
       return 4;
 
-   case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
-   case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
+   case PIPE_CAP_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
+   case PIPE_CAP_FS_COORD_ORIGIN_UPPER_LEFT:
       return 1;
 
-   case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
+   case PIPE_CAP_FS_FACE_IS_INTEGER_SYSVAL:
       return 1;
 
    case PIPE_CAP_ACCELERATED:
-      return 1;
+      return screen->vendor_id != HW_VENDOR_MICROSOFT;
 
    case PIPE_CAP_VIDEO_MEMORY:
       return d3d12_get_video_mem(pscreen);
@@ -251,9 +256,6 @@ d3d12_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_PCI_FUNCTION:
       return 0; /* TODO: figure these out */
 
-   case PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY:
-      return 0; /* not sure */
-
    case PIPE_CAP_FLATSHADE:
    case PIPE_CAP_ALPHA_TEST:
    case PIPE_CAP_TWO_SIDED_COLOR:
@@ -265,7 +267,7 @@ d3d12_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
    case PIPE_CAP_SEAMLESS_CUBE_MAP:
    case PIPE_CAP_TEXTURE_QUERY_LOD:
-   case PIPE_CAP_TGSI_INSTANCEID:
+   case PIPE_CAP_VS_INSTANCEID:
    case PIPE_CAP_TGSI_TEX_TXF_LZ:
    case PIPE_CAP_OCCLUSION_QUERY:
    case PIPE_CAP_POINT_SPRITE:
@@ -295,7 +297,8 @@ d3d12_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return D3D12_REQ_GS_INVOCATION_32BIT_OUTPUT_COMPONENT_LIMIT;
 
    case PIPE_CAP_MAX_VARYINGS:
-      return D3D12_PS_INPUT_REGISTER_COUNT;
+      /* Subtract one so that implicit position can be added */
+      return D3D12_PS_INPUT_REGISTER_COUNT - 1;
 
    case PIPE_CAP_NIR_COMPACT_ARRAYS:
       return 1;
@@ -316,6 +319,11 @@ d3d12_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_SAMPLE_SHADING:
    case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
    case PIPE_CAP_STREAM_OUTPUT_INTERLEAVE_BUFFERS:
+   case PIPE_CAP_INT64:
+   case PIPE_CAP_INT64_DIVMOD:
+   case PIPE_CAP_DOUBLES:
+   case PIPE_CAP_DEVICE_RESET_STATUS_QUERY:
+   case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
       return 1;
 
    case PIPE_CAP_MAX_VERTEX_STREAMS:
@@ -333,8 +341,6 @@ d3d12_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 static float
 d3d12_get_paramf(struct pipe_screen *pscreen, enum pipe_capf param)
 {
-   struct d3d12_screen *screen = d3d12_screen(pscreen);
-
    switch (param) {
    case PIPE_CAPF_MIN_LINE_WIDTH:
    case PIPE_CAPF_MIN_LINE_WIDTH_AA:
@@ -355,7 +361,7 @@ d3d12_get_paramf(struct pipe_screen *pscreen, enum pipe_capf param)
       return D3D12_MAX_POINT_SIZE;
 
    case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
-      return screen->max_feature_level >= D3D_FEATURE_LEVEL_10_0 ? 16.0f : 2.0f;
+      return D3D12_MAX_MAXANISOTROPY;
 
    case PIPE_CAPF_MAX_TEXTURE_LOD_BIAS:
       return 15.99f;
@@ -389,25 +395,35 @@ d3d12_get_shader_param(struct pipe_screen *pscreen,
       return 0;
 
    case PIPE_SHADER_CAP_MAX_INPUTS:
-      return screen->max_feature_level >= D3D_FEATURE_LEVEL_10_1 ? 32 : 16;
+      switch (shader) {
+      case PIPE_SHADER_VERTEX: return D3D12_VS_INPUT_REGISTER_COUNT;
+      case PIPE_SHADER_FRAGMENT: return D3D12_PS_INPUT_REGISTER_COUNT;
+      case PIPE_SHADER_GEOMETRY: return D3D12_GS_INPUT_REGISTER_COUNT;
+      case PIPE_SHADER_TESS_CTRL: return D3D12_HS_CONTROL_POINT_PHASE_INPUT_REGISTER_COUNT;
+      case PIPE_SHADER_TESS_EVAL: return D3D12_DS_INPUT_CONTROL_POINT_REGISTER_COUNT;
+      case PIPE_SHADER_COMPUTE: return 0;
+      default: unreachable("Unexpected shader");
+      }
+      break;
 
    case PIPE_SHADER_CAP_MAX_OUTPUTS:
-      if (shader == PIPE_SHADER_FRAGMENT) {
-         /* same as max MRTs (not sure if this is correct) */
-         if (screen->max_feature_level >= D3D_FEATURE_LEVEL_10_0)
-            return 8;
-         else if (screen->max_feature_level == D3D_FEATURE_LEVEL_9_3)
-            return 4;
-         return 1;
+      switch (shader) {
+      case PIPE_SHADER_VERTEX: return D3D12_VS_OUTPUT_REGISTER_COUNT;
+      case PIPE_SHADER_FRAGMENT: return D3D12_PS_OUTPUT_REGISTER_COUNT;
+      case PIPE_SHADER_GEOMETRY: return D3D12_GS_OUTPUT_REGISTER_COUNT;
+      case PIPE_SHADER_TESS_CTRL: return D3D12_HS_CONTROL_POINT_PHASE_OUTPUT_REGISTER_COUNT;
+      case PIPE_SHADER_TESS_EVAL: return D3D12_DS_OUTPUT_REGISTER_COUNT;
+      case PIPE_SHADER_COMPUTE: return 0;
+      default: unreachable("Unexpected shader");
       }
-      return screen->max_feature_level >= D3D_FEATURE_LEVEL_10_1 ? 32 : 16;
+      break;
 
    case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
       if (screen->opts.ResourceBindingTier == D3D12_RESOURCE_BINDING_TIER_1)
          return 16;
       return PIPE_MAX_SAMPLERS;
 
-   case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
+   case PIPE_SHADER_CAP_MAX_CONST_BUFFER0_SIZE:
       return 65536;
 
    case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
@@ -442,16 +458,12 @@ d3d12_get_shader_param(struct pipe_screen *pscreen,
        */
       return PIPE_MAX_SAMPLERS;
 
-   case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
-   case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
-   case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
+   case PIPE_SHADER_CAP_DROUND_SUPPORTED:
+   case PIPE_SHADER_CAP_DFRACEXP_DLDEXP_SUPPORTED:
       return 0; /* not implemented */
 
    case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
       return 0; /* no idea */
-
-   case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
-      return 32; /* arbitrary */
 
    case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
       return
@@ -470,14 +482,10 @@ d3d12_get_shader_param(struct pipe_screen *pscreen,
           screen->opts.ResourceBindingTier >= D3D12_RESOURCE_BINDING_TIER_3) ?
          PIPE_MAX_SHADER_IMAGES : D3D12_PS_CS_UAV_REGISTER_COUNT;
 
-   case PIPE_SHADER_CAP_LOWER_IF_THRESHOLD:
-   case PIPE_SHADER_CAP_TGSI_SKIP_MERGE_REGISTERS:
-      return 0; /* unsure */
-
-   case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
+   case PIPE_SHADER_CAP_LDEXP_SUPPORTED:
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
-   case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
+   case PIPE_SHADER_CAP_CONT_SUPPORTED:
       return 0; /* not implemented */
 
    /* should only get here on unhandled cases */
@@ -608,8 +616,7 @@ d3d12_is_format_supported(struct pipe_screen *pscreen,
          return false;
 
       if (bind & PIPE_BIND_INDEX_BUFFER) {
-         if (format != PIPE_FORMAT_R8_UINT &&
-             format != PIPE_FORMAT_R16_UINT &&
+         if (format != PIPE_FORMAT_R16_UINT &&
              format != PIPE_FORMAT_R32_UINT)
             return false;
       }
@@ -640,6 +647,7 @@ d3d12_is_format_supported(struct pipe_screen *pscreen,
       } else
          fmt_info_sv = fmt_info;
 
+#ifdef _WIN32
       if (bind & PIPE_BIND_DISPLAY_TARGET &&
          (!(fmt_info.Support1 & D3D12_FORMAT_SUPPORT1_DISPLAY) ||
             // Disable formats that don't support flip model
@@ -648,6 +656,7 @@ d3d12_is_format_supported(struct pipe_screen *pscreen,
             dxgi_format == DXGI_FORMAT_B5G6R5_UNORM ||
             dxgi_format == DXGI_FORMAT_B4G4R4A4_UNORM))
          return false;
+#endif
 
       if (bind & PIPE_BIND_DEPTH_STENCIL &&
           !(fmt_info.Support1 & D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL))
@@ -676,19 +685,59 @@ d3d12_is_format_supported(struct pipe_screen *pscreen,
    return true;
 }
 
-static void
-d3d12_destroy_screen(struct pipe_screen *pscreen)
+void
+d3d12_deinit_screen(struct d3d12_screen *screen)
 {
-   struct d3d12_screen *screen = d3d12_screen(pscreen);
+   if (screen->rtv_pool) {
+      d3d12_descriptor_pool_free(screen->rtv_pool);
+      screen->rtv_pool = nullptr;
+   }
+   if (screen->dsv_pool) {
+      d3d12_descriptor_pool_free(screen->dsv_pool);
+      screen->dsv_pool = nullptr;
+   }
+   if (screen->view_pool) {
+      d3d12_descriptor_pool_free(screen->view_pool);
+      screen->view_pool = nullptr;
+   }
+   if (screen->readback_slab_bufmgr) {
+      screen->readback_slab_bufmgr->destroy(screen->readback_slab_bufmgr);
+      screen->readback_slab_bufmgr = nullptr;
+   }
+   if (screen->slab_bufmgr) {
+      screen->slab_bufmgr->destroy(screen->slab_bufmgr);
+      screen->slab_bufmgr = nullptr;
+   }
+   if (screen->cache_bufmgr) {
+      screen->cache_bufmgr->destroy(screen->cache_bufmgr);
+      screen->cache_bufmgr = nullptr;
+   }
+   if (screen->bufmgr) {
+      screen->bufmgr->destroy(screen->bufmgr);
+      screen->bufmgr = nullptr;
+   }
+   d3d12_deinit_residency(screen);
+   if (screen->fence) {
+      screen->fence->Release();
+      screen->fence = nullptr;
+   }
+   if (screen->cmdqueue) {
+      screen->cmdqueue->Release();
+      screen->cmdqueue = nullptr;
+   }
+   if (screen->dev) {
+      screen->dev->Release();
+      screen->dev = nullptr;
+   }
+}
+
+void
+d3d12_destroy_screen(struct d3d12_screen *screen)
+{
    slab_destroy_parent(&screen->transfer_pool);
-   d3d12_descriptor_pool_free(screen->rtv_pool);
-   d3d12_descriptor_pool_free(screen->dsv_pool);
-   d3d12_descriptor_pool_free(screen->view_pool);
-   screen->readback_slab_bufmgr->destroy(screen->readback_slab_bufmgr);
-   screen->slab_bufmgr->destroy(screen->slab_bufmgr);
-   screen->cache_bufmgr->destroy(screen->cache_bufmgr);
-   screen->bufmgr->destroy(screen->bufmgr);
+   mtx_destroy(&screen->submit_mutex);
    mtx_destroy(&screen->descriptor_pool_mutex);
+   glsl_type_singleton_decref();
    FREE(screen);
 }
 
@@ -769,8 +818,10 @@ static void
 enable_d3d12_debug_layer()
 {
    ID3D12Debug *debug = get_debug_interface();
-   if (debug)
+   if (debug) {
       debug->EnableDebugLayer();
+      debug->Release();
+   }
 }
 
 static void
@@ -778,12 +829,16 @@ enable_gpu_validation()
 {
    ID3D12Debug *debug = get_debug_interface();
    ID3D12Debug3 *debug3;
-   if (debug &&
-       SUCCEEDED(debug->QueryInterface(IID_PPV_ARGS(&debug3))))
-      debug3->SetEnableGPUBasedValidation(true);
+   if (debug) {
+      if (SUCCEEDED(debug->QueryInterface(IID_PPV_ARGS(&debug3)))) {
+         debug3->SetEnableGPUBasedValidation(true);
+         debug3->Release();
+      }
+      debug->Release();
+   }
 }
 
-static ID3D12Device *
+static ID3D12Device3 *
 create_device(IUnknown *adapter)
 {
    typedef HRESULT(WINAPI *PFN_D3D12CREATEDEVICE)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
@@ -798,14 +853,7 @@ create_device(IUnknown *adapter)
    }
 
 #ifdef _WIN32
-   if (!(d3d12_debug & D3D12_DEBUG_EXPERIMENTAL)) {
-      struct d3d12_validation_tools *validation_tools = d3d12_validator_create();
-      if (!validation_tools) {
-         debug_printf("D3D12: failed to initialize validator with experimental shader models disabled\n");
-         return nullptr;
-      }
-      d3d12_validator_destroy(validation_tools);
-   } else
+   if (d3d12_debug & D3D12_DEBUG_EXPERIMENTAL)
 #endif
    {
       D3D12EnableExperimentalFeatures = (PFN_D3D12ENABLEEXPERIMENTALFEATURES)util_dl_get_proc_address(d3d12_mod, "D3D12EnableExperimentalFeatures");
@@ -821,7 +869,7 @@ create_device(IUnknown *adapter)
       return NULL;
    }
 
-   ID3D12Device *dev;
+   ID3D12Device3 *dev;
    if (SUCCEEDED(D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0,
                  IID_PPV_ARGS(&dev))))
       return dev;
@@ -1041,13 +1089,16 @@ d3d12_init_null_rtv(struct d3d12_screen *screen)
    screen->dev->CreateRenderTargetView(NULL, &rtv, screen->null_rtv.cpu_handle);
 }
 
-bool
-d3d12_init_screen(struct d3d12_screen *screen, struct sw_winsys *winsys, IUnknown *adapter)
+void
+d3d12_init_screen_base(struct d3d12_screen *screen, struct sw_winsys *winsys, LUID *adapter_luid)
 {
    d3d12_debug = debug_get_option_d3d12_debug();
 
    screen->winsys = winsys;
+   if (adapter_luid)
+      screen->adapter_luid = *adapter_luid;
    mtx_init(&screen->descriptor_pool_mutex, mtx_plain);
+   mtx_init(&screen->submit_mutex, mtx_plain);
 
    screen->base.get_vendor = d3d12_get_vendor;
    screen->base.get_device_vendor = d3d12_get_device_vendor;
@@ -1059,7 +1110,12 @@ d3d12_init_screen(struct d3d12_screen *screen, struct sw_winsys *winsys, IUnknow
    screen->base.get_compiler_options = d3d12_get_compiler_options;
    screen->base.context_create = d3d12_context_create;
    screen->base.flush_frontbuffer = d3d12_flush_frontbuffer;
-   screen->base.destroy = d3d12_destroy_screen;
+}
+
+bool
+d3d12_init_screen(struct d3d12_screen *screen, IUnknown *adapter)
+{
+   assert(screen->base.destroy != nullptr);
 
 #ifndef DEBUG
    if (d3d12_debug & D3D12_DEBUG_DEBUG_LAYER)
@@ -1073,7 +1129,7 @@ d3d12_init_screen(struct d3d12_screen *screen, struct sw_winsys *winsys, IUnknow
 
    if (!screen->dev) {
       debug_printf("D3D12: failed to create device\n");
-      goto failed;
+      return false;
    }
 
    ID3D12InfoQueue *info_queue;
@@ -1094,31 +1150,38 @@ d3d12_init_screen(struct d3d12_screen *screen, struct sw_winsys *winsys, IUnknow
       NewFilter.DenyList.pIDList = msg_ids;
 
       info_queue->PushStorageFilter(&NewFilter);
+      info_queue->Release();
    }
 
    if (FAILED(screen->dev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS,
                                                &screen->opts,
                                                sizeof(screen->opts)))) {
       debug_printf("D3D12: failed to get device options\n");
-      goto failed;
+      return false;
+   }
+   if (FAILED(screen->dev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1,
+                                               &screen->opts1,
+                                               sizeof(screen->opts1)))) {
+      debug_printf("D3D12: failed to get device options\n");
+      return false;
    }
    if (FAILED(screen->dev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS2,
                                                &screen->opts2,
                                                sizeof(screen->opts2)))) {
       debug_printf("D3D12: failed to get device options\n");
-      goto failed;
+      return false;
    }
    if (FAILED(screen->dev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS3,
                                                &screen->opts3,
                                                sizeof(screen->opts3)))) {
       debug_printf("D3D12: failed to get device options\n");
-      goto failed;
+      return false;
    }
    if (FAILED(screen->dev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS4,
                                                &screen->opts4,
                                                sizeof(screen->opts4)))) {
       debug_printf("D3D12: failed to get device options\n");
-      goto failed;
+      return false;
    }
 
    screen->architecture.NodeIndex = 0;
@@ -1126,7 +1189,7 @@ d3d12_init_screen(struct d3d12_screen *screen, struct sw_winsys *winsys, IUnknow
                                                &screen->architecture,
                                                sizeof(screen->architecture)))) {
       debug_printf("D3D12: failed to get device architecture\n");
-      goto failed;
+      return false;
    }
 
    D3D12_FEATURE_DATA_FEATURE_LEVELS feature_levels;
@@ -1142,7 +1205,7 @@ d3d12_init_screen(struct d3d12_screen *screen, struct sw_winsys *winsys, IUnknow
                                                &feature_levels,
                                                sizeof(feature_levels)))) {
       debug_printf("D3D12: failed to get device feature levels\n");
-      goto failed;
+      return false;
    }
    screen->max_feature_level = feature_levels.MaxSupportedFeatureLevel;
 
@@ -1156,13 +1219,19 @@ d3d12_init_screen(struct d3d12_screen *screen, struct sw_winsys *winsys, IUnknow
    if (SUCCEEDED(screen->dev->QueryInterface(&device9))) {
       if (FAILED(device9->CreateCommandQueue1(&queue_desc, OpenGLOn12CreatorID,
                                               IID_PPV_ARGS(&screen->cmdqueue))))
-         goto failed;
+         return false;
       device9->Release();
    } else {
       if (FAILED(screen->dev->CreateCommandQueue(&queue_desc,
                                                  IID_PPV_ARGS(&screen->cmdqueue))))
-         goto failed;
+         return false;
    }
+
+   if (FAILED(screen->dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&screen->fence))))
+      return false;
+
+   if (!d3d12_init_residency(screen))
+      return false;
 
    UINT64 timestamp_freq;
    if (FAILED(screen->cmdqueue->GetTimestampFrequency(&timestamp_freq)))
@@ -1171,6 +1240,9 @@ d3d12_init_screen(struct d3d12_screen *screen, struct sw_winsys *winsys, IUnknow
 
    d3d12_screen_fence_init(&screen->base);
    d3d12_screen_resource_init(&screen->base);
+#ifdef HAVE_GALLIUM_D3D12_VIDEO
+   d3d12_screen_video_init(&screen->base);
+#endif
    slab_create_parent(&screen->transfer_pool, sizeof(struct d3d12_transfer), 16);
 
    struct pb_desc desc;
@@ -1178,14 +1250,27 @@ d3d12_init_screen(struct d3d12_screen *screen, struct sw_winsys *winsys, IUnknow
    desc.usage = (pb_usage_flags)(PB_USAGE_CPU_WRITE | PB_USAGE_GPU_READ);
 
    screen->bufmgr = d3d12_bufmgr_create(screen);
-   screen->cache_bufmgr = pb_cache_manager_create(screen->bufmgr, 0xfffff, 2, 0, 64 * 1024 * 1024);
-   screen->slab_bufmgr = pb_slab_range_manager_create(screen->cache_bufmgr, 16, 512,
+   if (!screen->bufmgr)
+      return false;
+
+   screen->cache_bufmgr = pb_cache_manager_create(screen->bufmgr, 0xfffff, 2, 0, 512 * 1024 * 1024);
+   if (!screen->cache_bufmgr)
+      return false;
+
+   screen->slab_bufmgr = pb_slab_range_manager_create(screen->cache_bufmgr, 16,
+                                                      D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
                                                       D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
                                                       &desc);
+   if (!screen->slab_bufmgr)
+      return false;
+
    desc.usage = (pb_usage_flags)(PB_USAGE_CPU_READ_WRITE | PB_USAGE_GPU_WRITE);
-   screen->readback_slab_bufmgr = pb_slab_range_manager_create(screen->cache_bufmgr, 16, 512,
+   screen->readback_slab_bufmgr = pb_slab_range_manager_create(screen->cache_bufmgr, 16,
+                                                               D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
                                                                D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
                                                                &desc);
+   if (!screen->readback_slab_bufmgr)
+      return false;
 
    screen->rtv_pool = d3d12_descriptor_pool_new(screen,
                                                 D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
@@ -1196,6 +1281,8 @@ d3d12_init_screen(struct d3d12_screen *screen, struct sw_winsys *winsys, IUnknow
    screen->view_pool = d3d12_descriptor_pool_new(screen,
                                                  D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
                                                  1024);
+   if (!screen->rtv_pool || !screen->dsv_pool || !screen->view_pool)
+      return false;
 
    d3d12_init_null_srvs(screen);
    d3d12_init_null_uavs(screen);
@@ -1203,8 +1290,27 @@ d3d12_init_screen(struct d3d12_screen *screen, struct sw_winsys *winsys, IUnknow
 
    screen->have_load_at_vertex = can_attribute_at_vertex(screen);
    screen->support_shader_images = can_shader_image_load_all_formats(screen);
-   return true;
+   ID3D12Device8 *dev8;
+   if (SUCCEEDED(screen->dev->QueryInterface(&dev8))) {
+      dev8->Release();
+      screen->support_create_not_resident = true;
+   }
 
-failed:
-   return false;
+   screen->nir_options = *dxil_get_nir_compiler_options();
+
+   static constexpr uint64_t known_good_warp_version = 10ull << 48 | 22000ull << 16;
+   if ((screen->vendor_id == HW_VENDOR_MICROSOFT &&
+        screen->driver_version < known_good_warp_version) ||
+      !screen->opts1.Int64ShaderOps) {
+      /* Work around old versions of WARP that are completely broken for 64bit shifts */
+      screen->nir_options.lower_pack_64_2x32_split = false;
+      screen->nir_options.lower_unpack_64_2x32_split = false;
+      screen->nir_options.lower_int64_options = (nir_lower_int64_options)~0;
+   }
+
+   if (!screen->opts.DoublePrecisionFloatShaderOps)
+      screen->nir_options.lower_doubles_options = (nir_lower_doubles_options)~0;
+
+   glsl_type_singleton_init_or_ref();
+   return true;
 }

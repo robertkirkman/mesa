@@ -23,9 +23,9 @@
  */
 
 #include "compiler/nir/nir.h"
-#include "radeon/radeon_uvd_enc.h"
-#include "radeon/radeon_vce.h"
-#include "radeon/radeon_video.h"
+#include "radeon_uvd_enc.h"
+#include "radeon_vce.h"
+#include "radeon_video.h"
 #include "si_pipe.h"
 #include "util/u_cpu_detect.h"
 #include "util/u_screen.h"
@@ -49,7 +49,7 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    struct si_screen *sscreen = (struct si_screen *)pscreen;
 
    /* Gfx8 (Polaris11) hangs, so don't enable this on Gfx8 and older chips. */
-   bool enable_sparse = sscreen->info.chip_class >= GFX9 &&
+   bool enable_sparse = sscreen->info.gfx_level >= GFX9 &&
       sscreen->info.has_sparse_vm_mappings;
 
    switch (param) {
@@ -69,12 +69,11 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_SHADER_STENCIL_EXPORT:
    case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
    case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
-   case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
-   case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
-   case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER:
+   case PIPE_CAP_FS_COORD_ORIGIN_UPPER_LEFT:
+   case PIPE_CAP_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
+   case PIPE_CAP_FS_COORD_PIXEL_CENTER_INTEGER:
    case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
    case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
-   case PIPE_CAP_VERTEX_SHADER_SATURATE:
    case PIPE_CAP_PRIMITIVE_RESTART:
    case PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX:
    case PIPE_CAP_CONDITIONAL_RENDER:
@@ -88,21 +87,21 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
    case PIPE_CAP_VERTEX_COLOR_CLAMPED:
    case PIPE_CAP_FRAGMENT_COLOR_CLAMPED:
-   case PIPE_CAP_TGSI_INSTANCEID:
+   case PIPE_CAP_VS_INSTANCEID:
    case PIPE_CAP_COMPUTE:
    case PIPE_CAP_TEXTURE_BUFFER_OBJECTS:
-   case PIPE_CAP_TGSI_VS_LAYER_VIEWPORT:
+   case PIPE_CAP_VS_LAYER_VIEWPORT:
    case PIPE_CAP_QUERY_PIPELINE_STATISTICS:
    case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
    case PIPE_CAP_SAMPLE_SHADING:
    case PIPE_CAP_DRAW_INDIRECT:
    case PIPE_CAP_CLIP_HALFZ:
-   case PIPE_CAP_TGSI_VS_WINDOW_SPACE_POSITION:
+   case PIPE_CAP_VS_WINDOW_SPACE_POSITION:
    case PIPE_CAP_POLYGON_OFFSET_CLAMP:
    case PIPE_CAP_MULTISAMPLE_Z_RESOLVE:
    case PIPE_CAP_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION:
    case PIPE_CAP_TGSI_TEXCOORD:
-   case PIPE_CAP_TGSI_FS_FINE_DERIVATIVE:
+   case PIPE_CAP_FS_FINE_DERIVATIVE:
    case PIPE_CAP_CONDITIONAL_RENDER_INVERTED:
    case PIPE_CAP_TEXTURE_FLOAT_LINEAR:
    case PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR:
@@ -110,30 +109,29 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_SAMPLER_VIEW_TARGET:
    case PIPE_CAP_TEXTURE_QUERY_LOD:
    case PIPE_CAP_TEXTURE_GATHER_SM5:
-   case PIPE_CAP_TGSI_TXQS:
+   case PIPE_CAP_TEXTURE_QUERY_SAMPLES:
    case PIPE_CAP_FORCE_PERSAMPLE_INTERP:
    case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
-   case PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL:
-   case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
+   case PIPE_CAP_FS_POSITION_IS_SYSVAL:
+   case PIPE_CAP_FS_FACE_IS_INTEGER_SYSVAL:
    case PIPE_CAP_INVALIDATE_BUFFER:
    case PIPE_CAP_SURFACE_REINTERPRET_BLOCKS:
    case PIPE_CAP_QUERY_BUFFER_OBJECT:
    case PIPE_CAP_QUERY_MEMORY_INFO:
-   case PIPE_CAP_TGSI_PACK_HALF_FLOAT:
+   case PIPE_CAP_SHADER_PACK_HALF_FLOAT:
    case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
    case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
    case PIPE_CAP_POLYGON_OFFSET_UNITS_UNSCALED:
    case PIPE_CAP_STRING_MARKER:
    case PIPE_CAP_CLEAR_TEXTURE:
    case PIPE_CAP_CULL_DISTANCE:
-   case PIPE_CAP_TGSI_ARRAY_COMPONENTS:
-   case PIPE_CAP_TGSI_CAN_READ_OUTPUTS:
-   case PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY:
+   case PIPE_CAP_SHADER_ARRAY_COMPONENTS:
+   case PIPE_CAP_SHADER_CAN_READ_OUTPUTS:
    case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
    case PIPE_CAP_STREAM_OUTPUT_INTERLEAVE_BUFFERS:
    case PIPE_CAP_DOUBLES:
    case PIPE_CAP_TGSI_TEX_TXF_LZ:
-   case PIPE_CAP_TGSI_TES_LAYER_VIEWPORT:
+   case PIPE_CAP_TES_LAYER_VIEWPORT:
    case PIPE_CAP_BINDLESS_TEXTURE:
    case PIPE_CAP_QUERY_TIMESTAMP:
    case PIPE_CAP_QUERY_TIME_ELAPSED:
@@ -142,19 +140,18 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_LOAD_CONSTBUF:
    case PIPE_CAP_INT64:
    case PIPE_CAP_INT64_DIVMOD:
-   case PIPE_CAP_TGSI_CLOCK:
+   case PIPE_CAP_SHADER_CLOCK:
    case PIPE_CAP_CAN_BIND_CONST_BUFFER_AS_VERTEX:
    case PIPE_CAP_ALLOW_MAPPED_BUFFERS_DURING_EXECUTION:
    case PIPE_CAP_SIGNED_VERTEX_BUFFER_OFFSET:
-   case PIPE_CAP_TGSI_BALLOT:
-   case PIPE_CAP_TGSI_VOTE:
+   case PIPE_CAP_SHADER_BALLOT:
+   case PIPE_CAP_SHADER_GROUP_VOTE:
    case PIPE_CAP_FBFETCH:
    case PIPE_CAP_COMPUTE_GRID_INFO_LAST_BLOCK:
    case PIPE_CAP_IMAGE_LOAD_FORMATTED:
    case PIPE_CAP_PREFER_COMPUTE_FOR_MULTIMEDIA:
    case PIPE_CAP_TGSI_DIV:
    case PIPE_CAP_PACKED_UNIFORMS:
-   case PIPE_CAP_SHADER_SAMPLES_IDENTICAL:
    case PIPE_CAP_GL_SPIRV:
    case PIPE_CAP_ALPHA_TO_COVERAGE_DITHER_CONTROL:
    case PIPE_CAP_MAP_UNSYNCHRONIZED_THREAD_SAFE:
@@ -164,8 +161,10 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_DEMOTE_TO_HELPER_INVOCATION:
    case PIPE_CAP_PREFER_REAL_BUFFER_IN_CONSTBUF0:
    case PIPE_CAP_COMPUTE_SHADER_DERIVATIVES:
-   case PIPE_CAP_TGSI_ATOMINC_WRAP:
+   case PIPE_CAP_IMAGE_ATOMIC_INC_WRAP:
    case PIPE_CAP_IMAGE_STORE_FORMATTED:
+   case PIPE_CAP_ALLOW_DRAW_OUT_OF_ORDER:
+   case PIPE_CAP_QUERY_SO_OVERFLOW:
       return 1;
 
    case PIPE_CAP_TEXTURE_TRANSFER_MODES:
@@ -173,6 +172,9 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
    case PIPE_CAP_DRAW_VERTEX_STATE:
       return !(sscreen->debug_flags & DBG(NO_FAST_DISPLAY_LIST));
+
+   case PIPE_CAP_SHADER_SAMPLES_IDENTICAL:
+      return sscreen->info.gfx_level < GFX11;
 
    case PIPE_CAP_GLSL_ZERO_INIT:
       return 2;
@@ -183,11 +185,8 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_CUBE_MAP_ARRAY:
       return sscreen->info.has_3d_cube_border_color_mipmap;
 
-   case PIPE_CAP_QUERY_SO_OVERFLOW:
-      return !sscreen->use_ngg_streamout;
-
    case PIPE_CAP_POST_DEPTH_COVERAGE:
-      return sscreen->info.chip_class >= GFX10;
+      return sscreen->info.gfx_level >= GFX10;
 
    case PIPE_CAP_GRAPHICS:
       return sscreen->info.has_graphics;
@@ -232,12 +231,42 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_GL_BEGIN_END_BUFFER_SIZE:
       return 4096 * 1024;
 
-   case PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE:
-   case PIPE_CAP_MAX_SHADER_BUFFER_SIZE:
-      /* Align it down to 256 bytes. I've chosen the number randomly. */
-      return ROUND_DOWN_TO(MIN2(sscreen->info.max_alloc_size, INT_MAX), 256);
+   case PIPE_CAP_MAX_TEXEL_BUFFER_ELEMENTS_UINT: {
+      unsigned max_texels =
+         pscreen->get_param(pscreen, PIPE_CAP_MAX_SHADER_BUFFER_SIZE_UINT);
+
+      /* FYI, BUF_RSRC_WORD2.NUM_RECORDS field limit is UINT32_MAX. */
+
+      /* Gfx8 and older use the size in bytes for bounds checking, and the max element size
+       * is 16B. Gfx9 and newer use the VGPR index for bounds checking.
+       */
+      if (sscreen->info.gfx_level <= GFX8)
+         max_texels = MIN2(max_texels, UINT32_MAX / 16);
+      else
+         /* Gallium has a limitation that it can only bind UINT32_MAX bytes, not texels.
+          * TODO: Remove this after the gallium interface is changed. */
+         max_texels = MIN2(max_texels, UINT32_MAX / 16);
+
+      return max_texels;
+   }
+
+   case PIPE_CAP_MAX_CONSTANT_BUFFER_SIZE_UINT:
+   case PIPE_CAP_MAX_SHADER_BUFFER_SIZE_UINT: {
+      /* Return 1/4th of the heap size as the maximum because the max size is not practically
+       * allocatable. Also, this can only return UINT32_MAX at most.
+       */
+      unsigned max_size = MIN2((sscreen->info.max_heap_size_kb * 1024ull) / 4, UINT32_MAX);
+
+      /* Allow max 512 MB to pass CTS with a 32-bit build. */
+      if (sizeof(void*) == 4)
+         max_size = MIN2(max_size, 512 * 1024 * 1024);
+
+      return max_size;
+   }
+
    case PIPE_CAP_MAX_TEXTURE_MB:
-      return sscreen->info.max_alloc_size / (1024 * 1024);
+      /* Allow 1/4th of the heap size. */
+      return sscreen->info.max_heap_size_kb / 1024 / 4;
 
    case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:
    case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:
@@ -251,6 +280,13 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_UMA:
    case PIPE_CAP_PREFER_IMM_ARRAYS_AS_CONSTBUF:
       return 0;
+
+   case PIPE_CAP_CONTEXT_PRIORITY_MASK:
+      if (!(sscreen->info.is_amdgpu && sscreen->info.drm_minor >= 22))
+         return 0;
+      return PIPE_CONTEXT_PRIORITY_LOW |
+             PIPE_CONTEXT_PRIORITY_MEDIUM |
+             PIPE_CONTEXT_PRIORITY_HIGH;
 
    case PIPE_CAP_FENCE_SIGNAL:
       return sscreen->info.has_syncobj;
@@ -273,7 +309,7 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 32;
 
    case PIPE_CAP_TEXTURE_BORDER_COLOR_QUIRK:
-      return sscreen->info.chip_class <= GFX8 ? PIPE_QUIRK_TEXTURE_BORDER_COLOR_SWIZZLE_R600 : 0;
+      return sscreen->info.gfx_level <= GFX8 ? PIPE_QUIRK_TEXTURE_BORDER_COLOR_SWIZZLE_R600 : 0;
 
    /* Stream output. */
    case PIPE_CAP_MAX_STREAM_OUTPUT_SEPARATE_COMPONENTS:
@@ -305,12 +341,12 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
       if (!sscreen->info.has_3d_cube_border_color_mipmap)
          return 0;
-      if (sscreen->info.chip_class >= GFX10)
+      if (sscreen->info.gfx_level >= GFX10)
          return 14;
       /* textures support 8192, but layered rendering supports 2048 */
       return 12;
    case PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS:
-      if (sscreen->info.chip_class >= GFX10)
+      if (sscreen->info.gfx_level >= GFX10)
          return 8192;
       /* textures support 8192, but layered rendering supports 2048 */
       return 2048;
@@ -421,7 +457,7 @@ static int si_get_shader_param(struct pipe_screen *pscreen, enum pipe_shader_typ
       return shader == PIPE_SHADER_FRAGMENT ? 8 : 32;
    case PIPE_SHADER_CAP_MAX_TEMPS:
       return 256; /* Max native temporaries. */
-   case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
+   case PIPE_SHADER_CAP_MAX_CONST_BUFFER0_SIZE:
       return 1 << 26; /* 64 MB */
    case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
       return SI_NUM_CONST_BUFFERS;
@@ -432,12 +468,8 @@ static int si_get_shader_param(struct pipe_screen *pscreen, enum pipe_shader_typ
       return SI_NUM_SHADER_BUFFERS;
    case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
       return SI_NUM_IMAGES;
-   case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
-      return 0;
    case PIPE_SHADER_CAP_PREFERRED_IR:
       return PIPE_SHADER_IR_NIR;
-   case PIPE_SHADER_CAP_LOWER_IF_THRESHOLD:
-      return 4;
 
    case PIPE_SHADER_CAP_SUPPORTED_IRS:
       if (shader == PIPE_SHADER_COMPUTE) {
@@ -450,18 +482,16 @@ static int si_get_shader_param(struct pipe_screen *pscreen, enum pipe_shader_typ
              (1 << PIPE_SHADER_IR_NIR);
 
    /* Supported boolean features. */
-   case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
+   case PIPE_SHADER_CAP_CONT_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
    case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
    case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
    case PIPE_SHADER_CAP_INTEGERS:
    case PIPE_SHADER_CAP_INT64_ATOMICS:
-   case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
-   case PIPE_SHADER_CAP_TGSI_SKIP_MERGE_REGISTERS:
-   case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
-   case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
-   case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
+   case PIPE_SHADER_CAP_DROUND_SUPPORTED:
+   case PIPE_SHADER_CAP_LDEXP_SUPPORTED:
+   case PIPE_SHADER_CAP_DFRACEXP_DLDEXP_SUPPORTED:
    case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR: /* lowered in finalize_nir */
    case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR: /* lowered in finalize_nir */
       return 1;
@@ -593,6 +623,10 @@ static int si_get_video_param(struct pipe_screen *screen, enum pipe_video_profil
             return 4;
          else
             return 0;
+      case PIPE_VIDEO_CAP_EFC_SUPPORTED:
+         return ((sscreen->info.family >= CHIP_RENOIR) &&
+                 (sscreen->info.family < CHIP_NAVI21) &&
+                 !(sscreen->debug_flags & DBG(NO_EFC)));
       default:
          return 0;
       }
@@ -601,7 +635,7 @@ static int si_get_video_param(struct pipe_screen *screen, enum pipe_video_profil
    switch (param) {
    case PIPE_VIDEO_CAP_SUPPORTED:
       if (codec < PIPE_VIDEO_FORMAT_MPEG4_AVC &&
-          sscreen->info.family >= CHIP_BEIGE_GOBY)
+          sscreen->info.family >= CHIP_NAVI24)
          return false;
       if (codec != PIPE_VIDEO_FORMAT_JPEG &&
           !(sscreen->info.has_video_hw.uvd_decode ||
@@ -610,9 +644,15 @@ static int si_get_video_param(struct pipe_screen *screen, enum pipe_video_profil
 
       switch (codec) {
       case PIPE_VIDEO_FORMAT_MPEG12:
-         return profile != PIPE_VIDEO_PROFILE_MPEG1;
+         if (sscreen->info.gfx_level >= GFX11)
+            return false;
+         else
+            return profile != PIPE_VIDEO_PROFILE_MPEG1;
       case PIPE_VIDEO_FORMAT_MPEG4:
-         return 1;
+         if (sscreen->info.gfx_level >= GFX11)
+            return false;
+         else
+            return true;
       case PIPE_VIDEO_FORMAT_MPEG4_AVC:
          if ((sscreen->info.family == CHIP_POLARIS10 || sscreen->info.family == CHIP_POLARIS11) &&
              sscreen->info.uvd_fw_version < UVD_FW_1_66_16) {
@@ -621,7 +661,10 @@ static int si_get_video_param(struct pipe_screen *screen, enum pipe_video_profil
          }
          return true;
       case PIPE_VIDEO_FORMAT_VC1:
-         return true;
+         if (sscreen->info.gfx_level >= GFX11)
+            return false;
+         else
+            return true;
       case PIPE_VIDEO_FORMAT_HEVC:
          /* Carrizo only supports HEVC Main */
          if (sscreen->info.family >= CHIP_STONEY)
@@ -649,7 +692,7 @@ static int si_get_video_param(struct pipe_screen *screen, enum pipe_video_profil
             return false;
          return true;
       case PIPE_VIDEO_FORMAT_AV1:
-         if (sscreen->info.family < CHIP_SIENNA_CICHLID)
+         if (sscreen->info.family < CHIP_NAVI21)
             return false;
          return true;
       default:
@@ -802,9 +845,9 @@ static int si_get_compute_param(struct pipe_screen *screen, enum pipe_shader_ir 
    case PIPE_COMPUTE_CAP_MAX_GRID_SIZE:
       if (ret) {
          uint64_t *grid_size = ret;
-         grid_size[0] = 65535;
-         grid_size[1] = 65535;
-         grid_size[2] = 65535;
+         grid_size[0] = UINT32_MAX;
+         grid_size[1] = UINT32_MAX;
+         grid_size[2] = UINT32_MAX;
       }
       return 3 * sizeof(uint64_t);
 
@@ -846,7 +889,7 @@ static int si_get_compute_param(struct pipe_screen *screen, enum pipe_shader_ir 
           * 4 * MAX_MEM_ALLOC_SIZE.
           */
          *max_global_size =
-            MIN2(4 * max_mem_alloc_size, MAX2(sscreen->info.gart_size, sscreen->info.vram_size));
+            MIN2(4 * max_mem_alloc_size, sscreen->info.max_heap_size_kb * 1024ull);
       }
       return sizeof(uint64_t);
 
@@ -854,7 +897,10 @@ static int si_get_compute_param(struct pipe_screen *screen, enum pipe_shader_ir 
       if (ret) {
          uint64_t *max_local_size = ret;
          /* Value reported by the closed source driver. */
-         *max_local_size = 32768;
+         if (sscreen->info.gfx_level == GFX6)
+            *max_local_size = 32 * 1024;
+         else
+            *max_local_size = 64 * 1024;
       }
       return sizeof(uint64_t);
 
@@ -870,7 +916,10 @@ static int si_get_compute_param(struct pipe_screen *screen, enum pipe_shader_ir 
       if (ret) {
          uint64_t *max_mem_alloc_size = ret;
 
-         *max_mem_alloc_size = sscreen->info.max_alloc_size;
+         /* Return 1/4 of the heap size as the maximum because the max size is not practically
+          * allocatable.
+          */
+         *max_mem_alloc_size = (sscreen->info.max_heap_size_kb / 4) * 1024ull;
       }
       return sizeof(uint64_t);
 
@@ -973,12 +1022,9 @@ static void si_init_renderer_string(struct si_screen *sscreen)
    char first_name[256], second_name[32] = {}, kernel_version[128] = {};
    struct utsname uname_data;
 
-   if (sscreen->info.marketing_name) {
-      snprintf(first_name, sizeof(first_name), "%s", sscreen->info.marketing_name);
-      snprintf(second_name, sizeof(second_name), "%s, ", sscreen->info.lowercase_name);
-   } else {
-      snprintf(first_name, sizeof(first_name), "AMD %s", sscreen->info.name);
-   }
+   snprintf(first_name, sizeof(first_name), "%s",
+            sscreen->info.marketing_name ? sscreen->info.marketing_name : sscreen->info.name);
+   snprintf(second_name, sizeof(second_name), "%s, ", sscreen->info.lowercase_name);
 
    if (uname(&uname_data) == 0)
       snprintf(kernel_version, sizeof(kernel_version), ", %s", uname_data.release);
@@ -990,8 +1036,6 @@ static void si_init_renderer_string(struct si_screen *sscreen)
 
 void si_init_screen_get_functions(struct si_screen *sscreen)
 {
-   util_cpu_detect();
-
    sscreen->b.get_name = si_get_name;
    sscreen->b.get_vendor = si_get_vendor;
    sscreen->b.get_device_vendor = si_get_device_vendor;
@@ -1020,7 +1064,7 @@ void si_init_screen_get_functions(struct si_screen *sscreen)
 
    /* fma32 is too slow for gpu < gfx9, so force it only when gpu >= gfx9 */
    bool force_fma32 =
-      sscreen->info.chip_class >= GFX9 && sscreen->options.force_use_fma32;
+      sscreen->info.gfx_level >= GFX9 && sscreen->options.force_use_fma32;
 
    const struct nir_shader_compiler_options nir_options = {
       .lower_scmp = true,
@@ -1049,11 +1093,11 @@ void si_init_screen_get_functions(struct si_screen *sscreen)
        * gfx9 and newer prefer FMA for F16 because of the packed instruction.
        * gfx10 and older prefer MAD for F32 because of the legacy instruction.
        */
-      .lower_ffma16 = sscreen->info.chip_class < GFX9,
-      .lower_ffma32 = sscreen->info.chip_class < GFX10_3 && !force_fma32,
+      .lower_ffma16 = sscreen->info.gfx_level < GFX9,
+      .lower_ffma32 = sscreen->info.gfx_level < GFX10_3 && !force_fma32,
       .lower_ffma64 = false,
-      .fuse_ffma16 = sscreen->info.chip_class >= GFX9,
-      .fuse_ffma32 = sscreen->info.chip_class >= GFX10_3 || force_fma32,
+      .fuse_ffma16 = sscreen->info.gfx_level >= GFX9,
+      .fuse_ffma32 = sscreen->info.gfx_level >= GFX10_3 || force_fma32,
       .fuse_ffma64 = true,
       .lower_fmod = true,
       .lower_pack_snorm_4x8 = true,
@@ -1068,12 +1112,13 @@ void si_init_screen_get_functions(struct si_screen *sscreen)
       .lower_insert_word = true,
       .lower_rotate = true,
       .lower_to_scalar = true,
+      .lower_int64_options = nir_lower_imul_2x32_64,
       .has_sdot_4x8 = sscreen->info.has_accelerated_dot_product,
       .has_udot_4x8 = sscreen->info.has_accelerated_dot_product,
       .has_dot_2x16 = sscreen->info.has_accelerated_dot_product,
       .optimize_sample_mask_in = true,
-      .max_unroll_iterations = 128,
-      .max_unroll_iterations_aggressive = 128,
+      .max_unroll_iterations = LLVM_VERSION_MAJOR >= 13 ? 128 : 32,
+      .max_unroll_iterations_aggressive = LLVM_VERSION_MAJOR >= 13 ? 128 : 32,
       .use_interpolated_input_intrinsics = true,
       .lower_uniforms_to_ubo = true,
       .support_16bit_alu = sscreen->options.fp16,
@@ -1085,6 +1130,21 @@ void si_init_screen_get_functions(struct si_screen *sscreen)
          nir_pack_varying_interp_loc_center |
          nir_pack_varying_interp_loc_sample |
          nir_pack_varying_interp_loc_centroid,
+      .lower_io_variables = true,
+      .lower_fs_color_inputs = true,
+      /* HW supports indirect indexing for: | Enabled in driver
+       * -------------------------------------------------------
+       * TCS inputs                         | Yes
+       * TES inputs                         | Yes
+       * GS inputs                          | No
+       * -------------------------------------------------------
+       * VS outputs before TCS              | No
+       * TCS outputs                        | Yes
+       * VS/TES outputs before GS           | No
+       */
+      .support_indirect_inputs = BITFIELD_BIT(MESA_SHADER_TESS_CTRL) |
+                                 BITFIELD_BIT(MESA_SHADER_TESS_EVAL),
+      .support_indirect_outputs = BITFIELD_BIT(MESA_SHADER_TESS_CTRL),
    };
    sscreen->nir_options = nir_options;
 }

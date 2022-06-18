@@ -29,15 +29,16 @@ Here's a list of those requirements:
 
   * ``logicOp``
   * ``fillModeNonSolid``
-  * ``wideLines``
-  * ``largePoints``
   * ``alphaToOne``
   * ``shaderClipDistance``
 
 * Device extensions:
 
   * `VK_KHR_maintenance1`_
-  * `VK_EXT_custom_border_color`_
+  * `VK_KHR_create_renderpass2`_
+  * `VK_KHR_imageless_framebuffer`_
+  * `VK_KHR_timeline_semaphore`_
+  * `VK_EXT_custom_border_color`_ with ``customBorderColorWithoutFormat``
   * `VK_EXT_provoking_vertex`_
   * `VK_EXT_line_rasterization`_, with the following ``VkPhysicalDeviceLineRasterizationFeaturesEXT``:
 
@@ -58,7 +59,7 @@ OpenGL 3.0
 ^^^^^^^^^^
 
 
-For OpenGL 3.0 support, the following additional requirements needs to be
+For OpenGL 3.0 support, the following additional requirements must be
 supported:
 
 * ``VkPhysicalDeviceFeatures``:
@@ -93,7 +94,7 @@ verified:
 OpenGL 3.3
 ^^^^^^^^^^
 
-For OpenGL 3.3 support, the following additional requirements needs to be
+For OpenGL 3.3 support, the following additional requirements must be
 supported, although some of these might not actually get verified:
 
 * ``VkPhysicalDeviceFeatures``:
@@ -107,7 +108,7 @@ supported, although some of these might not actually get verified:
 OpenGL 4.0
 ^^^^^^^^^^
 
-For OpenGL 4.0 support, the following additional requirements needs to be
+For OpenGL 4.0 support, the following additional requirements must be
 supported:
 
 * ``VkPhysicalDeviceFeatures``:
@@ -120,7 +121,7 @@ supported:
 
   * `VK_KHR_maintenance2`_
 
-* Formats requiring ``VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT``:
+* Formats requiring ``VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT``:
 
       * ``VK_FORMAT_R32G32B32_SFLOAT``
       * ``VK_FORMAT_R32G32B32_SINT``
@@ -129,17 +130,26 @@ supported:
 OpenGL 4.1
 ^^^^^^^^^^
 
-For OpenGL 4.1 support, the following additional ``VkPhysicalDeviceLimits``
-are required:
+For OpenGL 4.1 support, the following additional requirements must be
+supported:
 
-* ``maxImageDimension2D`` ≥ 16384
-* ``maxViewports`` ≥ 16
+* ``VkPhysicalDeviceFeatures``:
+
+  * ``multiViewport``
+
+* ``VkPhysicalDeviceLimits``
+
+  * ``maxImageDimension2D`` ≥ 16384
+  * ``maxViewports`` ≥ 16
 
 OpenGL 4.2
 ^^^^^^^^^^
 
-For OpenGL 4.2 support, the following additional requirements needs to be
+For OpenGL 4.2 support, the following additional requirements must be
 supported:
+
+* Device extensions:
+    * `VK_EXT_2d_view_of_3d`_
 
 * ``VkPhysicalDeviceLimits``:
 
@@ -147,7 +157,7 @@ supported:
   * ``shaderStorageImageWriteWithoutFormat``
 
 * For Vulkan 1.2 and above:
-  
+
   * ``VkPhysicalDeviceVulkan11Features``:
 
     * ``shaderDrawParameters``
@@ -171,13 +181,12 @@ supported:
 OpenGL 4.3
 ^^^^^^^^^^
 
-For OpenGL 4.3 support, the following additional requirements needs to be
+For OpenGL 4.3 support, the following additional requirements must be
 supported:
 
 * ``VkPhysicalDeviceFeatures``:
 
   * ``robustBufferAccess``
-  * ``multiViewport``
 
 * Formats requiring ``VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT``:
 
@@ -192,7 +201,7 @@ supported:
 OpenGL 4.4
 ^^^^^^^^^^
 
-For OpenGL 4.4 support, the following additional requirements needs to be
+For OpenGL 4.4 support, the following additional requirements must be
 supported:
 
 * Formats requiring ``VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT``:
@@ -261,6 +270,8 @@ variable:
    Print the TGSI form of TGSI shaders to stderr.
 ``validation``
    Dump Validation layer output.
+``sync``
+   Emit full synchronization barriers before every draw and dispatch.
 
 Vulkan Validation Layers
 ^^^^^^^^^^^^^^^^^^^^^^^^
@@ -284,11 +295,15 @@ questions, don't hesitate to visit `#zink on OFTC
 
 
 .. _VK_KHR_maintenance1: https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_KHR_maintenance1.html
+.. _VK_KHR_create_renderpass2: https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_KHR_create_renderpass2.html
+.. _VK_KHR_imageless_framebuffer: https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_KHR_imageless_framebuffer.html
+.. _VK_KHR_timeline_semaphore: https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_KHR_timeline_semaphore.html
 .. _VK_KHR_external_memory: https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_KHR_external_memory.html
 .. _VK_EXT_scalar_block_layout: https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_EXT_scalar_block_layout.html
 .. _VK_EXT_transform_feedback: https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_EXT_transform_feedback.html
 .. _VK_EXT_conditional_rendering: https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_EXT_conditional_rendering.html
 .. _VK_EXT_vertex_attribute_divisor: https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_EXT_vertex_attribute_divisor.html
+.. _VK_EXT_2d_view_of_3d: https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VK_EXT_image_2d_view_of_3d.html
 .. _VK_KHR_maintenance2: https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_KHR_maintenance2.html
 .. _VK_KHR_shader_draw_parameters: https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_KHR_shader_draw_parameters.html
 .. _VK_KHR_draw_indirect_count: https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_KHR_draw_indirect_count.html

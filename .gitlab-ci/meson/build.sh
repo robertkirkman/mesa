@@ -63,7 +63,7 @@ meson _build --native-file=native.file \
       -D prefix=`pwd`/install \
       -D libdir=lib \
       -D buildtype=${BUILDTYPE:-debug} \
-      -D build-tests=true \
+      -D build-tests=false \
       -D c_args="$(echo -n $C_ARGS)" \
       -D cpp_args="$(echo -n $CPP_ARGS)" \
       -D libunwind=${UNWIND} \
@@ -71,6 +71,7 @@ meson _build --native-file=native.file \
       ${GALLIUM_ST} \
       -D gallium-drivers=${GALLIUM_DRIVERS:-[]} \
       -D vulkan-drivers=${VULKAN_DRIVERS:-[]} \
+      -D video-codecs=h264dec,h264enc,h265dec,h265enc,vc1dec \
       -D werror=true \
       ${EXTRA_OPTION}
 cd _build

@@ -36,6 +36,12 @@ bi_pack_header(bi_clause *clause, bi_clause *next_1, bi_clause *next_2)
         unsigned dependency_wait = next_1 ? next_1->dependencies : 0;
         dependency_wait |= next_2 ? next_2->dependencies : 0;
 
+        /* Signal barriers (slot #7) immediately. This is not optimal but good
+         * enough. Doing better requires extending the IR and scheduler.
+         */
+        if (clause->message_type == BIFROST_MESSAGE_BARRIER)
+                dependency_wait |= BITFIELD_BIT(7);
+
         bool staging_barrier = next_1 ? next_1->staging_barrier : false;
         staging_barrier |= next_2 ? next_2->staging_barrier : 0;
 
@@ -51,6 +57,7 @@ bi_pack_header(bi_clause *clause, bi_clause *next_1, bi_clause *next_2)
                 .dependency_slot = clause->scoreboard_id,
                 .message_type = clause->message_type,
                 .next_message_type = next_1 ? next_1->message_type : 0,
+                .flush_to_zero = clause->ftz ? BIFROST_FTZ_ALWAYS : BIFROST_FTZ_DISABLE
         };
 
         uint64_t u = 0;
@@ -114,6 +121,12 @@ bi_assign_slots(bi_tuple *now, bi_tuple *prev)
 
         if (now->add) {
                 bi_foreach_src(now->add, src) {
+                        /* This is not a real source, we shouldn't assign a
+                         * slot for it.
+                         */
+                        if (now->add->op == BI_OPCODE_BLEND && src == 4)
+                                continue;
+
                         if (!(src == 0 && read_dreg))
                                 bi_assign_slot_read(&now->regs, (now->add)->src[src]);
                 }
@@ -297,8 +310,6 @@ bi_get_src_new(bi_instr *ins, bi_registers *regs, unsigned s)
                 return bi_get_src_slot(regs, src.value);
         else if (src.type == BI_INDEX_PASS)
                 return src.value;
-        else if (bi_is_null(src) && ins->op == BI_OPCODE_ZS_EMIT && s < 2)
-                return BIFROST_SRC_STAGE;
         else {
                 /* TODO make safer */
                 return BIFROST_SRC_STAGE;

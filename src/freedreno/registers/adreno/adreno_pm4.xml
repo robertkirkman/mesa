@@ -455,6 +455,7 @@ xsi:schemaLocation="http://nouveau.freedesktop.org/ rules-ng.xsd">
 	<value name="CP_WAIT_TWO_REGS" value="0x70" varset="chip" variants="A6XX"/>
 	<value name="CP_MEMCPY" value="0x75" varset="chip" variants="A6XX"/>
 	<value name="CP_SET_BIN_DATA5_OFFSET" value="0x2e" varset="chip" variants="A6XX"/>
+	<!-- Note, kgsl calls this CP_SET_AMBLE: -->
 	<value name="CP_SET_CTXSWITCH_IB" value="0x55" varset="chip" variants="A6XX"/>
 
 	<!--
@@ -1603,6 +1604,13 @@ opcode: CP_LOAD_STATE4 (30) (4 dwords)
 		<bitfield name="BIT" low="20" high="24" type="uint"/>
 		<!-- execute CP_WAIT_FOR_ME beforehand -->
 		<bitfield name="WAIT_FOR_ME" pos="25" type="boolean"/>
+		<!--
+			Appears only in:
+				opcode: CP_REG_TEST (39) (4 dwords)
+						{ REG = 0 | BIT = 0 | WAIT_FOR_ME | UNK31 }
+			Seem to force CP_REG_TEST to write false
+		 -->
+		<bitfield name="UNK31" pos="31" type="boolean"/>
 	</reg32>
 </domain>
 
@@ -1618,6 +1626,16 @@ opcode: CP_LOAD_STATE4 (30) (4 dwords)
 	</enum>
 	<reg32 offset="0" name="0">
 		<bitfield name="REG0" low="0" high="17" type="hex"/>
+
+		<!--
+			Blob uses them for vkCmdClearAttachments in gmem mode. Examples:
+				opcode: CP_COND_REG_EXEC (47) (3 dwords)
+						{ REG0 = 0 | MODE = PRED_TEST | 0x140000 }
+				opcode: CP_COND_REG_EXEC (47) (3 dwords)
+						{ REG0 = 0 | MODE = PRED_TEST | 0x100000 }
+		-->
+		<bitfield name="UNK18" pos="18" varset="chip" variants="A6XX-" type="boolean"/>
+		<bitfield name="UNK20" pos="20" varset="chip" variants="A6XX-" type="boolean"/>
 
 		<!--
 			Note: these bits have the same meaning, and use the same
@@ -1703,6 +1721,8 @@ opcode: CP_LOAD_STATE4 (30) (4 dwords)
 				This can only be set by the RB (i.e. the kernel)
 				and executes with protected mode off, but
 				is otherwise similar to SAVE_IB.
+
+				Note, kgsl calls this CP_KMD_AMBLE_TYPE
 			</doc>
 		</value>
 	</enum>

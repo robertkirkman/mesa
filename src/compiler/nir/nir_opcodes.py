@@ -78,8 +78,6 @@ class Opcode(object):
       assert 0 <= output_size <= 5 or (output_size == 8) or (output_size == 16)
       for size in input_sizes:
          assert 0 <= size <= 5 or (size == 8) or (size == 16)
-         if output_size == 0:
-            assert size == 0
          if output_size != 0:
             assert size != 0
       self.name = name
@@ -369,6 +367,18 @@ unpack_2x16("unorm")
 unpack_4x8("unorm")
 unpack_2x16("half")
 
+# Convert two unsigned integers into a packed unsigned short (clamp is applied).
+unop_horiz("pack_uint_2x16", 1, tuint32, 2, tuint32, """
+dst.x = _mesa_unsigned_to_unsigned(src0.x, 16);
+dst.x |= _mesa_unsigned_to_unsigned(src0.y, 16) << 16;
+""")
+
+# Convert two signed integers into a packed signed short (clamp is applied).
+unop_horiz("pack_sint_2x16", 1, tint32, 2, tint32, """
+dst.x = _mesa_signed_to_signed(src0.x, 16) & 0xffff;
+dst.x |= _mesa_signed_to_signed(src0.y, 16) << 16;
+""")
+
 unop_horiz("pack_uvec2_to_uint", 1, tuint32, 2, tuint32, """
 dst.x = (src0.x & 0xffff) | (src0.y << 16);
 """)
@@ -470,12 +480,12 @@ for (bit = bit_size - 1; bit >= 0; bit--) {
    if ((src0 & (1u << bit)) != 0)
       break;
 }
-dst = (unsigned)(31 - bit);
+dst = (unsigned)(bit_size - bit - 1);
 """)
 
 unop("ifind_msb", tint32, """
 dst = -1;
-for (int bit = 31; bit >= 0; bit--) {
+for (int bit = bit_size - 1; bit >= 0; bit--) {
    /* If src0 < 0, we're looking for the first 0 bit.
     * if src0 >= 0, we're looking for the first 1 bit.
     */
@@ -844,10 +854,10 @@ binop_reduce("fany_nequal", 1, tfloat32, tfloat32, "{src0} != {src1}",
 # These comparisons for integer-less hardware return 1.0 and 0.0 for true
 # and false respectively
 
-binop("slt", tfloat32, "", "(src0 < src1) ? 1.0f : 0.0f") # Set on Less Than
+binop("slt", tfloat, "", "(src0 < src1) ? 1.0f : 0.0f") # Set on Less Than
 binop("sge", tfloat, "", "(src0 >= src1) ? 1.0f : 0.0f") # Set on Greater or Equal
-binop("seq", tfloat32, _2src_commutative, "(src0 == src1) ? 1.0f : 0.0f") # Set on Equal
-binop("sne", tfloat32, _2src_commutative, "(src0 != src1) ? 1.0f : 0.0f") # Set on Not Equal
+binop("seq", tfloat, _2src_commutative, "(src0 == src1) ? 1.0f : 0.0f") # Set on Equal
+binop("sne", tfloat, _2src_commutative, "(src0 != src1) ? 1.0f : 0.0f") # Set on Not Equal
 
 # SPIRV shifts are undefined for shift-operands >= bitsize,
 # but SM5 shifts are defined to use only the least significant bits.
@@ -884,13 +894,13 @@ binop("ixor", tuint, _2src_commutative + associative, "src0 ^ src1")
 binop_reduce("fdot", 1, tfloat, tfloat, "{src0} * {src1}", "{src0} + {src1}",
              "{src}")
 
-binop_reduce("fdot", 4, tfloat, tfloat,
+binop_reduce("fdot", 0, tfloat, tfloat,
              "{src0} * {src1}", "{src0} + {src1}", "{src}",
              suffix="_replicated")
 
 opcode("fdph", 1, tfloat, [3, 4], [tfloat, tfloat], False, "",
        "src0.x * src1.x + src0.y * src1.y + src0.z * src1.z + src1.w")
-opcode("fdph_replicated", 4, tfloat, [3, 4], [tfloat, tfloat], False, "",
+opcode("fdph_replicated", 0, tfloat, [3, 4], [tfloat, tfloat], False, "",
        "src0.x * src1.x + src0.y * src1.y + src0.z * src1.z + src1.w")
 
 binop("fmin", tfloat, _2src_commutative + associative, "fmin(src0, src1)")
@@ -1282,7 +1292,7 @@ binop("umul24_relaxed", tuint32, _2src_commutative + associative, "src0 * src1")
 
 unop_convert("fisnormal", tbool1, tfloat, "isnormal(src0)")
 unop_convert("fisfinite", tbool1, tfloat, "isfinite(src0)")
-unop_convert("fisfinite32", tint32, tfloat, "isfinite(src0)")
+unop_convert("fisfinite32", tbool32, tfloat, "isfinite(src0)")
 
 # vc4-specific opcodes
 

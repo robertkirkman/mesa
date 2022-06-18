@@ -31,6 +31,7 @@
 #include "brw_fs.h"
 #include "brw_cfg.h"
 #include "util/mesa-sha1.h"
+#include "util/half_float.h"
 
 static enum brw_reg_file
 brw_file_from_reg(fs_reg *reg)
@@ -1592,6 +1593,7 @@ fs_generator::generate_uniform_pull_constant_load_gfx7(fs_inst *inst,
    assert(index.type == BRW_REGISTER_TYPE_UD);
    assert(payload.file == BRW_GENERAL_REGISTER_FILE);
    assert(type_sz(dst.type) == 4);
+   assert(!devinfo->has_lsc);
 
    if (index.file == BRW_IMMEDIATE_VALUE) {
       const uint32_t surf_index = index.ud;
@@ -1781,17 +1783,24 @@ fs_generator::generate_pack_half_2x16_split(fs_inst *,
       ? BRW_REGISTER_TYPE_HF : BRW_REGISTER_TYPE_W;
    struct brw_reg dst_w = spread(retype(dst, t), 2);
 
-   /* Give each 32-bit channel of dst the form below, where "." means
-    * unchanged.
-    *   0x....hhhh
-    */
-   brw_F32TO16(p, dst_w, y);
+   if (y.file == IMM) {
+      const uint32_t hhhh0000 = _mesa_float_to_half(y.f) << 16;
 
-   /* Now the form:
-    *   0xhhhh0000
-    */
-   brw_set_default_swsb(p, tgl_swsb_regdist(1));
-   brw_SHL(p, dst, dst, brw_imm_ud(16u));
+      brw_MOV(p, dst, brw_imm_ud(hhhh0000));
+      brw_set_default_swsb(p, tgl_swsb_regdist(1));
+   } else {
+      /* Give each 32-bit channel of dst the form below, where "." means
+       * unchanged.
+       *   0x....hhhh
+       */
+      brw_F32TO16(p, dst_w, y);
+
+      /* Now the form:
+       *   0xhhhh0000
+       */
+      brw_set_default_swsb(p, tgl_swsb_regdist(1));
+      brw_SHL(p, dst, dst, brw_imm_ud(16u));
+   }
 
    /* And, finally the form of packHalf2x16's output:
     *   0xhhhhllll
@@ -1819,13 +1828,6 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
 
    int start_offset = p->next_insn_offset;
 
-   /* `send_count` explicitly does not include spills or fills, as we'd
-    * like to use it as a metric for intentional memory access or other
-    * shared function use.  Otherwise, subtle changes to scheduling or
-    * register allocation could cause it to fluctuate wildly - and that
-    * effect is already counted in spill/fill counts.
-    */
-   int spill_count = 0, fill_count = 0;
    int loop_count = 0, send_count = 0, nop_count = 0;
    bool is_accum_used = false;
 
@@ -2258,15 +2260,7 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
       case SHADER_OPCODE_SEND:
          generate_send(inst, dst, src[0], src[1], src[2],
                        inst->ex_mlen > 0 ? src[3] : brw_null_reg());
-         if ((inst->desc & 0xff) == BRW_BTI_STATELESS ||
-             (inst->desc & 0xff) == GFX8_BTI_STATELESS_NON_COHERENT) {
-            if (inst->size_written)
-               fill_count++;
-            else
-               spill_count++;
-         } else {
-            send_count++;
-         }
+         send_count++;
          break;
 
       case SHADER_OPCODE_GET_BUFFER_SIZE:
@@ -2299,17 +2293,17 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
 
       case SHADER_OPCODE_GFX4_SCRATCH_WRITE:
 	 generate_scratch_write(inst, src[0]);
-         spill_count++;
+         send_count++;
 	 break;
 
       case SHADER_OPCODE_GFX4_SCRATCH_READ:
 	 generate_scratch_read(inst, dst);
-         fill_count++;
+         send_count++;
 	 break;
 
       case SHADER_OPCODE_GFX7_SCRATCH_READ:
 	 generate_scratch_read_gfx7(inst, dst);
-         fill_count++;
+         send_count++;
 	 break;
 
       case SHADER_OPCODE_SCRATCH_HEADER:
@@ -2381,6 +2375,7 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
 
          brw_memory_fence(p, dst, src[0], send_op,
                           brw_message_target(inst->sfid),
+                          inst->desc,
                           /* commit_enable */ src[1].ud,
                           /* bti */ src[2].ud);
          send_count++;
@@ -2418,14 +2413,32 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
          break;
 
       case SHADER_OPCODE_FIND_LIVE_CHANNEL: {
+         const bool uses_vmask =
+            stage == MESA_SHADER_FRAGMENT &&
+            brw_wm_prog_data(this->prog_data)->uses_vmask;
          const struct brw_reg mask =
             brw_stage_has_packed_dispatch(devinfo, stage,
                                           prog_data) ? brw_imm_ud(~0u) :
-            stage == MESA_SHADER_FRAGMENT ? brw_vmask_reg() :
-            brw_dmask_reg();
-         brw_find_live_channel(p, dst, mask);
+            uses_vmask ? brw_vmask_reg() : brw_dmask_reg();
+
+         brw_find_live_channel(p, dst, mask, false);
          break;
       }
+      case SHADER_OPCODE_FIND_LAST_LIVE_CHANNEL: {
+         const bool uses_vmask =
+            stage == MESA_SHADER_FRAGMENT &&
+            brw_wm_prog_data(this->prog_data)->uses_vmask;
+
+         /* ce0 doesn't consider the thread dispatch mask, so if we want
+          * to find the true last enabled channel, we need to apply that too.
+          */
+         const struct brw_reg mask =
+            uses_vmask ? brw_vmask_reg() : brw_dmask_reg();
+
+         brw_find_live_channel(p, dst, mask, true);
+         break;
+      }
+
       case FS_OPCODE_LOAD_LIVE_CHANNELS: {
          assert(devinfo->ver >= 8);
          assert(inst->force_writemask_all && inst->group == 0);
@@ -2561,32 +2574,21 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
          brw_float_controls_mode(p, src[0].d, src[1].d);
          break;
 
-      case SHADER_OPCODE_GET_DSS_ID:
-         /* The Slice, Dual-SubSlice, SubSlice, EU, and Thread IDs are all
-          * stored in sr0.0.  Normally, for reading from HW regs, we'd just do
-          * this in the IR and let the back-end generate some code but these
-          * live in the state register which tends to have special rules.
-          *
-          * For convenience, we combine Slice ID and Dual-SubSlice ID into a
-          * single ID.
-          */
-         if (devinfo->ver == 12) {
+      case SHADER_OPCODE_READ_SR_REG:
+         if (devinfo->ver >= 12) {
             /* There is a SWSB restriction that requires that any time sr0 is
              * accessed both the instruction doing the access and the next one
              * have SWSB set to RegDist(1).
              */
             if (brw_get_default_swsb(p).mode != TGL_SBID_NULL)
                brw_SYNC(p, TGL_SYNC_NOP);
+            assert(src[0].file == BRW_IMMEDIATE_VALUE);
             brw_set_default_swsb(p, tgl_swsb_regdist(1));
-            brw_SHR(p, dst, brw_sr0_reg(0), brw_imm_ud(9));
+            brw_MOV(p, dst, brw_sr0_reg(src[0].ud));
             brw_set_default_swsb(p, tgl_swsb_regdist(1));
-            brw_AND(p, dst, dst, brw_imm_ud(0x1f));
+            brw_AND(p, dst, dst, brw_imm_ud(0xffffffff));
          } else {
-            /* These move around basically every hardware generation, so don't
-             * do any >= checks and fail if the platform hasn't explicitly
-             * been enabled here.
-             */
-            unreachable("Unsupported platform");
+            brw_MOV(p, dst, brw_sr0_reg(src[0].ud));
          }
          break;
 
@@ -2621,6 +2623,15 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
    /* end of program sentinel */
    disasm_new_inst_group(disasm_info, p->next_insn_offset);
 
+   /* `send_count` explicitly does not include spills or fills, as we'd
+    * like to use it as a metric for intentional memory access or other
+    * shared function use.  Otherwise, subtle changes to scheduling or
+    * register allocation could cause it to fluctuate wildly - and that
+    * effect is already counted in spill/fill counts.
+    */
+   send_count -= shader_stats.spill_count;
+   send_count -= shader_stats.fill_count;
+
 #ifndef NDEBUG
    bool validated =
 #else
@@ -2652,7 +2663,9 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
               shader_name, sha1buf,
               dispatch_width, before_size / 16,
               loop_count, perf.latency,
-              spill_count, fill_count, send_count,
+              shader_stats.spill_count,
+              shader_stats.fill_count,
+              send_count,
               shader_stats.scheduler_mode,
               shader_stats.promoted_constants,
               before_size, after_size,
@@ -2684,7 +2697,9 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
                         _mesa_shader_stage_to_abbrev(stage),
                         dispatch_width, before_size / 16 - nop_count,
                         loop_count, perf.latency,
-                        spill_count, fill_count, send_count,
+                        shader_stats.spill_count,
+                        shader_stats.fill_count,
+                        send_count,
                         shader_stats.scheduler_mode,
                         shader_stats.promoted_constants,
                         before_size, after_size);
@@ -2694,8 +2709,8 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
       stats->sends = send_count;
       stats->loops = loop_count;
       stats->cycles = perf.latency;
-      stats->spills = spill_count;
-      stats->fills = fill_count;
+      stats->spills = shader_stats.spill_count;
+      stats->fills = shader_stats.fill_count;
    }
 
    return start_offset;

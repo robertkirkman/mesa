@@ -679,6 +679,7 @@ static const char* const lsc_flush_type[] = {
    [LSC_FLUSH_TYPE_DISCARD]    = "discard",
    [LSC_FLUSH_TYPE_CLEAN]      = "clean",
    [LSC_FLUSH_TYPE_L3ONLY]     = "l3only",
+   [LSC_FLUSH_TYPE_NONE_6]     = "none_6",
 };
 
 static const char* const lsc_addr_size[] = {
@@ -1215,6 +1216,7 @@ implied_width(enum brw_vertical_stride _vert_stride,
    /* "2. Width is equal to vertical stride when Horizontal Stride is zero." */
    } else if (_horiz_stride == BRW_HORIZONTAL_STRIDE_0) {
       switch (_vert_stride) {
+      case BRW_VERTICAL_STRIDE_1: return BRW_WIDTH_1;
       case BRW_VERTICAL_STRIDE_2: return BRW_WIDTH_2;
       case BRW_VERTICAL_STRIDE_4: return BRW_WIDTH_4;
       case BRW_VERTICAL_STRIDE_8: return BRW_WIDTH_8;

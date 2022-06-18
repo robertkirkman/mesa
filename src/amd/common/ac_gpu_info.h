@@ -42,6 +42,12 @@ extern "C" {
 
 struct amdgpu_gpu_info;
 
+struct amd_ip_info {
+   uint8_t ver_major;
+   uint8_t ver_minor;
+   uint8_t num_queues;
+};
+
 struct radeon_info {
    /* PCI info: domain:bus:dev:func */
    uint32_t pci_domain;
@@ -57,15 +63,15 @@ struct radeon_info {
    uint32_t pci_id;
    uint32_t pci_rev_id;
    enum radeon_family family;
-   enum chip_class chip_class;
+   enum amd_gfx_level gfx_level;
    uint32_t family_id;
    uint32_t chip_external_rev;
    uint32_t clock_crystal_freq;
 
    /* Features. */
+   struct amd_ip_info ip[AMD_NUM_IP_TYPES];
    bool has_graphics; /* false if the chip is compute-only */
-   uint32_t num_rings[NUM_RING_TYPES];
-   uint32_t ib_pad_dw_mask[NUM_RING_TYPES];
+   uint32_t ib_pad_dw_mask[AMD_NUM_IP_TYPES];
    bool has_clear_state;
    bool has_distributed_tess;
    bool has_dcc_constant_encode;
@@ -87,6 +93,11 @@ struct radeon_info {
    bool has_cs_regalloc_hang_bug;
    bool has_32bit_predication;
    bool has_3d_cube_border_color_mipmap;
+   bool never_stop_sq_perf_counters;
+   bool has_sqtt_rb_harvest_bug;
+   bool has_sqtt_auto_flush_mode_bug;
+   bool never_send_perfcounter_stop;
+   bool discardable_allows_big_page;
 
    /* Display features. */
    /* There are 2 display DCC codepaths, because display expects unaligned DCC. */
@@ -105,9 +116,7 @@ struct radeon_info {
    uint64_t vram_vis_size;
    uint32_t vram_bit_width;
    uint32_t vram_type;
-   unsigned gds_size;
-   unsigned gds_gfx_partition_size;
-   uint64_t max_alloc_size;
+   uint32_t max_heap_size_kb;
    uint32_t min_alloc_size;
    uint32_t address32_hi;
    bool has_dedicated_vram;
@@ -124,7 +133,6 @@ struct radeon_info {
    uint32_t lds_alloc_granularity;
    uint32_t lds_encode_granularity;
    uint32_t max_memory_clock;
-   uint32_t ce_ram_size;
    uint32_t l1_cache_size;
    uint32_t l2_cache_size;
 
@@ -133,10 +141,10 @@ struct radeon_info {
    unsigned ib_alignment; /* both start and size alignment */
    uint32_t me_fw_version;
    uint32_t me_fw_feature;
+   uint32_t mec_fw_version;
+   uint32_t mec_fw_feature;
    uint32_t pfp_fw_version;
    uint32_t pfp_fw_feature;
-   uint32_t ce_fw_version;
-   uint32_t ce_fw_feature;
 
    /* Multimedia info. */
    struct {
@@ -185,8 +193,8 @@ struct radeon_info {
    bool has_sparse_vm_mappings;
    bool has_2d_tiling;
    bool has_read_registers_query;
-   bool has_gds_ordered_append;
    bool has_scheduled_fence_dependency;
+   bool has_stable_pstate;
    /* Whether SR-IOV is enabled or amdgpu.mcbp=1 was set on the kernel command line. */
    bool mid_command_buffer_preemption_enabled;
    bool has_tmz_support;
@@ -212,6 +220,7 @@ struct radeon_info {
    uint32_t min_wave64_vgpr_alloc;
    uint32_t max_vgpr_alloc;
    uint32_t wave64_vgpr_alloc_granularity;
+   uint32_t max_scratch_waves;
 
    /* Render backends (color + depth blocks). */
    uint32_t r300_num_gb_pipes;
@@ -245,13 +254,69 @@ void ac_compute_driver_uuid(char *uuid, size_t size);
 
 void ac_compute_device_uuid(struct radeon_info *info, char *uuid, size_t size);
 void ac_print_gpu_info(struct radeon_info *info, FILE *f);
-int ac_get_gs_table_depth(enum chip_class chip_class, enum radeon_family family);
+int ac_get_gs_table_depth(enum amd_gfx_level gfx_level, enum radeon_family family);
 void ac_get_raster_config(struct radeon_info *info, uint32_t *raster_config_p,
                           uint32_t *raster_config_1_p, uint32_t *se_tile_repeat_p);
 void ac_get_harvested_configs(struct radeon_info *info, unsigned raster_config,
                               unsigned *cik_raster_config_1_p, unsigned *raster_config_se);
 unsigned ac_get_compute_resource_limits(struct radeon_info *info, unsigned waves_per_threadgroup,
                                         unsigned max_waves_per_sh, unsigned threadgroups_per_cu);
+
+struct ac_hs_info {
+   uint32_t tess_offchip_block_dw_size;
+   uint32_t max_offchip_buffers;
+   uint32_t hs_offchip_param;
+   uint32_t tess_factor_ring_size;
+   uint32_t tess_offchip_ring_offset;
+   uint32_t tess_offchip_ring_size;
+};
+
+void ac_get_hs_info(struct radeon_info *info,
+                    struct ac_hs_info *hs);
+
+/* Task rings BO layout information.
+ * This BO is shared between GFX and ACE queues so that the ACE and GFX
+ * firmware can cooperate on task->mesh dispatches and is also used to
+ * store the task payload which is passed to mesh shaders.
+ *
+ * The driver only needs to create this BO once,
+ * and it will always be able to accomodate the maximum needed
+ * task payload size.
+ *
+ * The following memory layout is used:
+ * 1. Control buffer: 9 DWORDs, 256 byte aligned
+ *    Used by the firmware to maintain the current state.
+ * (padding)
+ * 2. Draw ring: 4 DWORDs per entry, 256 byte aligned
+ *    Task shaders store the mesh dispatch size here.
+ * (padding)
+ * 3. Payload ring: 16K bytes per entry, 256 byte aligned.
+ *    This is where task payload is stored by task shaders and
+ *    read by mesh shaders.
+ *
+ */
+struct ac_task_info {
+   uint32_t draw_ring_offset;
+   uint32_t payload_ring_offset;
+   uint32_t bo_size_bytes;
+   uint16_t num_entries;
+};
+
+/* Size of each payload entry in the task payload ring.
+ * Spec requires minimum 16K bytes.
+ */
+#define AC_TASK_PAYLOAD_ENTRY_BYTES 16384
+
+/* Size of each draw entry in the task draw ring.
+ * 4 DWORDs per entry.
+ */
+#define AC_TASK_DRAW_ENTRY_BYTES 16
+
+/* Size of the task control buffer. 9 DWORDs. */
+#define AC_TASK_CTRLBUF_BYTES 36
+
+void ac_get_task_info(struct radeon_info *info,
+                      struct ac_task_info *task_info);
 
 #ifdef __cplusplus
 }

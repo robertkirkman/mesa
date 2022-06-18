@@ -70,6 +70,7 @@ protected:
    bool emit_instruction(EAluOp opcode, PValue dest,
                          std::vector<PValue> src0,
                          const std::set<AluModifiers>& m_flags);
+   bool use_legacy_math_rules(void);
 
    PValue from_nir_with_fetch_constant(const nir_src& src, unsigned component, int channel = -1);
    GPRVector vec_from_nir_with_fetch_constant(const nir_src& src, unsigned mask,
@@ -77,7 +78,7 @@ protected:
 
    const nir_variable *get_deref_location(const nir_src& v) const;
 
-   enum chip_class get_chip_class(void) const;
+   enum amd_gfx_level get_chip_class(void) const;
 
    PValue literal(uint32_t value);
 

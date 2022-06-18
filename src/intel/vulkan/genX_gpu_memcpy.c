@@ -255,7 +255,7 @@ genX(emit_so_memcpy_init)(struct anv_memcpy_state *state,
       ps.PipelineSelection = _3D;
    }
 
-   emit_common_so_memcpy(batch, device, device->l3_config);
+   emit_common_so_memcpy(batch, device, cfg);
 }
 
 void
@@ -315,5 +315,9 @@ genX(cmd_buffer_so_memcpy)(struct anv_cmd_buffer *cmd_buffer,
    genX(cmd_buffer_update_dirty_vbs_for_gfx8_vb_flush)(cmd_buffer, SEQUENTIAL,
                                                        1ull << 32);
 
-   cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_PIPELINE;
+   /* Invalidate pipeline & raster discard since we touch
+    * 3DSTATE_STREAMOUT.
+    */
+   cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_PIPELINE |
+                                  ANV_CMD_DIRTY_DYNAMIC_RASTERIZER_DISCARD_ENABLE;
 }

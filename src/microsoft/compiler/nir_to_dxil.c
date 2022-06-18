@@ -119,6 +119,18 @@ nir_options = {
    .lower_helper_invocation = true,
    .has_cs_global_id = true,
    .has_txs = true,
+   .lower_mul_2x32_64 = true,
+   .lower_doubles_options =
+      nir_lower_drcp |
+      nir_lower_dsqrt |
+      nir_lower_drsq |
+      nir_lower_dfract |
+      nir_lower_dtrunc |
+      nir_lower_dfloor |
+      nir_lower_dceil |
+      nir_lower_dround_even,
+   .max_unroll_iterations = 32, /* arbitrary */
+   .force_indirect_unrolling = (nir_var_shader_in | nir_var_shader_out | nir_var_function_temp),
 };
 
 const nir_shader_compiler_options*
@@ -472,6 +484,7 @@ struct ntd_context {
 
    struct dxil_func_def *main_func_def;
    struct dxil_func_def *tess_ctrl_patch_constant_func_def;
+   unsigned unnamed_ubo_count;
 };
 
 static const char*
@@ -935,7 +948,7 @@ emit_srv(struct ntd_context *ctx, nir_variable *var, unsigned count)
    }
    const struct dxil_type *res_type_as_type = dxil_module_get_res_type(&ctx->mod, res_kind, comp_type, false /* readwrite */);
 
-   if (count > 1)
+   if (glsl_type_is_array(var->type))
       res_type_as_type = dxil_module_get_array_type(&ctx->mod, res_type_as_type, count);
 
    const struct dxil_mdnode *srv_meta = emit_srv_metadata(&ctx->mod, res_type_as_type, var->name,
@@ -1167,12 +1180,15 @@ static bool
 emit_cbv(struct ntd_context *ctx, unsigned binding, unsigned space,
          unsigned size, unsigned count, char *name)
 {
+   assert(count != 0);
+
    unsigned idx = util_dynarray_num_elements(&ctx->cbv_metadata_nodes, const struct dxil_mdnode *);
 
    const struct dxil_type *float32 = dxil_module_get_float_type(&ctx->mod, 32);
    const struct dxil_type *array_type = dxil_module_get_array_type(&ctx->mod, float32, size);
    const struct dxil_type *buffer_type = dxil_module_get_struct_type(&ctx->mod, name,
                                                                      &array_type, 1);
+   // All ubo[1]s should have been lowered to ubo with static indexing
    const struct dxil_type *final_type = count != 1 ? dxil_module_get_array_type(&ctx->mod, buffer_type, count) : buffer_type;
    resource_array_layout layout = {idx, binding, count, space};
    const struct dxil_mdnode *cbv_meta = emit_cbv_metadata(&ctx->mod, final_type,
@@ -1193,7 +1209,17 @@ emit_ubo_var(struct ntd_context *ctx, nir_variable *var)
    unsigned count = 1;
    if (glsl_type_is_array(var->type))
       count = glsl_get_length(var->type);
-   return emit_cbv(ctx, var->data.binding, var->data.descriptor_set, get_dword_size(var->type), count, var->name);
+
+   char *name = var->name;
+   char temp_name[30];
+   if (name && strlen(name) == 0) {
+      snprintf(temp_name, sizeof(temp_name), "__unnamed_ubo_%d",
+               ctx->unnamed_ubo_count++);
+      name = temp_name;
+   }
+
+   return emit_cbv(ctx, var->data.binding, var->data.descriptor_set,
+                   get_dword_size(var->type), count, name);
 }
 
 static bool
@@ -1205,7 +1231,7 @@ emit_sampler(struct ntd_context *ctx, nir_variable *var, unsigned count)
    const struct dxil_type *int32_type = dxil_module_get_int_type(&ctx->mod, 32);
    const struct dxil_type *sampler_type = dxil_module_get_struct_type(&ctx->mod, "struct.SamplerState", &int32_type, 1);
 
-   if (count > 1)
+   if (glsl_type_is_array(var->type))
       sampler_type = dxil_module_get_array_type(&ctx->mod, sampler_type, count);
 
    const struct dxil_mdnode *sampler_meta = emit_sampler_metadata(&ctx->mod, sampler_type, var, &layout);
@@ -1411,6 +1437,8 @@ get_module_flags(struct ntd_context *ctx)
       flags |= (1 << 5);
    if (ctx->mod.feats.dx11_1_double_extensions)
       flags |= (1 << 6);
+   if (ctx->mod.feats.array_layer_from_vs_or_ds)
+      flags |= (1 << 9);
    if (ctx->mod.feats.inner_coverage)
       flags |= (1 << 10);
    if (ctx->mod.feats.typed_uav_load_additional_formats)
@@ -1443,8 +1471,11 @@ emit_entrypoint(struct ntd_context *ctx,
                 const struct dxil_mdnode *resources,
                 const struct dxil_mdnode *shader_props)
 {
+   char truncated_name[254] = { 0 };
+   strncpy(truncated_name, name, ARRAY_SIZE(truncated_name) - 1);
+
    const struct dxil_mdnode *func_md = dxil_get_metadata_func(&ctx->mod, func);
-   const struct dxil_mdnode *name_md = dxil_get_metadata_string(&ctx->mod, name);
+   const struct dxil_mdnode *name_md = dxil_get_metadata_string(&ctx->mod, truncated_name);
    const struct dxil_mdnode *nodes[] = {
       func_md,
       name_md,
@@ -1507,7 +1538,7 @@ emit_tag(struct ntd_context *ctx, enum dxil_shader_tag tag,
 }
 
 static bool
-emit_metadata(struct ntd_context *ctx)
+emit_metadata(struct ntd_context *ctx, const struct dxil_mdnode *signatures)
 {
    unsigned dxilMinor = ctx->mod.minor_version;
    if (!emit_llvm_ident(&ctx->mod) ||
@@ -1576,12 +1607,6 @@ emit_metadata(struct ntd_context *ctx)
       if (!shader_properties)
          return false;
    }
-
-   unsigned input_clip_size = ctx->mod.shader_kind == DXIL_PIXEL_SHADER ?
-      ctx->shader->info.clip_distance_array_size : ctx->opts->input_clip_size;
-   const struct dxil_mdnode *signatures = get_signatures(&ctx->mod, ctx->shader,
-                                                         ctx->opts->environment == DXIL_ENVIRONMENT_VULKAN,
-                                                         input_clip_size);
 
    nir_function_impl *entry_func_impl = nir_shader_get_entrypoint(ctx->shader);
    const struct dxil_mdnode *dx_entry_point = emit_entrypoint(ctx, main_func,
@@ -1659,7 +1684,8 @@ store_dest(struct ntd_context *ctx, nir_dest *dest, unsigned chan,
    case nir_type_float:
       if (nir_dest_bit_size(*dest) == 64)
          ctx->mod.feats.doubles = true;
-      FALLTHROUGH;
+      store_dest_value(ctx, dest, chan, value);
+      break;
    case nir_type_uint:
    case nir_type_int:
       if (nir_dest_bit_size(*dest) == 16)
@@ -1716,8 +1742,7 @@ get_src(struct ntd_context *ctx, nir_src *src, unsigned chan,
 
    case nir_type_float:
       assert(nir_src_bit_size(*src) >= 16);
-      assert(nir_src_bit_size(*src) != 64 || (ctx->mod.feats.doubles &&
-                                              ctx->mod.feats.int64_ops));
+      assert(nir_src_bit_size(*src) != 64 || ctx->mod.feats.doubles);
       if (dxil_value_type_equal_to(value, dxil_module_get_float_type(&ctx->mod, bit_size)))
          return value;
       assert(dxil_value_type_bitsize_equal_to(value, bit_size));
@@ -2102,6 +2127,23 @@ emit_b2f32(struct ntd_context *ctx, nir_alu_instr *alu, const struct dxil_value 
 }
 
 static bool
+emit_b2f64(struct ntd_context *ctx, nir_alu_instr *alu, const struct dxil_value *val)
+{
+   assert(val);
+
+   struct dxil_module *m = &ctx->mod;
+
+   const struct dxil_value *c1 = dxil_module_get_double_const(m, 1.0);
+   const struct dxil_value *c0 = dxil_module_get_double_const(m, 0.0);
+
+   if (!c0 || !c1)
+      return false;
+
+   ctx->mod.feats.doubles = 1;
+   return emit_select(ctx, alu, val, c1, c0);
+}
+
+static bool
 emit_f2b32(struct ntd_context *ctx, nir_alu_instr *alu, const struct dxil_value *val)
 {
    assert(val);
@@ -2214,8 +2256,8 @@ emit_make_double(struct ntd_context *ctx, nir_alu_instr *alu)
 
    const struct dxil_value *args[3] = {
       opcode,
-      get_src(ctx, &alu->src[0].src, 0, nir_type_uint32),
-      get_src(ctx, &alu->src[0].src, 1, nir_type_uint32),
+      get_src(ctx, &alu->src[0].src, alu->src[0].swizzle[0], nir_type_uint32),
+      get_src(ctx, &alu->src[0].src, alu->src[0].swizzle[1], nir_type_uint32),
    };
    if (!args[1] || !args[2])
       return false;
@@ -2240,7 +2282,7 @@ emit_split_double(struct ntd_context *ctx, nir_alu_instr *alu)
 
    const struct dxil_value *args[] = {
       opcode,
-      get_src(ctx, &alu->src[0].src, 0, nir_type_float64)
+      get_src(ctx, &alu->src[0].src, alu->src[0].swizzle[0], nir_type_float64)
    };
    if (!args[1])
       return false;
@@ -2307,8 +2349,12 @@ emit_alu(struct ntd_context *ctx, nir_alu_instr *alu)
    case nir_op_imul:
    case nir_op_fmul: return emit_binop(ctx, alu, DXIL_BINOP_MUL, src[0], src[1]);
 
+   case nir_op_fdiv:
+      if (alu->dest.dest.ssa.bit_size == 64)
+         ctx->mod.feats.dx11_1_double_extensions = 1;
+      FALLTHROUGH;
    case nir_op_idiv:
-   case nir_op_fdiv: return emit_binop(ctx, alu, DXIL_BINOP_SDIV, src[0], src[1]);
+      return emit_binop(ctx, alu, DXIL_BINOP_SDIV, src[0], src[1]);
 
    case nir_op_udiv: return emit_binop(ctx, alu, DXIL_BINOP_UDIV, src[0], src[1]);
    case nir_op_irem: return emit_binop(ctx, alu, DXIL_BINOP_SREM, src[0], src[1]);
@@ -2375,7 +2421,10 @@ emit_alu(struct ntd_context *ctx, nir_alu_instr *alu)
    case nir_op_fsqrt: return emit_unary_intin(ctx, alu, DXIL_INTR_SQRT, src[0]);
    case nir_op_fmax: return emit_binary_intin(ctx, alu, DXIL_INTR_FMAX, src[0], src[1]);
    case nir_op_fmin: return emit_binary_intin(ctx, alu, DXIL_INTR_FMIN, src[0], src[1]);
-   case nir_op_ffma: return emit_tertiary_intin(ctx, alu, DXIL_INTR_FMA, src[0], src[1], src[2]);
+   case nir_op_ffma:
+      if (alu->dest.dest.ssa.bit_size == 64)
+         ctx->mod.feats.dx11_1_double_extensions = 1;
+      return emit_tertiary_intin(ctx, alu, DXIL_INTR_FMA, src[0], src[1], src[2]);
 
    case nir_op_ibfe: return emit_tertiary_intin(ctx, alu, DXIL_INTR_IBFE, src[2], src[1], src[0]);
    case nir_op_ubfe: return emit_tertiary_intin(ctx, alu, DXIL_INTR_UBFE, src[2], src[1], src[0]);
@@ -2414,6 +2463,7 @@ emit_alu(struct ntd_context *ctx, nir_alu_instr *alu)
    case nir_op_f2b32: return emit_f2b32(ctx, alu, src[0]);
    case nir_op_b2f16: return emit_b2f16(ctx, alu, src[0]);
    case nir_op_b2f32: return emit_b2f32(ctx, alu, src[0]);
+   case nir_op_b2f64: return emit_b2f64(ctx, alu, src[0]);
    default:
       NIR_INSTR_UNSUPPORTED(&alu->instr);
       assert("Unimplemented ALU instruction");
@@ -2451,11 +2501,7 @@ emit_barrier_impl(struct ntd_context *ctx, nir_variable_mode modes, nir_scope ex
    if (execution_scope == NIR_SCOPE_WORKGROUP)
       flags |= DXIL_BARRIER_MODE_SYNC_THREAD_GROUP;
 
-   /* Currently vtn uses uniform to indicate image memory, which DXIL considers global */
-   if (modes & nir_var_uniform)
-      modes |= nir_var_mem_global;
-
-   if (modes & (nir_var_mem_ssbo | nir_var_mem_global)) {
+   if (modes & (nir_var_mem_ssbo | nir_var_mem_global | nir_var_image)) {
       if (mem_scope > NIR_SCOPE_WORKGROUP)
          flags |= DXIL_BARRIER_MODE_UAV_FENCE_GLOBAL;
       else
@@ -3094,8 +3140,9 @@ emit_store_output_via_intrinsic(struct ntd_context *ctx, nir_intrinsic_instr *in
     * generation, so muck with them here too.
     */
    nir_io_semantics semantics = nir_intrinsic_io_semantics(intr);
-   bool is_tess_level = semantics.location == VARYING_SLOT_TESS_LEVEL_INNER ||
-                        semantics.location == VARYING_SLOT_TESS_LEVEL_OUTER;
+   bool is_tess_level = is_patch_constant &&
+                        (semantics.location == VARYING_SLOT_TESS_LEVEL_INNER ||
+                         semantics.location == VARYING_SLOT_TESS_LEVEL_OUTER);
 
    const struct dxil_value *row = NULL;
    const struct dxil_value *col = NULL;
@@ -3127,6 +3174,32 @@ emit_store_output_via_intrinsic(struct ntd_context *ctx, nir_intrinsic_instr *in
          success &= dxil_emit_call_void(&ctx->mod, func, args, ARRAY_SIZE(args));
       }
    }
+
+   /* Make sure all SV_Position components are written, otherwise the DXIL
+    * validator complains.
+    */
+   bool is_sv_pos =
+      ctx->mod.shader_kind != DXIL_COMPUTE_SHADER &&
+      ctx->mod.shader_kind != DXIL_PIXEL_SHADER &&
+      var->data.location == VARYING_SLOT_POS;
+
+   if (is_sv_pos) {
+      const struct dxil_type *float_type = dxil_module_get_float_type(&ctx->mod, 32);
+      const struct dxil_value *float_undef = dxil_module_get_undef(&ctx->mod, float_type);
+      unsigned pos_wrmask = writemask << base_component;
+
+      for (unsigned i = 0; i < 4; ++i) {
+         if (!(BITFIELD_BIT(i) & pos_wrmask)) {
+            const struct dxil_value *args[] = {
+               opcode, output_id, row,
+               dxil_module_get_int8_const(&ctx->mod, i),
+               float_undef,
+            };
+            success &= dxil_emit_call_void(&ctx->mod, func, args, ARRAY_SIZE(args));
+         }
+      }
+   }
+
    return success;
 }
 
@@ -3169,7 +3242,10 @@ emit_load_input_via_intrinsic(struct ntd_context *ctx, nir_intrinsic_instr *intr
    if (!opcode)
       return false;
 
-   const struct dxil_value *input_id = dxil_module_get_int32_const(&ctx->mod, nir_intrinsic_base(intr));
+   const struct dxil_value *input_id = dxil_module_get_int32_const(&ctx->mod,
+      is_patch_constant || is_output_control_point ?
+         nir_intrinsic_base(intr) :
+         ctx->mod.input_mappings[nir_intrinsic_base(intr)]);
    if (!input_id)
       return false;
 
@@ -3198,8 +3274,9 @@ emit_load_input_via_intrinsic(struct ntd_context *ctx, nir_intrinsic_instr *intr
     * generation, so muck with them here too.
     */
    nir_io_semantics semantics = nir_intrinsic_io_semantics(intr);
-   bool is_tess_level = semantics.location == VARYING_SLOT_TESS_LEVEL_INNER ||
-                        semantics.location == VARYING_SLOT_TESS_LEVEL_OUTER;
+   bool is_tess_level = is_patch_constant &&
+                        (semantics.location == VARYING_SLOT_TESS_LEVEL_INNER ||
+                         semantics.location == VARYING_SLOT_TESS_LEVEL_OUTER);
 
    const struct dxil_value *row = NULL;
    const struct dxil_value *comp = NULL;
@@ -3593,8 +3670,12 @@ emit_image_load(struct ntd_context *ctx, nir_intrinsic_instr *intr)
       store_dest(ctx, &intr->dest, i, component, out_type);
    }
 
-   if (num_components > 1)
-      ctx->mod.feats.typed_uav_load_additional_formats = true;
+   /* FIXME: This flag should be set to true when the RWTexture is attached
+    * a vector, and we always declare a vec4 right now, so it should always be
+    * true. Might be worth reworking the dxil_module_get_res_type() to use a
+    * scalar when the image only has one component.
+    */
+   ctx->mod.feats.typed_uav_load_additional_formats = true;
 
    return true;
 }
@@ -4031,6 +4112,20 @@ emit_load_layer_id(struct ntd_context *ctx, nir_intrinsic_instr *intr)
 }
 
 static bool
+emit_load_sample_id(struct ntd_context *ctx, nir_intrinsic_instr *intr)
+{
+   assert(ctx->mod.info.has_per_sample_input ||
+          intr->intrinsic == nir_intrinsic_load_sample_id_no_per_sample);
+
+   if (ctx->mod.info.has_per_sample_input)
+      return emit_load_unary_external_function(ctx, intr, "dx.op.sampleIndex",
+                                               DXIL_INTR_SAMPLE_INDEX);
+
+   store_dest_value(ctx, &intr->dest, 0, dxil_module_get_int32_const(&ctx->mod, 0));
+   return true;
+}
+
+static bool
 emit_intrinsic(struct ntd_context *ctx, nir_intrinsic_instr *intr)
 {
    switch (intr->intrinsic) {
@@ -4065,8 +4160,8 @@ emit_intrinsic(struct ntd_context *ctx, nir_intrinsic_instr *intr)
       return emit_load_unary_external_function(ctx, intr, "dx.op.primitiveID",
                                                DXIL_INTR_PRIMITIVE_ID);
    case nir_intrinsic_load_sample_id:
-      return emit_load_unary_external_function(ctx, intr, "dx.op.sampleIndex",
-                                               DXIL_INTR_SAMPLE_INDEX);
+   case nir_intrinsic_load_sample_id_no_per_sample:
+      return emit_load_sample_id(ctx, intr);
    case nir_intrinsic_load_invocation_id:
       switch (ctx->mod.shader_kind) {
       case DXIL_HULL_SHADER:
@@ -4221,7 +4316,7 @@ emit_intrinsic(struct ntd_context *ctx, nir_intrinsic_instr *intr)
    case nir_intrinsic_load_workgroup_size:
    default:
       NIR_INSTR_UNSUPPORTED(&intr->instr);
-      assert("Unimplemented intrinsic instruction");
+      unreachable("Unimplemented intrinsic instruction");
       return false;
    }
 }
@@ -4398,25 +4493,32 @@ emit_phi(struct ntd_context *ctx, nir_phi_instr *instr)
    return true;
 }
 
-static void
+static bool
 fixup_phi(struct ntd_context *ctx, nir_phi_instr *instr,
           struct phi_block *vphi)
 {
-   const struct dxil_value *values[128];
-   unsigned blocks[128];
+   const struct dxil_value *values[16];
+   unsigned blocks[16];
    for (unsigned i = 0; i < vphi->num_components; ++i) {
       size_t num_incoming = 0;
       nir_foreach_phi_src(src, instr) {
          assert(src->src.is_ssa);
          const struct dxil_value *val = get_src_ssa(ctx, src->src.ssa, i);
-         assert(num_incoming < ARRAY_SIZE(values));
          values[num_incoming] = val;
-         assert(num_incoming < ARRAY_SIZE(blocks));
          blocks[num_incoming] = src->pred->index;
          ++num_incoming;
+         if (num_incoming == ARRAY_SIZE(values)) {
+            if (!dxil_phi_add_incoming(vphi->comp[i], values, blocks,
+                                       num_incoming))
+               return false;
+            num_incoming = 0;
+         }
       }
-      dxil_phi_set_incoming(vphi->comp[i], values, blocks, num_incoming);
+      if (num_incoming > 0 && !dxil_phi_add_incoming(vphi->comp[i], values,
+                                                     blocks, num_incoming))
+         return false;
    }
+   return true;
 }
 
 static unsigned
@@ -5011,7 +5113,7 @@ sort_uniforms_by_binding_and_remove_structs(nir_shader *s)
 }
 
 static void
-prepare_phi_values(struct ntd_context *ctx)
+prepare_phi_values(struct ntd_context *ctx, nir_function_impl *impl)
 {
    /* PHI nodes are difficult to get right when tracking the types:
     * Since the incoming sources are linked to blocks, we can't bitcast
@@ -5020,19 +5122,15 @@ prepare_phi_values(struct ntd_context *ctx)
     * value has a different type then the one expected by the phi node.
     * We choose int as default, because it supports more bit sizes.
     */
-   nir_foreach_function(function, ctx->shader) {
-      if (function->impl) {
-         nir_foreach_block(block, function->impl) {
-            nir_foreach_instr(instr, block) {
-               if (instr->type == nir_instr_type_phi) {
-                  nir_phi_instr *ir = nir_instr_as_phi(instr);
-                  unsigned bitsize = nir_dest_bit_size(ir->dest);
-                  const struct dxil_value *dummy = dxil_module_get_int_const(&ctx->mod, 0, bitsize);
-                  nir_foreach_phi_src(src, ir) {
-                     for(unsigned int i = 0; i < ir->dest.ssa.num_components; ++i)
-                        store_ssa_def(ctx, src->src.ssa, i, dummy);
-                  }
-               }
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type == nir_instr_type_phi) {
+            nir_phi_instr *ir = nir_instr_as_phi(instr);
+            unsigned bitsize = nir_dest_bit_size(ir->dest);
+            const struct dxil_value *dummy = dxil_module_get_int_const(&ctx->mod, 0, bitsize);
+            nir_foreach_phi_src(src, ir) {
+               for(unsigned int i = 0; i < ir->dest.ssa.num_components; ++i)
+                  store_ssa_def(ctx, src->src.ssa, i, dummy);
             }
          }
       }
@@ -5163,7 +5261,7 @@ emit_function(struct ntd_context *ctx, nir_function *func)
    if (!ctx->phis)
       return false;
 
-   prepare_phi_values(ctx);
+   prepare_phi_values(ctx, impl);
 
    if (!emit_scratch(ctx))
       return false;
@@ -5175,8 +5273,9 @@ emit_function(struct ntd_context *ctx, nir_function *func)
       return false;
 
    hash_table_foreach(ctx->phis, entry) {
-      fixup_phi(ctx, (nir_phi_instr *)entry->key,
-         (struct phi_block *)entry->data);
+      if (!fixup_phi(ctx, (nir_phi_instr *)entry->key,
+                     (struct phi_block *)entry->data))
+         return false;
    }
 
    if (!dxil_emit_ret_void(&ctx->mod))
@@ -5323,6 +5422,11 @@ emit_module(struct ntd_context *ctx, const struct nir_to_dxil_options *opts)
       }
    }
 
+   unsigned input_clip_size = ctx->mod.shader_kind == DXIL_PIXEL_SHADER ?
+      ctx->shader->info.clip_distance_array_size : ctx->opts->input_clip_size;
+   const struct dxil_mdnode *signatures = get_signatures(&ctx->mod, ctx->shader,
+                                                         input_clip_size);
+
    nir_foreach_function(func, ctx->shader) {
       if (!emit_function(ctx, func))
          return false;
@@ -5334,12 +5438,17 @@ emit_module(struct ntd_context *ctx, const struct nir_to_dxil_options *opts)
             ctx->mod.feats.stencil_ref = true;
          }
       }
+   } else if (ctx->shader->info.stage == MESA_SHADER_VERTEX ||
+              ctx->shader->info.stage == MESA_SHADER_TESS_EVAL) {
+      if (ctx->shader->info.outputs_written &
+          (VARYING_BIT_VIEWPORT | VARYING_BIT_LAYER))
+         ctx->mod.feats.array_layer_from_vs_or_ds = true;
    }
 
    if (ctx->mod.feats.native_low_precision)
       ctx->mod.minor_version = MAX2(ctx->mod.minor_version, 2);
 
-   return emit_metadata(ctx) &&
+   return emit_metadata(ctx, signatures) &&
           dxil_emit_module(&ctx->mod);
 }
 
@@ -5544,6 +5653,28 @@ allocate_sysvalues(struct ntd_context *ctx)
    nir_foreach_variable_with_modes(var, ctx->shader, nir_var_system_value)
       driver_location++;
 
+   if (ctx->shader->info.stage == MESA_SHADER_FRAGMENT &&
+       ctx->shader->info.inputs_read &&
+       !BITSET_TEST(ctx->shader->info.system_values_read, SYSTEM_VALUE_SAMPLE_ID)) {
+      bool need_sample_id = true;
+
+      /* "var->data.sample = true" sometimes just mean, "I want per-sample
+       * shading", which explains why we can end up with vars having flat
+       * interpolation with the per-sample bit set. If there's only such
+       * type of variables, we need to tell DXIL that we read SV_SampleIndex
+       * to make DXIL validation happy.
+       */
+      nir_foreach_variable_with_modes(var, ctx->shader, nir_var_shader_in) {
+         if (!var->data.sample || var->data.interpolation != INTERP_MODE_FLAT) {
+            need_sample_id = false;
+            break;
+         }
+      }
+
+      if (need_sample_id)
+         BITSET_SET(ctx->shader->info.system_values_read, SYSTEM_VALUE_SAMPLE_ID);
+   }
+
    for (unsigned i = 0; i < ARRAY_SIZE(possible_sysvalues); ++i) {
       struct sysvalue_name *info = &possible_sysvalues[i];
       if (info->only_in_shader != MESA_SHADER_NONE &&
@@ -5597,10 +5728,23 @@ nir_to_dxil(struct nir_shader *s, const struct nir_to_dxil_options *opts,
    ctx->mod.major_version = 6;
    ctx->mod.minor_version = 1;
 
-   NIR_PASS_V(s, nir_lower_pack);
+   if (s->info.stage <= MESA_SHADER_FRAGMENT) {
+      uint64_t in_mask =
+         s->info.stage == MESA_SHADER_VERTEX ?
+         0 : (VARYING_BIT_PRIMITIVE_ID | VARYING_BIT_VIEWPORT | VARYING_BIT_LAYER);
+      uint64_t out_mask =
+         s->info.stage == MESA_SHADER_FRAGMENT ?
+         ((1ull << FRAG_RESULT_STENCIL) | (1ull << FRAG_RESULT_SAMPLE_MASK)) :
+         (VARYING_BIT_PRIMITIVE_ID | VARYING_BIT_VIEWPORT | VARYING_BIT_LAYER);
+
+      NIR_PASS_V(s, dxil_nir_fix_io_uint_type, in_mask, out_mask);
+   }
+
+   NIR_PASS_V(s, dxil_nir_lower_fquantize2f16);
    NIR_PASS_V(s, nir_lower_frexp);
    NIR_PASS_V(s, nir_lower_flrp, 16 | 32 | 64, true);
-   NIR_PASS_V(s, nir_lower_io, nir_var_shader_in | nir_var_shader_out, type_size_vec4, (nir_lower_io_options)0);
+   NIR_PASS_V(s, nir_lower_io, nir_var_shader_in | nir_var_shader_out, type_size_vec4, nir_lower_io_lower_64bit_to_32);
+   NIR_PASS_V(s, nir_lower_pack);
    NIR_PASS_V(s, dxil_nir_lower_system_values);
 
    if (ctx->mod.shader_kind == DXIL_HULL_SHADER)
@@ -5736,6 +5880,8 @@ nir_var_to_dxil_sysvalue_type(nir_variable *var, uint64_t other_stage_mask)
    case VARYING_SLOT_PSIZ:
    case VARYING_SLOT_TESS_LEVEL_INNER:
    case VARYING_SLOT_TESS_LEVEL_OUTER:
+   case VARYING_SLOT_VIEWPORT:
+   case VARYING_SLOT_LAYER:
       if (!((1ull << var->data.location) & other_stage_mask))
          return DXIL_SYSVALUE;
       FALLTHROUGH;
